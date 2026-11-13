@@ -1,20 +1,31 @@
 import { describe, expect, it, vi } from "vitest"
 import {
   decodeFunctionData,
+  encodeAbiParameters,
+  encodeEventTopics,
   encodeFunctionData,
   encodeFunctionResult,
+  getAddress,
   parseGwei,
   type Address,
   type Hex,
   type PublicClient,
   type StateOverride,
 } from "viem"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import {
+  SkyEscrowAbi,
   SkyEscrowFactoryAbi,
   SkyRoute,
+  encodeSkyEscrowDeploy,
   predictSkyEscrowAddressLocally,
 } from "@oxide/experiments/sky/sky_savings.js"
 import { PlainWithdrawalSubsidyAbi } from "@oxide/l1-contracts"
+import { L1_OPERATION_BROADCAST_TIERS } from "@oxide/oxide-lib/l1_operation_calldata.js"
+import { decodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal_executor.js"
+import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
 import { L1_OPERATION_TIP_MARGIN_BPS } from "@obsidion/core/constants"
 import {
   ETH_USD_FEED_DECIMALS,
@@ -30,11 +41,14 @@ import {
 import {
   SKY_RELEASE_GAS,
   SkyTipExceedsFundingError,
+  buildSkyEscrowMove,
   encodeSkyEscrowDeployOnly,
   quoteSkyEscrowTip,
   quoteSkyReleaseTip,
+  readSkyEscrowOutcome,
 } from "../../../src/oxide/escrow/skySavings.js"
 import { mappingSlot } from "../../../src/oxide/escrow/swapOnWithdrawSimulator.js"
+import { memoryLogsClient, type HeldLog } from "../../utils/memoryLogs.js"
 
 const FACTORY = "0x00000000000000000000000000000000000fac70" as Address
 const EXECUTOR = "0x0000000000000000000000000000000000e0e0e0" as Address
@@ -247,5 +261,137 @@ describe("Sky escrow exits", () => {
       data: encodeSkyEscrowDeployOnly(args),
     })
     expect([deploy.functionName, deploy.args[0]]).toEqual(["deploy", args])
+  })
+})
+
+describe("buildSkyEscrowMove", () => {
+  const ONE = 10n ** 18n
+  const PORTAL = "0x000000000000000000000000000000000000da10" as Address
+  const BROADCASTER = AztecAddress.fromBigIntUnsafe(0xb0n)
+  // The run's broadcast interaction is built from the binding and left to the burn to rebuild.
+  const broadcaster = {
+    address: BROADCASTER,
+    methods: Object.fromEntries(
+      L1_OPERATION_BROADCAST_TIERS.map(({ method }) => [method, () => ({})]),
+    ),
+  } as never
+  const salt = new Fr(42n)
+  // The route only passes through to oxide; front-core's build test runs both.
+  const route = SkyRoute.Unstake
+  const move = () =>
+    buildSkyEscrowMove({
+      broadcaster,
+      factory: FACTORY,
+      dai: DAI,
+      from: AztecAddress.fromBigIntUnsafe(9n),
+      portal: PORTAL,
+      executor: { address: EXECUTOR, fee: ONE / 10n },
+      amount: 100n * ONE,
+      route,
+      recipientCommitment: `0x${"ab".repeat(32)}`,
+      recovery: { salt, account: SENDER },
+      nonce: `0x${"ef".repeat(32)}`,
+      escrowTip: ONE / 2n,
+      releaseTip: ONE,
+    })
+
+  it("burns into the escrow its args derive, and runs it once the release pays it DAI", () => {
+    const { escrow, args, options } = move()
+    expect(args).toEqual({
+      route,
+      recipientCommitment: `0x${"ab".repeat(32)}`,
+      recoveryCommitment: deriveRecoveryCommitment(salt, EthAddress.fromString(SENDER)).toString(),
+      relayerTip: ONE / 2n,
+      nonce: `0x${"ef".repeat(32)}`,
+    })
+    expect(getAddress(escrow)).toBe(predictSkyEscrowAddressLocally(FACTORY, args))
+    expect(options.escrow.equals(EthAddress.fromString(escrow))).toBe(true)
+    const payload = decodePlainWithdrawalPayload(options.userPayload)
+    expect([payload.recipient.toString(), payload.relayerTip]).toEqual([escrow, ONE])
+    const run = options.l1Operation
+    expect(run.target.equals(EthAddress.fromString(FACTORY))).toBe(true)
+    expect(`0x${run.calldata.toString("hex")}`).toBe(encodeSkyEscrowDeploy(args))
+    expect(run.condition.token.equals(EthAddress.fromString(DAI))).toBe(true)
+    expect(run.condition.recipient.equals(EthAddress.fromString(escrow))).toBe(true)
+    expect(options).toMatchObject({
+      broadcaster: BROADCASTER.toString(),
+      memo: { sky: { ...args, factory: FACTORY } },
+      executor: EXECUTOR,
+      withdrawalFee: ONE / 10n,
+    })
+  })
+})
+
+describe("readSkyEscrowOutcome", () => {
+  const ESCROW = getAddress(`0x${"ec".repeat(20)}`)
+  const OTHER_ESCROW = getAddress(`0x${"ed".repeat(20)}`)
+  const SUSDS = getAddress(`0x${"5d".repeat(20)}`)
+  const TO = getAddress(`0x${"7a".repeat(20)}`)
+  const TX = `0x${"ce".repeat(32)}` as Hex
+
+  const DAI_AMOUNT = 95n
+  const ran = (escrow: Address, blockNumber: bigint): HeldLog => ({
+    address: escrow,
+    topics: encodeEventTopics({
+      abi: SkyEscrowAbi,
+      eventName: "SkyEscrowExecuted",
+      args: { route: SkyRoute.Stake, tipRecipient: SENDER },
+    }) as Hex[],
+    data: encodeAbiParameters([{ type: "uint256" }, { type: "uint256" }], [DAI_AMOUNT, 90n]),
+    blockNumber,
+    transactionHash: TX,
+  })
+  const recovered = (
+    blockNumber: bigint,
+    token: Address = DAI,
+    at = ESCROW,
+    amount = 5n,
+  ): HeldLog => ({
+    address: at,
+    topics: encodeEventTopics({
+      abi: SkyEscrowAbi,
+      eventName: "EscrowRecovered",
+      args: { token, target: TO },
+    }) as Hex[],
+    data: encodeAbiParameters([{ type: "uint256" }], [amount]),
+    blockNumber,
+    transactionHash: TX,
+  })
+  const read = (logs: HeldLog[]) =>
+    readSkyEscrowOutcome(memoryLogsClient(logs), {
+      escrow: ESCROW,
+      fromBlock: 5n,
+      toBlock: 9n,
+    })
+
+  it.each([
+    { name: "another escrow's run", logs: [ran(OTHER_ESCROW, 6n)] },
+    { name: "another escrow's recovery", logs: [recovered(6n, DAI, OTHER_ESCROW)] },
+    { name: "a run and a recovery before the range", logs: [ran(ESCROW, 4n), recovered(4n)] },
+    { name: "a run and a recovery past the range", logs: [ran(ESCROW, 10n), recovered(10n)] },
+  ])("reads nothing while the escrow waits, over $name", async ({ logs }) => {
+    expect(await read(logs)).toBeUndefined()
+  })
+
+  it("reads the run and its DAI at either end of the range", async () => {
+    expect(await read([ran(ESCROW, 5n)])).toEqual({ kind: "ran", assets: DAI_AMOUNT })
+    expect(await read([ran(ESCROW, 9n)])).toEqual({ kind: "ran", assets: DAI_AMOUNT })
+  })
+
+  it("reads every recovery in the range, in log order: what each took back, whom it paid and when", async () => {
+    expect(await read([recovered(7n, SUSDS, ESCROW, 3n), recovered(8n)])).toEqual({
+      kind: "recovered",
+      recoveries: [
+        { txHash: TX, token: SUSDS, amount: 3n, to: TO, blockNumber: 7n },
+        { txHash: TX, token: getAddress(DAI), amount: 5n, to: TO, blockNumber: 8n },
+      ],
+    })
+  })
+
+  it("reads a run over a later recovery", async () => {
+    expect(await read([ran(ESCROW, 6n), recovered(8n)])).toEqual({
+      kind: "ran",
+      assets: DAI_AMOUNT,
+    })
   })
 })

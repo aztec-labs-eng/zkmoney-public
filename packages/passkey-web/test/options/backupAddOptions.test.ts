@@ -39,7 +39,7 @@ describe("backupAddOptionsFor", () => {
     const s = sheet()
     expect(ids(s)).toEqual(["phone", "key", "computer"])
     expect(s.selected).toBe("phone")
-    expect(s.options.filter((o) => o.recommended).map((o) => o.id)).toEqual(["phone"])
+    expect(s.options.filter((o) => o.badge === "recommended").map((o) => o.id)).toEqual(["phone"])
     expect(option(s, "computer")).toMatchObject({
       label: C.computer.macLabel,
       description: B.computer.macDescription,
@@ -63,7 +63,7 @@ describe("backupAddOptionsFor", () => {
     expect(ids(s)).toEqual(["key", "computer"])
     expect(s.selected).toBe("key")
     expect(option(s, "key")).toMatchObject({ advice: [C.key.noPhone] })
-    expect(s.options.some((o) => o.recommended)).toBe(false)
+    expect(s.options.some((o) => o.badge === "recommended")).toBe(false)
     for (const reach of ["unknown", "below-floor"] as const) {
       expect(ids(sheet({ reach }))).toContain("phone")
     }
@@ -73,7 +73,7 @@ describe("backupAddOptionsFor", () => {
     const mac = sheet({ ignoresHints: true })
     expect(ids(mac)).toEqual(["phone-or-key", "computer"])
     expect(mac.selected).toBe("phone-or-key")
-    expect(option(mac, "phone-or-key")).toMatchObject({ advice: [], recommended: true })
+    expect(option(mac, "phone-or-key")).toMatchObject({ advice: [], badge: "recommended" })
     const windows = sheet({ ignoresHints: true, os: "windows" })
     expect(option(windows, "phone-or-key").advice).toEqual([C.phoneOrKey.windows])
   })
@@ -83,6 +83,20 @@ describe("backupAddOptionsFor", () => {
     expect(option(sheet({ ignoresHints: true }), "phone-or-key").keyWarning).toBe(B.keyWarning)
     expect(option(sheet(), "phone").keyWarning).toBeUndefined()
     expect(option(sheet(), "computer").keyWarning).toBeUndefined()
+  })
+
+  it("links the managers on every option that can reach a phone, else on this computer", () => {
+    const linked = (s: BackupAddOptions) => s.options.filter((o) => o.managersLink).map((o) => o.id)
+    expect(linked(sheet({ extension: "1password", protonKept: true }))).toEqual(["phone"])
+    expect(linked(sheet({ ignoresHints: true }))).toEqual(["phone-or-key"])
+    expect(linked(sheet({ reach: "no-hybrid", extension: "1password" }))).toEqual(["computer"])
+  })
+
+  it("marks only this computer not recommended", () => {
+    const s = sheet({ extension: "1password", protonKept: true })
+    const discouraged = s.options.filter((o) => o.badge === "notRecommended").map((o) => o.id)
+    expect(discouraged).toEqual(["computer"])
+    expect(option(sheet({ reach: "no-hybrid" }), "computer").badge).toBe("notRecommended")
   })
 
   it("warns about a pop-up where a script the page cannot use answers it", () => {

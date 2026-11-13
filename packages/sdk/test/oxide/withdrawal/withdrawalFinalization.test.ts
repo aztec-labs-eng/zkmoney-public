@@ -15,6 +15,7 @@ import {
 import { describe, expect, it, vi } from "vitest"
 
 import { L1WithdrawalFinalizationReader } from "../../../src/oxide/withdrawal/withdrawalFinalization.js"
+import { getLogs, type HeldLog, type LogFilter } from "../../utils/memoryLogs.js"
 
 const PORTAL = ("0x" + "1A".repeat(20)) as Hex
 const OTHER_PORTAL = ("0x" + "88".repeat(20)) as Hex
@@ -38,19 +39,11 @@ interface Release {
   tx: Hex
 }
 
-type Topic = Hex | Hex[] | null
-
-function topicMatches(filter: Topic | undefined, topic: Hex | undefined) {
-  if (filter === undefined || filter === null) return true
-  const wanted = Array.isArray(filter) ? filter : [filter]
-  return wanted.some((t) => t.toLowerCase() === topic?.toLowerCase())
-}
-
 /** A viem client whose node holds `releases`, recording each `eth_getLogs` range it serves. */
 function chain(releases: Release[], head = 1_000n) {
   const ranges: [bigint, bigint][] = []
-  const logs = releases.map((release, i) => ({
-    address: (release.portal ?? PORTAL).toLowerCase() as Hex,
+  const logs: HeldLog[] = releases.map((release) => ({
+    address: release.portal ?? PORTAL,
     topics: encodeEventTopics({
       abi: OxidePortalAbi,
       eventName: "WithdrawalOrRefund",
@@ -59,31 +52,13 @@ function chain(releases: Release[], head = 1_000n) {
     data: encodeAbiParameters([{ type: "uint256" }], [1_000n]),
     blockNumber: release.block,
     transactionHash: release.tx,
-    logIndex: i,
   }))
   const request = vi.fn(async ({ method, params }: { method: string; params?: unknown }) => {
     if (method === "eth_blockNumber") return numberToHex(head)
     if (method !== "eth_getLogs") throw new Error(`unexpected ${method}`)
-    const [filter] = params as [{ address: Hex; topics: Topic[]; fromBlock: Hex; toBlock: Hex }]
-    const from = BigInt(filter.fromBlock)
-    const to = BigInt(filter.toBlock)
-    ranges.push([from, to])
-    return logs
-      .filter(
-        (log) =>
-          log.address === filter.address.toLowerCase() &&
-          log.blockNumber >= from &&
-          log.blockNumber <= to &&
-          filter.topics.every((topic, i) => topicMatches(topic, log.topics[i])),
-      )
-      .map((log) => ({
-        ...log,
-        blockNumber: numberToHex(log.blockNumber),
-        logIndex: numberToHex(log.logIndex),
-        blockHash: "0x" + "bb".repeat(32),
-        transactionIndex: "0x0",
-        removed: false,
-      }))
+    const [filter] = params as [LogFilter]
+    ranges.push([BigInt(filter.fromBlock), BigInt(filter.toBlock)])
+    return getLogs(logs, filter)
   })
   const client = createPublicClient({ transport: custom({ request }) }) as PublicClient
   return { client, request, ranges }

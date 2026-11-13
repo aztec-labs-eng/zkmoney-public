@@ -9,7 +9,7 @@ import { testWalletDbs } from "../../support/fakeWalletDb"
 import { testPage } from "../../support/page"
 
 /** A page on rollup 9, whose database the suite opens. */
-const page = () => testPage(undefined, { profileRollupVersion: "9" } as never)
+const page = () => testPage(undefined, { profileRollupVersion: "9", features: {} } as never)
 
 const dbs = testWalletDbs()
 const TUPLE = ["webwallet.storageId", "webwallet.credentialId", "webwallet.msk"] as const

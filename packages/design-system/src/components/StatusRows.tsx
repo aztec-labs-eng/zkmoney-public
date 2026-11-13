@@ -52,7 +52,8 @@ export interface KeyStatusRowProps {
   name: string
   /** e.g. "This Mac · iCloud Keychain" or "Not added". */
   detail: string
-  status: "added" | "missing"
+  /** No mark when left out, e.g. for a missing key the sheet already warns about. */
+  status?: "added" | "missing"
 }
 
 /** One passkey on the account: key icon, name and where it lives, then a tick or a warning. */
@@ -66,13 +67,12 @@ export function KeyStatusRow({ name, detail, status }: KeyStatusRowProps) {
         <span className="zkm-key-status-row__name">{name}</span>
         <span className="zkm-key-status-row__detail">{detail}</span>
       </span>
-      {status === "added" ? (
+      {status === "added" && (
         <span className="zkm-key-status-row__added">
           <Icon name="check-micro" size={12} />
         </span>
-      ) : (
-        <Icon name="alert-fill" size={20} color="var(--accent-warning)" />
       )}
+      {status === "missing" && <Icon name="alert-fill" size={20} color="var(--accent-warning)" />}
     </div>
   )
 }

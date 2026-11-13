@@ -20,7 +20,7 @@ import { flowCopy } from "../../features/operations/operationCopy"
 import { openMigrationDialog } from "../../features/migration/migrationDialog"
 import type { Bell } from "../../features/notifications/notifications"
 import { useSession, type Session } from "../../session/session"
-import { profileBridge } from "../../session/walletChains"
+import { acrossBridge } from "../../session/walletChains"
 import { operationIdOf } from "../../features/operations/operationEntries"
 import { openTicketClaimReview } from "../../features/paylink/ticketContinuation"
 import { pendingTicketRegistration } from "../../features/paylink/ticketContinuation"
@@ -93,7 +93,7 @@ export function notificationRoute(
     const tag = (entry.target as { tag?: string }).tag
     return tag ? { to: `/claim/${encodeURIComponent(tag)}` } : null
   }
-  const bridge = session.page && profileBridge(session.page.config)
+  const bridge = session.page && acrossBridge(session.page.config)
   const notice = fmt(copy.panel.toast, notificationText(entry, bridge))
   // A failure alert is stale once a re-inclusion confirms its row or revives its withdrawal. A
   // withdrawal's failed entry is one; "Funds not sent", an error on the same target, is not.
@@ -158,7 +158,8 @@ export function toastKey(entry: NotificationEntry): string {
 /**
  * Entries the bell should toast: unread, not yet shown, settled, and either first seen since
  * `since` and not in `backlog`, or seen live by this bell. A live row is status; an entry first seen
- * settled before is the backlog behind the bell.
+ * settled before is the backlog behind the bell. The user's own send never toasts its success: the
+ * keep-open notice already said it is sent.
  */
 export function freshToasts(
   entries: NotificationEntry[],
@@ -170,6 +171,11 @@ export function freshToasts(
     (e) =>
       !e.read &&
       !e.pending &&
+      !(
+        e.about.kind === "operation" &&
+        e.about.record.flow === "send" &&
+        e.severity === "success"
+      ) &&
       !seen.has(toastKey(e)) &&
       ((e.firstSeenAt >= since && backlog.get(e.id) !== e.firstSeenAt) ||
         seen.has(toastKey({ ...e, pending: true }))),
@@ -386,7 +392,7 @@ function EntryRow({
   onOpen: (entry: NotificationEntry) => void
   onDismiss: (id: string) => void
 }) {
-  const { title, description } = notificationText(entry, profileBridge(useSession().page.config))
+  const { title, description } = notificationText(entry, acrossBridge(useSession().page.config))
   return (
     <div className="ww-notifications__item">
       <button

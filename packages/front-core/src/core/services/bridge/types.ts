@@ -156,10 +156,7 @@ export interface WithdrawalRecord {
   /** The least ETH the gas swap must pay (bigint as string). Absent when it is 0. */
   swapMinEthForGas?: string
 
-  /**
-   * The Sky savings move a rebuilt burn funds: what its escrow, `recipient`, commits to, read off
-   * the burn's recovery memo. `savingsMoveOfWithdrawal` turns it back into the move.
-   */
+  /** The Sky savings move a burn funds: what its escrow, `recipient`, commits to. */
   skyMove?: {
     direction: "in" | "out"
     factory: Address
@@ -172,6 +169,12 @@ export interface WithdrawalRecord {
     depositScanFrom?: string
     /** The quote's DAI value of what the move burns; a move out's shares are named by it. Absent on a rebuilt burn. */
     value?: string
+  }
+
+  /** The vault move a burn funds through the multi-step executor; its move record holds the rest. */
+  vaultMove?: {
+    holdingId: string
+    nonce: Hex
   }
 
   /**

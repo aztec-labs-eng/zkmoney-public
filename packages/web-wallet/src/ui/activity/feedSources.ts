@@ -8,7 +8,6 @@ import {
   OPEN,
   PENDING,
   legacyStore,
-  newestMovesFirst,
   operationRows,
   syncCatchUp,
   type BackupRotationRecord,
@@ -24,7 +23,7 @@ import {
   type ReadonlyStore,
   type RecordSet,
   type Requests,
-  type SavingsMoves,
+  type MoveStore,
   type SipaDeposits,
   type SipaProcessingState,
   type Sourced,
@@ -107,7 +106,8 @@ export function feedBase(
   processing: ReadonlyStore<ReadonlyMap<string, SipaProcessingState>>,
   paylinks: Pick<Paylinks, "view">,
   operations: Pick<Operations, "view">,
-  savingsMoves: Pick<SavingsMoves, "view">,
+  moves: Pick<MoveStore, "view">,
+  movesReplayed: ReadonlyStore<boolean>,
   rollup: {
     upgrades: UpgradeActivity
     oldVersionWithdrawals: ReadonlyStore<Loaded<OldVersionWithdrawal>>
@@ -125,7 +125,8 @@ export function feedBase(
       withdrawals.list,
       bridgeIns.list,
       upgradesStore(rollup.upgrades),
-      savingsMoves.view,
+      moves.view,
+      movesReplayed,
       rollup.oldVersionWithdrawals,
       processing,
       rotations,
@@ -142,6 +143,7 @@ export function feedBase(
       bridgeIns,
       upgrades,
       moves,
+      movesReplayed,
       oldVersionWithdrawals,
       processing,
       rotations,
@@ -156,8 +158,8 @@ export function feedBase(
       withdrawals,
       bridgeIns,
       upgrades: upgrades.value,
-      // A failed read counts as read: the feed shows what it has.
-      moves: { records: newestMovesFirst(moves.records), hydrated: moves.loaded || moves.failed },
+      moves,
+      movesReplayed,
       oldVersionWithdrawals: oldVersionWithdrawals.records,
       processing,
       // A funding whose attempt is not read reads as pending; the Passkeys sheet says why.

@@ -11,7 +11,7 @@ import {
   type Transaction,
 } from "@obsidion/front-core"
 import { rotationView } from "../../features/backupPasskey/backupRotations"
-import { useSavingsAsset } from "../../features/savings/savingsGateway"
+import { useHoldingPrices, useSavingsAsset } from "../../features/savings/useSavings"
 import { useContactDirectory } from "../../session/contacts"
 import { useOldVersionHoldings } from "../../features/migration/oldVersionBalance"
 import { usePolledChainSeconds } from "../../features/paylink/chainTime"
@@ -63,7 +63,8 @@ export function useFeed({
   const mainReadAt = useStore(useSession().balances.view, (v) => v.readAt)
   const mainToken = useStore(session.balances.view, (v) => v.token)
   const mainAnchor = useStore(session.balances.view, (v) => v.anchor)
-  const position = useStore(session.savingsHolding).position
+  const position = useStore(session.savingsLine).position
+  const holdingPrices = useHoldingPrices()
   // Pending until the session knows whether Savings has a row; null where it has none.
   const savings = useSavingsAsset()
   const savingsToken = savings ?? undefined
@@ -90,6 +91,7 @@ export function useFeed({
       account: account ?? address,
       balanceReadAt: { main: mainReadAt, savings: position?.sharesReadAt },
       sharePrice: position?.sharePrice,
+      holdingPrices,
       savingsToken,
       savingsUnknown,
       oldVersions: { main: oldMain, savings: oldSavings },
@@ -108,6 +110,7 @@ export function useFeed({
     chainNow,
     mainReadAt,
     position,
+    holdingPrices,
     savingsToken,
     savingsUnknown,
     oldMain,

@@ -1,13 +1,14 @@
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import { memoryStore } from "@obsidion/front-core"
 import type { BackupRecord } from "../../platform/auth/WebPasskeyIdentityMap"
+import type { AddStep } from "./backupScreen"
 
 /**
  * Whether a record's passkey lives on one device: its backup-eligible flag is false. A record
  * written before the flag was kept counts when the creation driver judged it a security key; any
  * other waits for its next prompt here.
  */
-export function deviceBound(record: BackupRecord): boolean {
+function deviceBound(record: BackupRecord): boolean {
   if (record.backupEligible !== undefined) return !record.backupEligible
   return record.securityKey === true
 }
@@ -59,24 +60,24 @@ export type HomeNudgeFacts = BackupNudgeFacts & {
   /** From the account's `BackupNudges`. */
   putOffAt: bigint | null | "unread"
   hiddenForSession: boolean
-  /** A saved add waits on the user's last approval. */
-  awaitsApproval: boolean
+  /** The saved add's step, while it is on its tracker. */
+  add: AddStep | undefined
   /** A move of the funds at the earlier address stopped early and can go on. */
   moveUnfinished: boolean
 }
 
 /**
- * Home's card: finish a waiting add, finish a move from the earlier address, a passkey on one
+ * Home's card: a saved add's step, finish a move from the earlier address, a passkey on one
  * device, or a balance threshold reached.
  */
 export type HomeNudge =
-  | { kind: "finish" }
+  | AddStep
   | { kind: "moveFunds" }
   | { kind: "oneDevice" }
   | { kind: "oneKey"; threshold: bigint }
 
 export function homeNudge(facts: HomeNudgeFacts): HomeNudge | undefined {
-  if (facts.enabled && facts.awaitsApproval) return { kind: "finish" }
+  if (facts.enabled && facts.add) return facts.add
   // Account history moves funds in every build, the add's flag or not.
   if (facts.moveUnfinished) return { kind: "moveFunds" }
   const nudge = backupNudge(facts)

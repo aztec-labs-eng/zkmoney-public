@@ -11,6 +11,8 @@ import { entryBlocks } from "../../../src/features/backupPasskey/backupPasskeyEn
 import type { BackupActions, BackupKey } from "../../../src/features/backupPasskey/backupScreen"
 import { BlockedScreen } from "../../../src/features/backupPasskey/screens/BlockedScreen/BlockedScreen"
 import blockedCopy from "../../../src/features/backupPasskey/screens/BlockedScreen/BlockedScreen.copy"
+import { LowBalanceScreen } from "../../../src/features/backupPasskey/screens/LowBalanceScreen/LowBalanceScreen"
+import lowCopy from "../../../src/features/backupPasskey/screens/LowBalanceScreen/LowBalanceScreen.copy"
 import { FirstPasskeyScreen } from "../../../src/features/backupPasskey/screens/FirstPasskeyScreen/FirstPasskeyScreen"
 import firstCopy from "../../../src/features/backupPasskey/screens/FirstPasskeyScreen/FirstPasskeyScreen.copy"
 import { UnreadableScreen } from "../../../src/features/backupPasskey/screens/UnreadableScreen/UnreadableScreen"
@@ -33,6 +35,7 @@ const actions = (act?: BackupActions["act"]): BackupActions => ({
   retryMove: noop,
   check: noop,
   cancel: noop,
+  askCancel: noop,
   recover: noop,
   finish: noop,
   dismiss: noop,
@@ -65,6 +68,12 @@ const text = () => container.textContent ?? ""
 const button = (label: string) =>
   [...container.querySelectorAll("button")].find((b) => b.textContent === label)
 const rows = () => container.querySelectorAll(".zkm-checklist-row")
+/** A balance of 0.80 short of a 2.0551 funding that gives 1.5004 back. */
+const LOW = {
+  id: "lowBalance",
+  funding: { sent: (20551n * DAI) / 10000n, credited: (15004n * DAI) / 10000n },
+  have: (8n * DAI) / 10n,
+} as const
 
 describe("B1, what holds the add", () => {
   it("lists every open item under the ticked registration, with a link where one clears it", async () => {
@@ -89,6 +98,24 @@ describe("B1, what holds the add", () => {
     expect(button(blockedCopy.add)?.disabled).toBe(true)
     await act(async () => button(blockedCopy.balance.action)!.click())
     expect(onAct).toHaveBeenCalledWith("deposit")
+  })
+
+  it("gives a short balance its own sheet: the need, the part back, Deposit, the add closed", async () => {
+    const onAct = vi.fn()
+    await show(<LowBalanceScreen screen={LOW} actions={actions(onAct)} />)
+    // The total Pay shows at Standard, so the need and the hold add up with the fee.
+    expect(text()).toContain(fmt(lowCopy.lead, { need: "$2.06", hold: "$1.50", have: "$0.80" }))
+    expect(button(lowCopy.add)?.disabled).toBe(true)
+    await act(async () => button(lowCopy.deposit)!.click())
+    expect(onAct).toHaveBeenCalledWith("deposit")
+  })
+
+  it("hides the balance on its own sheet while balances are hidden", async () => {
+    await seedDeviceKeys({ hideBalances: "true" })
+    await show(<LowBalanceScreen screen={LOW} actions={actions()} />)
+    expect(text()).toContain(
+      fmt(lowCopy.lead, { need: "$2.06", hold: "$1.50", have: HIDDEN_BALANCE }),
+    )
   })
 
   it("hides the balance's figures while balances are hidden", async () => {

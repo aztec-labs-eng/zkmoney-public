@@ -17,6 +17,7 @@ export type TabKey =
   | "pxeBoot.downloadReloads"
   | "webwallet.demo"
   | "webwallet.preview-config-draft"
+  | "webwallet.preview-features-draft"
 
 /** Values one tab keeps across its own navigations and reloads, gone once the tab closes. */
 export const tabStash = {

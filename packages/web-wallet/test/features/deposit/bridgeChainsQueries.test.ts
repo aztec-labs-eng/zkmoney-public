@@ -95,17 +95,13 @@ describe("bridgeInQuote", () => {
 describe("bridgeInSource", () => {
   const decimals = vi.fn(async () => 6)
   const across = {
-    bridge: {
-      provider: "across" as const,
-      apiUrl: "https://across.example/api",
-      chains: [],
-    },
+    features: { across: { apiUrl: "https://across.example/api", chains: [], oxide: {} } },
   }
 
   it("builds one Across client for quotes and deposit lookups, and none without a bridge", () => {
     const { provider, deposits } = bridgeInSource(across, decimals)
     expect(provider).toBe(deposits)
-    expect(bridgeInSource({ bridge: undefined }, decimals)).toEqual({
+    expect(bridgeInSource({ features: {} }, decimals)).toEqual({
       provider: null,
       deposits: null,
     })

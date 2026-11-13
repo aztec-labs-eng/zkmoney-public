@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { BaseError, HttpRequestError, LimitExceededRpcError, TimeoutError } from "viem"
 import type { BridgeInQuote } from "@obsidion/front-core"
-import type { ConfigBridge } from "@obsidion/config-client"
+import type { AcrossBridge } from "@obsidion/config-client"
 import {
   bridgeCharged,
   bridgeCredit,
@@ -23,7 +23,7 @@ import type { DepositTokenOption } from "../../../src/features/sipa/loadDepositF
 
 const USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 const USDT = "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2"
-type Chain = ConfigBridge["chains"][number]
+type Chain = AcrossBridge["chains"][number]
 const chain = (chainId: number, name: string, inTokens: Chain["in"]): Chain =>
   ({ chainId, name, etaMinutes: 2, rpcUrl: "https://rpc", in: inTokens, out: [] } as Chain)
 
@@ -160,8 +160,8 @@ describe("bridgeCredit", () => {
 
 describe("bridgeRoutes", () => {
   const bridge = {
-    provider: "across",
     apiUrl: "https://a",
+    oxide: {},
     chains: [
       chain(8453, "Base", [
         { symbol: "USDC", address: USDC },
@@ -174,7 +174,7 @@ describe("bridgeRoutes", () => {
         { symbol: "USDC", address: USDC },
       ]),
     ],
-  } as ConfigBridge
+  } as AcrossBridge
 
   it("lists the chains with a token to bridge now, in profile order, every token with a landing", () => {
     const routes = bridgeRoutes(bridge, [coin("USDC")])

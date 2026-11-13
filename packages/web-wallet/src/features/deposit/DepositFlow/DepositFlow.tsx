@@ -1,5 +1,6 @@
 import { Fragment, useState, type ReactNode } from "react"
 import { useStore } from "@obsidion/front-core"
+import type { Address } from "viem"
 import { Icon, PrimaryGradientButton, RowChevron } from "@obsidion/web-ds"
 import { fmt } from "../../../lib/fmt"
 import { Crumb } from "../../../ui/flow/Crumb/Crumb"
@@ -18,9 +19,11 @@ import {
 import type { SavedL1Wallet } from "../../../session/savedL1Wallets"
 import { useSession } from "../../../session/session"
 import { tokenName } from "../../token/tokenName"
-import { firstDepositNetwork } from "../bridgeChains"
+import { firstDepositNetwork, tokenAddress } from "../bridgeChains"
 import type { BridgeRoute } from "../bridgeChains"
 import { CoinIcon, OriginTokenIcon } from "../../../ui/CoinIcon/CoinIcon"
+import { CoinBalance } from "../CoinBalance/CoinBalance"
+import { coinPricing } from "../coinBalance"
 import { DepositPrivacyDisclaimer } from "../DepositPrivacyDisclaimer/DepositPrivacyDisclaimer"
 import walletCopy from "../ChangeWalletPicker/ChangeWalletPicker.copy"
 import type { DepositTokenOption } from "../../sipa/loadDepositFacts"
@@ -95,6 +98,7 @@ export function DepositFlow({
   saved,
   wallet,
   walletChainId,
+  account,
   intent,
   startChainId,
   startSymbol,
@@ -128,6 +132,8 @@ export function DepositFlow({
   wallet?: { name: string; address: string }
   /** The connected wallet's chain: a wallet's flow opens on it where offered. */
   walletChainId?: number
+  /** The connected account: the picker shows its balance of each coin. */
+  account?: Address
   /** Unset, a pick moves on to the method. */
   intent?: DepositIntent
   /** The network the intro starts on; the L1 when unset. */
@@ -176,12 +182,24 @@ export function DepositFlow({
     { chainId: l1ChainId, name: chainName },
     ...routes.map(({ chain }) => ({ chainId: chain.chainId, name: chain.name })),
   ]
+  const balance = (id: number, address: Address, coinSymbol: string) =>
+    account && (
+      <CoinBalance
+        account={account}
+        chainId={id}
+        l1={id === l1ChainId}
+        token={address}
+        symbol={coinSymbol}
+        pricing={coinPricing(coins, coinSymbol)}
+      />
+    )
   const coinsOn = (id: number, size = 32): Coin[] =>
     id === l1ChainId
       ? coins.map((coin) => ({
           symbol: coin.symbol,
           name: tokenName(coin.symbol),
-          icon: <CoinIcon token={coin} size={size} badge={false} />,
+          icon: <CoinIcon token={coin} size={size} />,
+          trailing: balance(id, coin.address, coin.symbol),
         }))
       : (routes.find((r) => r.chain.chainId === id)?.tokens ?? []).map((t) => {
           return {
@@ -189,6 +207,7 @@ export function DepositFlow({
             name: tokenName(t.symbol),
             icon: <OriginTokenIcon symbol={t.symbol} coins={coins} size={size} />,
             comingSoon: t.comingSoon,
+            trailing: t.comingSoon ? undefined : balance(id, tokenAddress(t), t.symbol),
           }
         })
   const network = networks.find((n) => n.chainId === chainId) ?? networks[0]!
@@ -368,7 +387,7 @@ export function DepositFlow({
         titleAside={walletAside}
         networks={networks}
         coinsOn={coinsOn}
-        current={{ chainId: network.chainId, symbol: coin.symbol }}
+        current={{ chainId: network.chainId }}
         onPick={choose}
         onBack={back}
         onClose={onClose}

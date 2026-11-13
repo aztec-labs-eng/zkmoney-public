@@ -217,6 +217,8 @@ function damaged(): unknown[] {
         ],
       },
     },
+    // Home sums `oneKeyBalances` as bigints, so a figure that is not a decimal must fail the read.
+    { ...saved, reroot: { switched: true, oneKeyBalances: [{ token: "t", amount: "1.5" }] } },
     { ...saved, refunds: { links: [{ link: "row-1", state: "sent" }] } },
     { ...saved, refunds: { links: [{ state: "planned" }] } },
     { ...saved, refunds: { declined: false, links: [] } },
@@ -303,7 +305,13 @@ describe("createBackupRotations", () => {
         unswept: true,
         dismissed: true,
         recovery: { txHash: word(43) },
-        reroot: { batch: word(44), switched: true, rebound: true, receiveCode: false },
+        reroot: {
+          batch: word(44),
+          switched: true,
+          rebound: true,
+          receiveCode: false,
+          oneKeyBalances: [{ token: addr(50), amount: "1400" }],
+        },
         move: {
           runs: [
             {

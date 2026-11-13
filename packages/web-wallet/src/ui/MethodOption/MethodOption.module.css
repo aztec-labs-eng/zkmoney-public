@@ -1,46 +1,62 @@
-/* An entry banner of the deposit and withdraw pages: the glow names the kind of move. */
+/* An entry banner of the deposit and withdraw pages. */
 :global(.zkm-btn-reset).banner {
-  position: relative;
-  isolation: isolate;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 16px;
-  min-height: 160px;
+  gap: 12px;
   box-sizing: border-box;
-  padding: 24px;
-  overflow: hidden;
+  padding: 16px;
   border-radius: 12px;
-  background: #121619;
-  box-shadow: inset 0 0 0 1px rgba(253, 253, 253, 0.12);
-  /* zkm-on-brand's color loses to .zkm-btn-reset's `color: inherit`, so it is restated. */
+  background: rgba(var(--ink-rgb), 0.05);
   color: var(--text-primary);
   text-align: left;
+  /* Transition lists do not merge: zkm-pressable's press, then the raise. */
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.2s ease,
+    translate 200ms ease;
 }
-.glow {
-  position: absolute;
-  top: -440px;
-  left: -280px;
-  z-index: -1;
-  width: 911px;
-  max-width: none;
-  height: 746px;
-  pointer-events: none;
+/* Raised under the pointer or keyboard focus, as Save your account is, so it reads as clickable. */
+:global(.zkm-btn-reset).banner:focus-visible {
+  translate: 0 -2px;
+}
+@media (hover: hover) {
+  :global(.zkm-btn-reset).banner:hover {
+    translate: 0 -2px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  :global(.zkm-btn-reset).banner:is(:hover, :focus-visible) {
+    translate: none;
+  }
 }
 .text {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  line-height: 1.3;
+  gap: 2px;
 }
 .text b {
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 600;
-  color: #fdfdfd;
+  line-height: 1.5;
 }
 .text span {
-  font-size: 14px;
+  font-size: 12px;
+  line-height: 1.35;
   color: var(--text-secondary);
+}
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.chevron {
+  display: flex;
+  flex-shrink: 0;
+}
+.foot > .chevron {
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
 }
 /* Phone: the banners scroll sideways, the next one peeking in. */
 @media (max-width: 640px) {
@@ -51,8 +67,6 @@
   }
   :global(.ww-move-landing--withdraw) :global(.zkm-btn-reset).banner {
     width: 230px;
-    min-height: 0;
-    padding: 16px;
   }
   :global(.ww-move-landing--withdraw) .text b {
     font-size: 14px;
@@ -76,8 +90,6 @@
 :global(.ww-deposit__connect-text) > .body {
   line-height: 1.4;
 }
-.chevron {
-  display: flex;
-  flex-shrink: 0;
+.row > .chevron {
   margin-left: auto;
 }

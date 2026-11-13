@@ -65,11 +65,14 @@ it("stops the PXE of a wallet it lets go", async () => {
 
 it("bridges in through a demo's bridge in place of the profile's, and none without a bridge", async () => {
   const boot = await sandboxBoot()
-  const bridge = { provider: "across" as const, apiUrl: "https://across.example/api", chains: [] }
+  const across = { apiUrl: "https://across.example/api", chains: [], oxide: {} }
   const fake: BridgeInProvider = { quote: vi.fn(), status: vi.fn() }
-  const demo = openPage({ ...boot, config: { ...boot.config, bridge } }, { bridgeInProvider: fake })
+  const demo = openPage(
+    { ...boot, config: { ...boot.config, features: { across } } },
+    { bridgeInProvider: fake },
+  )
   expect(valueOf(demo.bridgeInProvider)).toBe(fake)
   expect(valueOf(demo.bridgeInDeposits)).toBeNull()
-  const none = openPage({ ...boot, config: { ...boot.config, bridge: undefined } })
+  const none = openPage({ ...boot, config: { ...boot.config, features: {} } })
   expect(valueOf(none.bridgeInProvider)).toBeNull()
 })

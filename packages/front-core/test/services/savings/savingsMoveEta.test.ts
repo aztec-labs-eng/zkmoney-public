@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { WithdrawalRecord } from "../../../src/core/services/bridge/types"
+import type { MoveRecord } from "../../../src/engine/moveTransition"
 import {
   savingsMoveEta,
   type SavingsMoveTiming,
@@ -17,7 +18,9 @@ const arrival = (at: number) => {
   const availableAt = (Math.floor(sweepAt / 36) + 1) * 36
   return availableAt + 12 + 60 + 36 - at
 }
-const move = (extra = {}) => ({ startTime: NOW - 20 * 60_000, ...extra })
+const move = (extra: Partial<MoveRecord> = {}) =>
+  ({ phase: "burned", startTime: NOW - 20 * 60_000, ...extra } as const)
+const deposit = { inboxIndex: 1n, amount: 2n, at: NOW - 60_000 }
 const burn = (phase: WithdrawalRecord["phase"], extra: Partial<WithdrawalRecord> = {}) =>
   ({ phase, startTime: NOW - 20 * 60_000, ...extra } as WithdrawalRecord)
 
@@ -59,7 +62,7 @@ describe("savingsMoveEta", () => {
 
   it("gives the typical rest once the deposit is found, nothing once claimed, failed or overdue", () => {
     const found = savingsMoveEta(
-      move({ deposit: { inboxIndex: "1", amount: "2", claimed: false } }),
+      move({ phase: "depositSeen", deposit }),
       burn("done", { endTime: NOW - 60_000 }),
       timing,
       NOW,
@@ -67,12 +70,7 @@ describe("savingsMoveEta", () => {
     expect(found?.remaining).toBe(false)
     expect(found!.seconds).toBeLessThan(arrival(NOW / 1000))
     expect(
-      savingsMoveEta(
-        move({ deposit: { inboxIndex: "1", amount: "2", claimed: true } }),
-        burn("done"),
-        timing,
-        NOW,
-      ),
+      savingsMoveEta(move({ phase: "claimed", deposit }), burn("done"), timing, NOW),
     ).toBeUndefined()
     expect(savingsMoveEta(move(), burn("failed"), timing, NOW)).toBeUndefined()
     expect(

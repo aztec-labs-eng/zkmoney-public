@@ -26,6 +26,7 @@ import { coinFigure, displayDecimals } from "../../../ui/coinDecimals"
 import { fmt } from "../../../lib/fmt"
 import copy from "../sendFromWallet.copy"
 import sheetCopy from "./DepositFromWalletModal.copy"
+import brandCopy from "../../../ui/brand/brand.copy"
 import { CoinIcon } from "../../../ui/CoinIcon/CoinIcon"
 import { AmountStep } from "../../../ui/flow/AmountStep/AmountStep"
 import amountCopy from "../../../ui/flow/AmountStep/AmountStep.copy"
@@ -480,7 +481,7 @@ export function DepositFromWalletModal({
               }
             : undefined,
         asset: {
-          icon: <CoinIcon token={token} size={32} />,
+          icon: <CoinIcon token={token} size={32} badge={config.l1Chain} />,
           symbol: token.symbol,
           chain: config.l1Chain.name,
           onPick: onChangeOrigin,
@@ -496,9 +497,9 @@ export function DepositFromWalletModal({
         fee: !typedAny ? "none" : fee != null ? { figure: usdFigure(fee) } : "unknown",
         feeTestId: "fund-fee",
         asset: {
-          icon: <CoinIcon token={settlement} size={32} />,
+          icon: <CoinIcon token={settlement} size={32} badge="brand" />,
           symbol: capacitySymbol,
-          chain: config.l1Chain.name,
+          chain: brandCopy.name,
         },
       }}
       errors={overspent ? [copy.overspent] : typedError ? [typedError] : []}
@@ -544,18 +545,18 @@ export function DepositFromWalletModal({
   const sending = charged ?? sends ?? "0"
   const reviewView = (
     <DepositReview
-      icon={<CoinIcon token={token} />}
+      icon={<CoinIcon token={token} badge={config.l1Chain} />}
       title={title}
       from={from}
       to={toName}
       toDetail={!payee && handle ? copy.toFallback : undefined}
       token={[
-        { label: token.symbol, icon: <CoinIcon token={token} size={16} badge={false} /> },
+        { label: token.symbol, icon: <CoinIcon token={token} size={16} /> },
         ...(swapped
           ? [
               {
                 label: capacitySymbol,
-                icon: <CoinIcon token={settlement} size={16} badge={false} />,
+                icon: <CoinIcon token={settlement} size={16} />,
               },
             ]
           : []),
@@ -564,7 +565,7 @@ export function DepositFromWalletModal({
       receive={tokenFigure(amount, capacitySymbol)}
       feeUsd={fee != null ? usdFigure(fee) : "--"}
       totalUsd={usdFigure(sending)}
-      network={{ hops: [config.l1Chain.name], arrivesInMinutes: minutes }}
+      network={{ hops: [config.l1Chain.name, brandCopy.name], arrivesInMinutes: minutes }}
       callout={
         phase === "depositing"
           ? stage && STAGE_LABEL[stage]

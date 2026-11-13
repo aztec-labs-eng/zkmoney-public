@@ -16,7 +16,9 @@ import {
   createBackupRotations,
   createBalanceStore,
   createContacts,
-  createSavingsMoves,
+  createMoveStore,
+  savingsHoldingRef,
+  findBlockAtTime,
   createReceiveCodes,
   createXmtpCursors,
   createXmtpInbox,
@@ -59,7 +61,6 @@ import {
   type Runtime,
   type Service,
   type SavedPreviousAccount,
-  type SavingsSource,
   type SipaProcessingObserver,
   type Task,
   type TeeSignerSource,
@@ -80,6 +81,7 @@ import type {
 } from "@obsidion/sdk"
 import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { useEffect } from "react"
+import { l1PublicClient } from "../config/oxideTuple"
 import { backupPasskeySettingsEnabled } from "../config/features"
 import type { WebAlphaAuthService } from "../platform/auth/WebAlphaAuthService"
 import { recordAddress } from "../platform/auth/WebPasskeyIdentityMap"
@@ -112,8 +114,8 @@ export interface PreviousAccountParts {
     ): Promise<{ completed: boolean }>
     historyFor(recipient: AztecAddress): Promise<{ completed: boolean }>
   } | null
-  /** Prices Savings' shares; null where the session has none. */
-  savings: Service<SavingsSource | null> | null
+  /** What Savings' `shares` redeem for; undefined where the session has no price. */
+  savingsValue(shares: bigint): Promise<bigint | undefined>
 }
 
 /** What an account's session reads beside what every session does. */
@@ -306,7 +308,16 @@ function openCore(deps: SessionDeps, wake: Runtime["wake"], detect: () => void) 
     ? createBackupRotations({ db, onUnreadable: signIn.backupRotationUnreadable })
     : null
   const backupNudges = signIn && backupPasskeySettingsEnabled ? createBackupNudges({ db }) : null
-  const savingsMoves = createSavingsMoves({ db })
+  const moves = createMoveStore(db, {
+    withdrawals: withdrawals.ready,
+    sky: async () =>
+      savingsHoldingRef(await deps.page.chain.holdings.read(), deps.page.config.holdings),
+    blockAt: async (timeMs) => {
+      const l1 = l1PublicClient(deps.page.config)
+      const head = await l1.getBlockNumber()
+      return (await findBlockAtTime(l1, Math.ceil(timeMs / 1000), head)) ?? head
+    },
+  })
   const receiveCodes = signIn ? createReceiveCodes({ db, legacy: deps.database }) : null
   const xmtpCursors = signIn ? createXmtpCursors({ db }) : null
   const xmtpInbox = signIn ? createXmtpInbox({ db }) : null
@@ -361,7 +372,7 @@ function openCore(deps: SessionDeps, wake: Runtime["wake"], detect: () => void) 
     contacts,
     backupRotations,
     backupNudges,
-    savingsMoves,
+    moves,
     receiveCodes,
     xmtpCursors,
     xmtpInbox,
@@ -506,8 +517,8 @@ export function openSession(deps: SessionDeps): Session {
     backupRotations: core.backupRotations,
     /** When the account's nudges to add a backup passkey were put off; none without the add. */
     backupNudges: core.backupNudges,
-    /** The account's Savings moves; a visitor's stays empty. */
-    savingsMoves: core.savingsMoves,
+    /** The account's holding moves; a visitor's stays empty. */
+    moves: core.moves,
     /** The account's Receive codes; a visitor has none. */
     receiveCodes: core.receiveCodes,
     /** The account's inbox cursors; a visitor has none. */

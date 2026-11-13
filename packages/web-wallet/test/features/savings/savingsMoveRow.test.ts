@@ -1,72 +1,65 @@
 import { describe, expect, it } from "vitest"
 import {
-  isSavingsMoveSettled,
-  type SavingsMoveRecord,
-  type WithdrawalRecord,
+  isMoveSettled,
+  savingsMoveLabel,
+  type MoveDeposit,
+  type MoveQuote,
+  type MoveState,
 } from "@obsidion/front-core"
 import {
   recoveredTo,
   savingsMoveFigure,
   savingsMoveStatus,
+  STRANDED_STATUS,
 } from "../../../src/features/savings/SavingsMoveRow"
 import { savingsEtaCopy } from "../../../src/features/savings/savingsMoveTiming"
-
-const move = (extra: Partial<SavingsMoveRecord> = {}) =>
-  ({ direction: "in", withdrawalLocalId: "w1", startTime: 1, ...extra } as SavingsMoveRecord)
-const burn = (phase: WithdrawalRecord["phase"]) => ({ localId: "w1", phase } as WithdrawalRecord)
+import { moveRecord as move } from "../../support/moves"
 
 const ONE = 10n ** 18n
 const PRICE = (107n * ONE) / 100n
+const quote = (expectedOut: bigint, conversionOut: bigint) =>
+  ({ expectedOut, conversionOut } as MoveQuote)
+const deposit = (amount: bigint): MoveDeposit => ({ inboxIndex: 1n, amount, at: 1 })
+const PENDING: MoveState = { kind: "pending" }
 
 describe("savingsMoveFigure", () => {
   it("credits Savings with what the move put in, fixed from its record, whatever the shares are worth", () => {
     const landed = move({
-      amount: (25n * ONE).toString(),
-      value: (25n * ONE).toString(),
-      net: ((2335n * ONE) / 100n).toString(),
-      deposit: { inboxIndex: "1", amount: (23n * ONE).toString(), claimed: true },
+      amount: 25n * ONE,
+      quote: quote(25n * ONE, (2335n * ONE) / 100n),
+      phase: "claimed",
+      deposit: deposit(23n * ONE),
     })
     expect(savingsMoveFigure(landed, "savings", PRICE)).toBe((2335n * ONE) / 100n)
     expect(savingsMoveFigure(landed, "savings")).toBe((2335n * ONE) / 100n)
-    // Main gave up the quote's DAI value.
+    // Main gave up the move's DAI.
     expect(savingsMoveFigure(landed, "main", PRICE)).toBe(25n * ONE)
-    // Without a record figure (the basis itself is savingsMoveBasis's test), the landed shares at the price.
-    const rebuilt = move({ ...landed, value: undefined, net: undefined })
-    expect(savingsMoveFigure(rebuilt, "savings", PRICE)).toBe((2461n * ONE) / 100n)
-    expect(savingsMoveFigure(rebuilt, "savings")).toBeUndefined()
+    // Without a quote, a replayed move's landed shares at the price.
+    const { quote: _, ...replayed } = landed
+    expect(savingsMoveFigure(replayed, "savings", PRICE)).toBe((2461n * ONE) / 100n)
+    expect(savingsMoveFigure(replayed, "savings")).toBeUndefined()
   })
 
   it("prices a move out: the shares at the vault's price on Savings, the DAI that lands on Main", () => {
-    const out = move({ direction: "out", amount: (10n * ONE).toString() })
+    const out = move({ direction: "out", amount: 10n * ONE, quote: undefined })
     expect(savingsMoveFigure(out, "savings", PRICE)).toBe((107n * ONE) / 10n)
     expect(savingsMoveFigure(out, "savings")).toBeUndefined()
-    const quoted = move({
-      ...out,
-      value: ((1070n * ONE) / 100n).toString(),
-      net: (9n * ONE).toString(),
-    })
+    const quoted = move({ ...out, quote: quote((1070n * ONE) / 100n, 9n * ONE) })
     expect(savingsMoveFigure(quoted, "savings", PRICE)).toBe((107n * ONE) / 10n)
     expect(savingsMoveFigure(quoted, "main", PRICE)).toBe(9n * ONE)
-    const landed = move({
-      ...quoted,
-      deposit: { inboxIndex: "2", amount: ((95n * ONE) / 10n).toString(), claimed: false },
-    })
+    const landed = move({ ...quoted, phase: "depositSeen", deposit: deposit((95n * ONE) / 10n) })
     expect(savingsMoveFigure(landed, "main", PRICE)).toBe((95n * ONE) / 10n)
   })
 
   it("debits Savings for a move out with what the vault paid, once read, whatever the price is now", () => {
     const read = move({
       direction: "out",
-      amount: (10n * ONE).toString(),
-      value: ((1070n * ONE) / 100n).toString(),
-      vault: {
-        txHash: "0x01",
-        assets: ((1060n * ONE) / 100n).toString(),
-        shares: (10n * ONE).toString(),
-      },
+      amount: 10n * ONE,
+      quote: quote((1070n * ONE) / 100n, 10n * ONE),
+      assets: (1060n * ONE) / 100n,
     })
     expect(savingsMoveFigure(read, "savings", PRICE)).toBe((1060n * ONE) / 100n)
-    expect(savingsMoveFigure({ ...read, value: undefined }, "savings", PRICE * 2n)).toBe(
+    expect(savingsMoveFigure({ ...read, quote: undefined }, "savings", PRICE * 2n)).toBe(
       (1060n * ONE) / 100n,
     )
   })
@@ -83,57 +76,41 @@ describe("savingsEtaCopy", () => {
 
 describe("savingsMoveStatus", () => {
   it("ends a move an old version's record left unfinished, as one that needs recovery", () => {
-    const retired = move({ retired: true })
-    expect(savingsMoveStatus(retired, burn("done"))).toBe("Needs recovery")
-    expect(isSavingsMoveSettled(retired, burn("done"))).toBe(true)
-    // A move with no old record, and an old move that finished, keep their states.
-    expect(savingsMoveStatus(move(), burn("done"))).toBe("Moving to Savings")
-    const claimed = move({
-      retired: true,
-      deposit: { inboxIndex: "1", amount: "1", claimed: true },
-    })
-    expect(savingsMoveStatus(claimed, burn("done"))).toBeUndefined()
+    const stranded = move({ phase: "migrated" })
+    expect(savingsMoveStatus(stranded, { kind: "done" })).toBe(STRANDED_STATUS)
+    expect(isMoveSettled(stranded)).toBe(true)
+    // A move here, and an old move that finished, keep their states.
+    expect(savingsMoveStatus(move(), PENDING)).toBe(savingsMoveLabel("in"))
+    expect(savingsMoveStatus(move({ phase: "claimed" }), { kind: "done" })).toBeUndefined()
   })
 
   it("ends a move whose escrow's DAI was recovered, and says where it went", () => {
     const recovered = move({
-      recovered: { to: "0x1234000000000000000000000000000000abcd", txHashes: ["0x01"] },
+      phase: "recovered",
+      recoveredTo: "0x1234000000000000000000000000000000abcd",
     })
-    expect(savingsMoveStatus(recovered, burn("done"))).toBe("Recovered")
-    expect(isSavingsMoveSettled(recovered, burn("done"))).toBe(true)
+    expect(savingsMoveStatus(recovered, { kind: "recovered" })).toBe("Recovered")
+    expect(isMoveSettled(recovered)).toBe(true)
     expect(recoveredTo(recovered)).toBe("Recovered to 0x12340…0abcd")
-    expect(isSavingsMoveSettled(move(), burn("done"))).toBe(false)
+    expect(isMoveSettled(move())).toBe(false)
   })
 
   it("keeps one state from submit until the deposit is claimed, then nothing", () => {
-    for (const phase of [
-      "submitting",
-      "l2_mined",
-      "awaiting_proven",
-      "finalizing_l1",
-      "done",
-    ] as const) {
-      expect(savingsMoveStatus(move(), burn(phase))).toBe("Moving to Savings")
-      expect(savingsMoveStatus(move({ direction: "out" }), burn(phase))).toBe(
-        "Moving to Main Account",
-      )
+    const states: MoveState[] = [
+      { kind: "proving" },
+      { kind: "submitting" },
+      PENDING,
+      { kind: "delayed", reason: "vaultFull", dropped: false },
+    ]
+    for (const state of states) {
+      expect(savingsMoveStatus(move(), state)).toBe(savingsMoveLabel("in"))
+      expect(savingsMoveStatus(move({ direction: "out" }), state)).toBe(savingsMoveLabel("out"))
     }
-    expect(
-      savingsMoveStatus(
-        move({ deposit: { inboxIndex: "1", amount: "2", claimed: false } }),
-        burn("done"),
-      ),
-    ).toBe("Moving to Savings")
-    expect(
-      savingsMoveStatus(
-        move({ deposit: { inboxIndex: "1", amount: "2", claimed: true } }),
-        burn("done"),
-      ),
-    ).toBeUndefined()
+    expect(savingsMoveStatus(move({ phase: "claimed" }), { kind: "done" })).toBeUndefined()
   })
 
-  it("reads a failed burn as failed, and a move with no burn record as still moving", () => {
-    expect(savingsMoveStatus(move(), burn("failed"))).toBe("Failed")
-    expect(savingsMoveStatus(move())).toBe("Moving to Savings")
+  it("reads a failed or dropped burn as failed", () => {
+    expect(savingsMoveStatus(move({ phase: "failed" }), { kind: "failed" })).toBe("Failed")
+    expect(savingsMoveStatus(move({ phase: "dropped" }), { kind: "dropped" })).toBe("Failed")
   })
 })

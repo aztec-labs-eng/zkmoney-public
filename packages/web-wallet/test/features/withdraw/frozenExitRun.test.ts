@@ -3,22 +3,31 @@ import type { Address, Hex } from "viem"
 import { EthAddress } from "@aztec-labs/aztec.js/addresses"
 
 import {
-  createSavingsMoves,
+  createMoveStore,
   memoryBackend,
   openDatabase,
-  type SavingsMoveRecord,
+  type MoveRecord,
+  type MoveStore,
 } from "@obsidion/front-core"
+import { moveRecord } from "../../support/moves"
 
 const { frozenExitSummary, runFrozenExit } = await import(
   "../../../src/features/withdraw/frozenExitRun"
 )
+const { refundedMoves } = await import("../../../src/features/deposit/recovery/refundedMoves")
 
 const USER = `0x${"44".repeat(20)}` as Address
-const moves = createSavingsMoves({ db: openDatabase(memoryBackend()) })
+const NOW = 9_000
+const marks = (moves: MoveStore) => refundedMoves({ moves, page: { now: () => NOW } })
+const moves = marks(createMoveStore(openDatabase(memoryBackend())))
 const PORTAL = `0x${"cc".repeat(20)}`
 
 /** A frozen portal holding `notes`, which refunds whatever a confirmed transaction named. */
-function frozenPortal(notes: Record<string, bigint>, kind: "note" | "frozen-deposit" = "note") {
+function frozenPortal(
+  notes: Record<string, bigint>,
+  kind: "note" | "frozen-deposit" = "note",
+  leaf?: string,
+) {
   const left = new Map(Object.entries(notes))
   let pending: string[] = []
   const runtime = {
@@ -30,7 +39,7 @@ function frozenPortal(notes: Record<string, bigint>, kind: "note" | "frozen-depo
         id,
         amount: String(amount),
         kind,
-        ...(kind === "frozen-deposit" ? { leafIndex: `${id}-leaf` } : {}),
+        ...(kind === "frozen-deposit" ? { leafIndex: leaf ?? `${id}-leaf` } : {}),
       })) as Array<{ id: string; amount: string; kind: typeof kind; leafIndex?: string }>,
     })),
     build: vi.fn(async ({ ids }: { ids: string[] }, recipient: Address, tip: bigint) => {
@@ -64,37 +73,36 @@ describe("the frozen-portal exit", () => {
   ])(
     "marks an old version's Savings move recovered once its refund runs, %s",
     async (_, timeout) => {
-      const move = (id: string, deposit: { inboxIndex: string; amount: string }) =>
-        ({
-          withdrawalLocalId: id,
-          direction: "in",
-          amount: "1",
-          startTime: 1,
-          retired: true,
-          deposit: { ...deposit, claimed: false },
-        } as SavingsMoveRecord)
-      await moves.put(move("a", { inboxIndex: "a-leaf", amount: "1" }))
+      const store = createMoveStore(openDatabase(memoryBackend()))
+      const moves = marks(store)
+      const retired = (id: string, amount: bigint): MoveRecord =>
+        moveRecord({ id, phase: "burned", deposit: { inboxIndex: 5n, amount, at: 1 } })
+      for (const record of [retired("a", 1n), retired("other", 7n)])
+        await store.apply(record.id, { type: "migrated", record, at: 2 })
       // Another rollup's Inbox can hold the same leaf index.
-      await moves.put(move("other", { inboxIndex: "a-leaf", amount: "7" }))
-      const { runtime, channel } = frozenPortal({ a: 1n }, "frozen-deposit")
+      const { runtime, channel } = frozenPortal({ a: 1n }, "frozen-deposit", "5")
       if (timeout) {
         channel.waitForReceipt.mockRejectedValueOnce(new Error("timed out"))
         await expect(runFrozenExit(moves, runtime as never, channel)).rejects.toThrow(/timed out/)
-        expect((await moves.get("a"))?.recovered).toBeUndefined()
+        expect((await store.get("a"))?.phase).toBe("migrated")
       }
       await runFrozenExit(moves, runtime as never, channel)
       const [hash] = await Promise.all(channel.sendTransaction.mock.results.map((r) => r.value))
-      expect((await moves.get("a"))?.recovered).toEqual({ to: USER, txHashes: [hash] })
-      expect((await moves.get("other"))?.recovered).toBeUndefined()
-      await moves.remove("a")
-      await moves.remove("other")
+      expect(await store.get("a")).toMatchObject({
+        phase: "recovered",
+        recoveredTo: USER,
+        l1: { recoveryTx: hash },
+        endTime: NOW,
+      })
+      expect((await store.get("other"))?.phase).toBe("migrated")
     },
   )
 
   it("keeps a run's progress when the Savings moves cannot be read", async () => {
-    const damaged = createSavingsMoves({
-      db: openDatabase(memoryBackend(new Map([["@obsidion/savings/moves", "{"]]))),
-    })
+    // A store saved by a later build does not open.
+    const damaged = marks(
+      createMoveStore(openDatabase(memoryBackend(new Map([["acct/meta/moves", "9"]])))),
+    )
     const { runtime, channel } = frozenPortal({ a: 1n }, "frozen-deposit")
     await expect(runFrozenExit(damaged, runtime as never, channel)).resolves.toMatchObject({
       refunded: 1n,

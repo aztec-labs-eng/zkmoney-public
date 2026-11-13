@@ -339,6 +339,19 @@ describe("AcrossBridgeIn quote checks", () => {
     await expect(quoted(body, CONTRACTS, req, decimals)).resolves.toBeDefined()
   })
 
+  it("names what an origin swap or a native deposit bridges, and Across refunds", async () => {
+    const steps = (bridge: object) => ({ steps: { bridge } })
+    const swapped = (inputAmount?: string) =>
+      quoted({ ...periphery(swapAndBridge()), ...steps({ inputAmount, tokenIn: { symbol: "X" } }) })
+    expect((await swapped("5010000")).bridged).toEqual({ symbol: "USDC", amount: 5_010_000n, decimals: 6 })
+    expect((await swapped("4000000")).bridged?.amount).toBe(5_000_000n)
+    expect((await swapped()).bridged?.amount).toBe(5_000_000n)
+    const wrapped = await quoted({ ...native(), ...steps({ tokenIn: { symbol: "WETH" } }) }, CONTRACTS, nativeRequest, decimalsOf([WETH]))
+    expect(wrapped.bridged).toEqual({ symbol: "WETH", amount: 5_025_000n, decimals: 18 })
+    expect(await quoted(native(), CONTRACTS, nativeRequest)).not.toHaveProperty("bridged")
+    expect(await quoted({ ...quoteFixture, ...steps({ tokenIn: { symbol: "USDC" } }) })).not.toHaveProperty("bridged")
+  })
+
   const approval = (to: string, data: Hex) => ({
     ...quoteFixture,
     approvalTxns: [{ ...quoteFixture.approvalTxns[0], to, data }],

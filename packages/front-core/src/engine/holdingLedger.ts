@@ -1,37 +1,28 @@
 import type { WithdrawalRecord } from "../core/services/bridge/types"
+import type { MoveDeposit, MoveQuote, MoveRecord } from "./moveTransition"
 
 /** The fields of a move record the ledger reads. */
-export interface LedgerMove {
-  id: string
-  holdingId: string
-  direction: "in" | "out"
-  /** What left the source: the base's token moving in, the holding's shares moving out. */
-  amount: bigint
-  phase:
-    | "burning"
-    | "burned"
-    | "released"
-    | "depositSeen"
-    | "claimed"
-    | "failed"
-    | "recovered"
-    | "migrated"
-  /** `conversionOut`: the asset the terms step took in. Absent on a replayed move. */
-  quote?: { conversionOut: bigint }
-  /** The deposit the route made: shares moving in. */
-  deposit?: { amount: bigint }
-  /** The burn's withdrawal record; absent on a replayed move. */
-  withdrawalLocalId?: string
-  startTime: number
-  /** When a claimed move was claimed. */
-  endTime?: number
+export type LedgerMove = Pick<
+  MoveRecord,
+  | "id"
+  | "holdingId"
+  | "direction"
+  | "amount"
+  | "phase"
+  | "assets"
+  | "withdrawalLocalId"
+  | "startTime"
+> & {
+  quote?: Pick<MoveQuote, "conversionOut">
+  deposit?: Pick<MoveDeposit, "amount" | "at">
 }
 
 export type LedgerBurn = Pick<WithdrawalRecord, "phase" | "l2TxHash" | "minedAt" | "startTime">
 
 /**
- * A counted move the ledger cannot price. `noCost`: a move in with no quote, which nothing reads
- * again. `burnUnmined`: a move out whose burn was sent and is not yet seen mined.
+ * A counted move the ledger cannot price. `noCost`: a move in with neither the vault's figure nor a
+ * quote, which nothing reads again. `burnUnmined`: a move out whose burn was sent and is not yet
+ * seen mined.
  */
 export interface LedgerExclusion {
   moveId: string
@@ -55,10 +46,10 @@ const UNMINED: ReadonlySet<WithdrawalRecord["phase"]> = new Set(["submitting", "
 
 /**
  * The cost of the shares `moves` leave, at average cost, replayed in the order the shares moved: a
- * move in when it was claimed, a move out when its burn was mined. A claimed move in adds its
- * shares and the asset it put in; a mined move out takes its shares and their part of the cost. A
- * replayed move out has no burn record: replay finds only mined burns. `burns` holds the moves'
- * burn records by local id.
+ * move in when its deposit landed, a move out when its burn was mined. A claimed move in adds its
+ * shares and the asset it put in: the vault's own figure, else its quote's. A mined move out takes
+ * its shares and their part of the cost. A replayed move out has no burn record: replay finds only
+ * mined burns. A dropped move never burned. `burns` holds the moves' burn records by local id.
  */
 export function holdingLedger(
   moves: readonly LedgerMove[],
@@ -68,16 +59,18 @@ export function holdingLedger(
   const burnOf = (move: LedgerMove) =>
     move.withdrawalLocalId === undefined ? undefined : burns.get(move.withdrawalLocalId)
   const movedAt = (move: LedgerMove) => {
-    if (move.direction === "in") return move.endTime ?? move.startTime
+    if (move.direction === "in") return move.deposit?.at ?? move.startTime
     const burn = burnOf(move)
     return burn?.minedAt ?? burn?.startTime ?? move.startTime
   }
-  for (const move of [...moves].sort((a, b) => movedAt(a) - movedAt(b))) {
+  const counted = moves.filter((move) => move.phase !== "dropped")
+  for (const move of counted.sort((a, b) => movedAt(a) - movedAt(b))) {
     if (move.direction === "in") {
       if (move.phase !== "claimed" || !move.deposit) continue
       ledger.counted += 1
       ledger.shares += move.deposit.amount
-      if (move.quote) ledger.basis += move.quote.conversionOut
+      const cost = move.assets ?? move.quote?.conversionOut
+      if (cost !== undefined) ledger.basis += cost
       else ledger.excluded.push({ moveId: move.id, reason: "noCost" })
       continue
     }

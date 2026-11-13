@@ -21,6 +21,7 @@ import type { Address } from "viem"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { seedDeviceKeys } from "../../support/page"
 import { fakeReads } from "../../support/fakeReads"
+import { holdingsOf } from "../../support/holdings"
 import { openTestSession } from "../../support/session"
 import { savedIdentity, setIdentity } from "../../support/identity"
 import {
@@ -48,7 +49,7 @@ const fakes = vi.hoisted(() => ({
   tokenService: {
     setTeeSigner: vi.fn(),
     sendTokenSponsored: vi.fn(async () => undefined),
-    fetchTokenInformation: vi.fn(async () => ({ symbol: "DAI", decimals: 18 })),
+    fetchTokenInformation: vi.fn(async () => ({ symbol: "OXDAI", decimals: 18 })),
     exitToL1PrivateSponsored: vi.fn(
       async (..._args: unknown[]): Promise<{ txHash: string; blockNumber?: number }> => ({
         txHash: `0x${"01".repeat(32)}`,
@@ -75,6 +76,7 @@ const fakes = vi.hoisted(() => ({
 }))
 
 const DAI = 10n ** 18n
+const L1_DAI = `0x${"d4".repeat(20)}`
 const MAIN_TOKEN = `0x${"2a".repeat(32)}`
 const SAVINGS_TOKEN = `0x${"5a".repeat(32)}`
 const SAVINGS_PORTAL = `0x${"5b".repeat(20)}`
@@ -160,7 +162,10 @@ const READS = fakeReads({
     plainWithdrawalExecutor: `0x${"e8".repeat(20)}`,
     l2Token: `0x${"2a".repeat(32)}`,
     portal: `0x${"b0".repeat(20)}`,
+    token: L1_DAI,
   }),
+  tokenMetadata: async (token: string) =>
+    token === L1_DAI ? { symbol: "DAI", decimals: 18 } : undefined,
   // The funding's executor charges nothing.
   withdrawalExecutorAt: async () => ({
     kind: "plain",
@@ -177,7 +182,10 @@ const READS = fakeReads({
   }),
   txAmountCap: async (portal: string) => (portal === SAVINGS_PORTAL ? 7n * DAI : 2n * DAI),
   teeSignerOfToken: async () => ({}),
-  savingsTuple: () => fakes.savings,
+  holdings: async () => {
+    const savings = (await fakes.savings) as { l2Token: string } | undefined
+    return savings ? holdingsOf(savings) : holdingsOf()
+  },
 })
 
 /** Opens the suite's session over the chain reads, with an estimator that has seen no proofs. */

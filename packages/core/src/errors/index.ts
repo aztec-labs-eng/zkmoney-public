@@ -55,6 +55,8 @@ export type ErrorCode =
   /** The bridge refused an amount under its fees. */
   | "bridge.belowFee"
   | "bridge.quoteFailed"
+  /** A token's USD price could not be read, or its feed is stale. */
+  | "price.unavailable"
   /** A bridge-out under the least burn that pays its escrow; `data.floor` is that burn, atomic. */
   | "withdraw.bridgeBelowFloor"
   | "withdraw.escrowRan"
@@ -139,8 +141,45 @@ export type ErrorCode =
   | "holding.unknownBridge"
   /** A contract a holding feature needs is missing, malformed or zero; `detail` names it. */
   | "holding.unusableAddress"
+  /** The wallet reads no holding of the feature's kind or conversion; `detail` names it. */
+  | "holding.unsupported"
+  /** A vault feature's deployment has no one usable executor feature; `detail` names why. */
+  | "holding.noExecutor"
+  /** The deployment lists more than one executor feature, so a move cannot pick one. */
+  | "holding.duplicateExecutor"
   /** A holding's yearly rate could not be read; its figures show without one. */
   | "holding.rateUnread"
+  /** No port serves the holding's rail, or no holding has the id; `detail` names which. */
+  | "holding.noRoute"
+  /** The move cannot be recovered: its rail or front cannot, or its route already ran. */
+  | "move.noRecovery"
+  /** The wallet does not list the holding, so it takes no move in; its funds can still leave. */
+  | "move.exitOnly"
+  /** A move route's escrow factory or executor serves other portals than its holding's bridges. */
+  | "move.routeMismatch"
+  /** A move's route makes its burn's recovery data longer than a withdrawal is budgeted for. */
+  | "move.routeTooLong"
+  /** L1 failed while a move's route was read or quoted, its simulated run included. */
+  | "move.routeUnread"
+  /**
+   * A move's costs leave nothing of its amount. `data.tips` is the bridge fee plus both tips,
+   * in the burned token.
+   */
+  | "move.tipsExceedAmount"
+  /** The recovery keys do not open the move's escrow. */
+  | "move.recoveryKeysMismatch"
+  /** The move's escrow holds none of the token a recovery returns: unpaid yet, or emptied. */
+  | "move.escrowEmpty"
+  /** The move's escrow holds nothing to run: it has run. */
+  | "move.escrowRan"
+  /** Less would land than the move's review showed; nothing was sent. */
+  | "move.quoteChanged"
+  /** A move out burns more shares than the network takes in one withdrawal. */
+  | "move.overNetworkLimit"
+  /** The source holds less than the move burns. */
+  | "move.overspent"
+  /** The co-signer a burn out of Savings needs could not be reached. */
+  | "move.signerUnreachable"
   | "timeout"
   | "aborted"
   /** A broken programmer assumption; `detail` names it. */

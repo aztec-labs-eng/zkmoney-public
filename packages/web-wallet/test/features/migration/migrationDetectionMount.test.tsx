@@ -26,7 +26,10 @@ const h = vi.hoisted(() => ({
   railPending: undefined as boolean | undefined,
   railReadFailed: false,
   balance: { main: 0n, known: true },
-  savings: { position: null as { value: bigint } | null },
+  savings: {
+    position: null as { value: bigint } | null,
+    others: [] as { position: { value: bigint } | null }[],
+  },
   registrations: [] as { l2Address: string }[],
   demo: false,
   tokenCreate: vi.fn(),
@@ -138,6 +141,16 @@ vi.mock("../../../src/session/session", async () => {
       config: h.config,
       liveProfilePortal: h.live,
       pace: (await import("@obsidion/core/cadence")).createPace(),
+      // Savings held at the portals sUSDS sources move into; one sUSDS is worth 1.2 DAI.
+      chain: {
+        holdings: {
+          read: async () => ({
+            holdings: ["03", "05"].map((byte) => ({ held: { portal: "0x" + byte.repeat(20) } })),
+            rejected: [],
+          }),
+        },
+        holdingPrice: () => ({ read: async () => ({ sharePrice: 12n * 10n ** 17n }) }),
+      },
     },
     notifications: bell,
     milestones,
@@ -158,7 +171,7 @@ vi.mock("../../../src/session/session", async () => {
     registrations,
     // The bug report sheet reads the usage data consent.
     device: core.memoryStore({ analyticsConsent: false }).readonly,
-    savingsHolding: { get: () => h.savings, subscribe: () => () => {} },
+    savingsLine: { get: () => h.savings, subscribe: () => () => {} },
     metadataRecordState: () => ({ read: () => h.recordState() }),
   }
   return {
@@ -176,9 +189,6 @@ vi.mock("@obsidion/front-core", async (importOriginal) => {
     }),
     checkSpentViaPaylinkService: () => async () => new Map(),
     runMetadataMigration: h.runMetadata,
-    readSavingsVault: async () => "0x" + "0e".repeat(20),
-    // One sUSDS is worth 1.2 DAI.
-    readSavingsPrice: async () => ({ sharePrice: 12n * 10n ** 17n }),
   }
 })
 // The DS drags in liquid-glass optics jsdom can't render; these tests are about the sheet's content.
@@ -306,7 +316,9 @@ const { MigrationDetectionMount, PROFILE_REPOINT_POLL_MS, RECORD_CHECK_WAIT_MS }
 const { openMigrationDialog, useUpgradeStatus } = await import(
   "../../../src/features/migration/migrationDialog"
 )
-const { UpgradeKeepOpenBanner } = await import("../../../src/features/migration/UpgradeIntro")
+const { KeepOpenNotice } = await import(
+  "../../../src/features/operations/KeepOpenNotice/KeepOpenNotice"
+)
 const { markOldHoldingsRead, markUpgradeMovesFunds, oldVersionScope, useOldVersionHoldings } =
   await import("../../../src/features/migration/oldVersionBalance")
 const { loadRecords, selectEntry } = await import("@obsidion/front-core")
@@ -348,7 +360,7 @@ beforeEach(() => {
   h.registrations = []
   h.demo = false
   h.keyFor = undefined
-  h.savings = { position: null }
+  h.savings = { position: null, others: [] }
   h.account.obsidionAccount = ACCOUNT
   walletStorage.removeItem("webwallet.upgradeLock/0xabc")
   walletStorage.removeItem("webwallet.version/0xabc")
@@ -1055,7 +1067,7 @@ describe("MigrationDetectionMount — frozen sources", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30_000)
     })
-    expect(h.featureListed).toHaveBeenCalledWith(undefined, [
+    expect(h.featureListed).toHaveBeenCalledWith(expect.anything(), [
       { source: waiting.tuple, destination: current },
     ])
     expect(h.probe.mock.calls.length).toBe(probes)
@@ -1916,11 +1928,13 @@ describe("MigrationDetectionMount — the upgrade's run", () => {
     expect(detectedModal()?.textContent).toContain("Keep zk.money open")
     const shell = document.createElement("div")
     const shellRoot = createRoot(shell)
-    await act(async () => shellRoot.render(<UpgradeKeepOpenBanner />))
+    await act(async () => shellRoot.render(<KeepOpenNotice />))
+    const line = () =>
+      shell.querySelector("[data-testid=keep-open-notice]")?.getAttribute("data-line")
     expect(detectedModal()?.textContent).toContain("Upgrading...")
-    expect(shell.textContent).toContain("Keep zk.money open")
+    expect(line()).toBe("keep")
     await act(async () => finish({ phase: "arriving", plan: "p" }))
-    expect(shell.textContent).toBe("")
+    expect(line()).not.toBe("keep")
     expect(detectedModal()?.textContent).toContain("Moving your funds")
     await act(async () => shellRoot.unmount())
   })
@@ -3150,12 +3164,13 @@ describe("MigrationDetectionMount — the upgrade lock", () => {
       await render()
       expect(upgradeButton()!.disabled).toBe(true)
       expect(h.runMetadata).not.toHaveBeenCalled()
-      h.savings.position = { value: 3n * wad }
+      // 3 in the listed vault, and 2 in one the profile no longer lists.
+      h.savings = { position: { value: 3n * wad }, others: [{ position: { value: 2n * wad } }] }
       await render()
       await startUpgrade()
 
-      // Main: 2 + 20 - 1. Savings: 3 + 60 - (5 shares at 1.2 DAI).
-      expect(atStart).toEqual({ state: "held", main: 21n * wad, savings: 57n * wad })
+      // Main: 2 + 20 - 1. Savings: 3 + 2 + 60 - (5 shares at 1.2 DAI).
+      expect(atStart).toEqual({ state: "held", main: 21n * wad, savings: 59n * wad })
       await act(async () =>
         stored.balances.write(
           oldVersionScope(h.config, savingsSource.tuple.portal, "0xabc"),

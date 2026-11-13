@@ -23,6 +23,7 @@ import {
   type FrozenExitProgress,
   type FrozenExitRuntime,
 } from "../../withdraw/frozenExitRun"
+import { refundedMoves } from "./refundedMoves"
 import type { L1ExitChannel } from "../../sipa/l1ExitChannels"
 import copy from "./sipaRecovery.copy"
 
@@ -113,7 +114,7 @@ export const pickFrozenDeposits = (
 
 /** Refunds `found` to `recipient` in a frozen exit's batches. The submitter pays the gas. */
 export async function refundFrozenDeposit(
-  session: Pick<Session, "page" | "savingsMoves">,
+  session: Pick<Session, "page" | "moves">,
   found: FrozenDeposit,
   recipient: Address,
   channel: L1ExitChannel,
@@ -132,7 +133,7 @@ export async function refundFrozenDeposit(
     // Settings offers any source, so an upgrade may hold it while this runs as a user flow.
     const result = await exit.lockNow(() =>
       runFrozenExit(
-        session.savingsMoves,
+        refundedMoves(session),
         runtime,
         channel,
         (progress) => {

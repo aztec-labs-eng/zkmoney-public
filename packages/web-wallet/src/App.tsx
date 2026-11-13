@@ -97,6 +97,7 @@ import { HomeScreen } from "./ui/screens/HomeScreen/HomeScreen"
 import { NotFoundScreen } from "./ui/screens/NotFoundScreen"
 import { SettingsScreen } from "./ui/screens/SettingsScreen"
 import { LeaveGuardMount } from "./features/operations/LeaveGuardMount"
+import { KeepOpenNotice } from "./features/operations/KeepOpenNotice/KeepOpenNotice"
 import type { DeviceState } from "./platform/storage/deviceKeys"
 import type { PageFacts } from "./session/pageChain"
 
@@ -328,6 +329,7 @@ export function App({ boot, activeTab }: { boot: PageBoot; activeTab: ActiveTabB
           <style>{rainbowkitLightCss}</style>
           <RainbowKitModalLayer>
             <LeaveGuardMount />
+            <KeepOpenNotice />
             {ProfilePanel && (
               <Suspense fallback={null}>
                 <ProfilePanel />

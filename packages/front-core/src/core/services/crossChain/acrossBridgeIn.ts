@@ -49,6 +49,8 @@ interface AcrossSwapApproval {
   quoteExpiryTimestamp: number
   approvalTxns?: AcrossTx[]
   swapTx: AcrossTx
+  /** The bridge leg; shown only, never checked. */
+  steps?: { bridge?: { inputAmount?: string; tokenIn?: { symbol?: string } } }
 }
 
 interface AcrossDepositStatus {
@@ -127,8 +129,9 @@ interface AcrossDeposit {
   spokePool: Address
   depositor: Hex
   recipient: Hex
-  /** The token the call takes; undefined for a native deposit, which takes the wrapped token. */
+  /** The token the call takes; undefined for a native deposit, which takes `wrapped`. */
   inputToken?: Hex
+  wrapped?: Address
   outputToken: Hex
   amount: bigint
   outputAmount: bigint
@@ -183,11 +186,13 @@ function depositOf(call: AcrossTx): AcrossDeposit {
       }
     }
     case "depositNative": {
-      const [spokePool, depositor, recipient, , amount, outputToken, outputAmount, chain] = args
+      const [spokePool, depositor, recipient, wrapped, amount, outputToken, outputAmount, chain] =
+        args
       return {
         spokePool,
         depositor,
         recipient,
+        wrapped,
         outputToken,
         amount,
         outputAmount,
@@ -310,7 +315,8 @@ async function checkMinSwapOut(
 /**
  * Refuses a quote whose calls do anything but bridge the request: approvals of the input token to
  * the bridge call alone, a call to a listed Across contract with the value it takes, and a deposit
- * from the depositor, to the destination, of a quoted amount, that pays the recipient.
+ * from the depositor, to the destination, of a quoted amount, that pays the recipient. Returns the
+ * deposit.
  */
 async function checkQuote(
   request: BridgeInQuoteRequest,
@@ -318,7 +324,7 @@ async function checkQuote(
   contracts: AcrossContracts,
   landing: bigint,
   decimals: TokenDecimals,
-) {
+): Promise<AcrossDeposit> {
   const { swapTx } = body
   const listed = contracts.origin.get(request.originChainId) ?? []
   const known = (address: Address) => listed.some((c) => isAddressEqual(c, address))
@@ -361,6 +367,40 @@ async function checkQuote(
   checkDelivery(deposit, request, contracts.multicallHandler, landing)
   if (deposit.swap)
     await checkMinSwapOut(deposit.swap, deposit.outputAmount, request, contracts, decimals)
+  return deposit
+}
+
+/**
+ * What a checked deposit bridges, and so what Across refunds, when it is not the request's input:
+ * an origin swap's output, at least its minimum, or a native deposit's wrapped token. Named as the
+ * profile lists it, else as Across does; undefined when neither names it.
+ */
+async function bridgedOf(
+  deposit: AcrossDeposit,
+  body: AcrossSwapApproval,
+  request: BridgeInQuoteRequest,
+  contracts: AcrossContracts,
+  decimals: TokenDecimals,
+): Promise<BridgeInQuote["bridged"]> {
+  const token = deposit.swap?.bridged ?? deposit.wrapped
+  if (!token) return undefined
+  const listed = contracts.bridged.get(request.originChainId) ?? new Map<string, Address>()
+  const symbol =
+    [...listed].find(([, address]) => isAddressEqual(address, token))?.[0] ??
+    body.steps?.bridge?.tokenIn?.symbol
+  if (!symbol) return undefined
+  let amount = deposit.amount
+  if (deposit.swap) {
+    const expected = body.steps?.bridge?.inputAmount ?? ""
+    const swapped = /^\d+$/.test(expected) ? BigInt(expected) : 0n
+    amount = swapped > deposit.swap.minOut ? swapped : deposit.swap.minOut
+  }
+  const places = await decimals(request.originChainId, token).catch((e: unknown) => {
+    throw new WalletError("bridge.quoteFailed", "Across quote's bridged decimals did not read", {
+      cause: e,
+    })
+  })
+  return { symbol, amount, decimals: places }
 }
 
 /** Across's error body. Its amounts are only in `message`, which is never parsed. */
@@ -401,7 +441,8 @@ export class AcrossBridgeIn implements BridgeInProvider, BridgeInDepositLookup {
         `Across quoted ${outputAmount}, short of the ${request.outputAmount} asked for`,
       )
     }
-    await checkQuote(request, body, this.contracts, outputAmount, this.decimals)
+    const deposit = await checkQuote(request, body, this.contracts, outputAmount, this.decimals)
+    const bridged = await bridgedOf(deposit, body, request, this.contracts, this.decimals)
     const pull = BigInt(body.maxInputAmount ?? body.inputAmount)
     // Across asks for an unlimited allowance; this grants only what the bridge call may pull.
     const approvals = (body.approvalTxns ?? []).map((approval) => ({
@@ -422,6 +463,7 @@ export class AcrossBridgeIn implements BridgeInProvider, BridgeInDepositLookup {
       expectedOutputAmount: BigInt(body.expectedOutputAmount),
       fee: BigInt(fee.amount),
       ...(feeUsd !== undefined && { feeUsd }),
+      ...(bridged && { bridged }),
       fillSeconds: body.expectedFillTime,
       // Some routes come back with 0.
       ...(body.quoteExpiryTimestamp > 0 && { expiresAt: body.quoteExpiryTimestamp * 1000 }),

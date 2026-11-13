@@ -20,10 +20,19 @@ import { BackupPasskeyHost } from "../features/backupPasskey/BackupPasskeyHost/B
 import { panelCopy } from "../features/backupPasskey/backupPasskeyCopy"
 import type { EntryAction } from "../features/backupPasskey/backupPasskeyEntry"
 import { useBackupRotation } from "../features/backupPasskey/backupRotations"
-import type { BackupKey, KeysRead } from "../features/backupPasskey/backupScreen"
+import {
+  pendingRecord,
+  selectSheetClose,
+  type BackupKey,
+  type KeysRead,
+} from "../features/backupPasskey/backupScreen"
+import { useRotationDrive } from "../features/backupPasskey/rotationDrive"
+import { LeaveSheet } from "../features/backupPasskey/screens/LeaveSheet/LeaveSheet"
 import { hostSheetShows } from "../features/backupPasskey/screens/KeysScreen/keysSheet"
 import { Modal } from "./Modal"
 import { MAX_PASSKEY_NAME, savePasskeyName } from "./passkeyNames"
+import copy from "./PasskeysModal.copy"
+import { fmt } from "../lib/fmt"
 import { useSession } from "../session/session"
 
 type KeysState = QueryState<AccountKeys | "unverified">
@@ -199,67 +208,80 @@ export function PasskeysModal({
   // backup's own sheet says the keys did not read.
   const unreadLine = keys === "unreadable" && !backupPasskeySettingsEnabled
   const own = list || keys === undefined || unreadLine
+  const record = pendingRecord(read, saved)
+  const drive = useRotationDrive(record?.owner ?? "")
+  const closing = selectSheetClose(record, drive)
+  const [leaving, setLeaving] = useState(false)
+  if (leaving && closing !== "asks") setLeaving(false)
 
   return (
-    <Modal variant="create" label="Passkeys" onClose={onClose} className="ww-feedback">
-      {own && (
-        <div className="ww-passkeys__head">
-          <span className="ww-deposit__connect-icon">
-            <Icon name="key" size={24} color="#fff" />
-          </span>
-          <GradientText gradient="title" size={24} weight={700} style={{ textAlign: "center" }}>
-            Passkeys
-          </GradientText>
+    <>
+      <Modal
+        variant="create"
+        label={copy.title}
+        onClose={closing === "asks" ? () => setLeaving(true) : onClose}
+        closeOnBackdrop={closing === "closes"}
+        className="ww-feedback"
+      >
+        {own && (
+          <div className="ww-passkeys__head">
+            <span className="ww-deposit__connect-icon">
+              <Icon name="key" size={24} color="#fff" />
+            </span>
+            <GradientText gradient="title" size={24} weight={700} style={{ textAlign: "center" }}>
+              {copy.title}
+            </GradientText>
+          </div>
+        )}
+        {/* A sheet of the host's scrolls with the modal, not in a box of its own. */}
+        <div className={own ? "ww-addresses ww-passkeys" : "ww-passkeys__host"}>
+          {keys === undefined && <p className="ww-sheet__note">{copy.loading}</p>}
+          {unreadLine && (
+            <p className="ww-sheet__note">
+              {copy.unreadable}{" "}
+              <button
+                type="button"
+                className="zkm-btn-reset ww-deposit__link"
+                onClick={readAgain}
+                data-testid="keys-retry"
+              >
+                {panelCopy.tryAgain}
+              </button>
+            </p>
+          )}
+          {keys === "unverified" && list && <p className="ww-sheet__note">{copy.unregistered}</p>}
+          {typeof keys === "object" && list && (
+            <section className="ww-contacts__section">
+              <span className="ww-contacts__label">{copy.keysOnAccount}</span>
+              <div className="ww-contacts__group">
+                {keys.rows.map((row) => (
+                  <KeyRow
+                    key={row.pubkeyHex}
+                    row={row}
+                    name={names[row.pubkeyHex]}
+                    onRename={(name) => savePasskeyName(database, row.pubkeyHex, name)}
+                  />
+                ))}
+              </div>
+              {keys.authKeyCount > keys.rows.length && (
+                <p className="ww-sheet__note">
+                  {fmt(copy.moreKeys, { count: keys.authKeyCount, shown: keys.rows.length })}
+                </p>
+              )}
+            </section>
+          )}
+          <BackupPasskeyHost
+            keys={read}
+            {...(typeof keys === "object" && { owner: keys.owner })}
+            {...(refreshing && { refreshing })}
+            {...(onAction && { onAction })}
+            onReadKeys={readAgain}
+            onClose={onClose}
+          />
         </div>
-      )}
-      {/* A sheet of the host's scrolls with the modal, not in a box of its own. */}
-      <div className={own ? "ww-addresses ww-passkeys" : "ww-passkeys__host"}>
-        {keys === undefined && <p className="ww-sheet__note">Loading…</p>}
-        {unreadLine && (
-          <p className="ww-sheet__note">
-            Couldn't read the account's keys.{" "}
-            <button
-              type="button"
-              className="zkm-btn-reset ww-deposit__link"
-              onClick={readAgain}
-              data-testid="keys-retry"
-            >
-              {panelCopy.tryAgain}
-            </button>
-          </p>
-        )}
-        {keys === "unverified" && list && (
-          <p className="ww-sheet__note">Keys appear once the account is registered.</p>
-        )}
-        {typeof keys === "object" && list && (
-          <section className="ww-contacts__section">
-            <span className="ww-contacts__label">Keys on the account</span>
-            <div className="ww-contacts__group">
-              {keys.rows.map((row) => (
-                <KeyRow
-                  key={row.pubkeyHex}
-                  row={row}
-                  name={names[row.pubkeyHex]}
-                  onRename={(name) => savePasskeyName(database, row.pubkeyHex, name)}
-                />
-              ))}
-            </div>
-            {keys.authKeyCount > keys.rows.length && (
-              <p className="ww-sheet__note">
-                The account has {keys.authKeyCount} keys; this version shows {keys.rows.length}.
-              </p>
-            )}
-          </section>
-        )}
-        <BackupPasskeyHost
-          keys={read}
-          {...(typeof keys === "object" && { owner: keys.owner })}
-          {...(refreshing && { refreshing })}
-          {...(onAction && { onAction })}
-          onReadKeys={readAgain}
-          onClose={onClose}
-        />
-      </div>
-    </Modal>
+      </Modal>
+      {/* A sibling: nested, it would be copied open into this sheet's closing animation. */}
+      {leaving && <LeaveSheet kind="leave" onStay={() => setLeaving(false)} onConfirm={onClose} />}
+    </>
   )
 }

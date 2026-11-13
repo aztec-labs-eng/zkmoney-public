@@ -4,7 +4,7 @@ import { CornerButton } from "../../../ui/flow/CornerButton/CornerButton"
 import { Modal } from "../../../ui/Modal"
 import { useSession } from "../../../session/session"
 import { BridgeInStatus, bridgeInStatusSheet } from "../BridgeInStatus/BridgeInStatus"
-import { profileBridge } from "../../../session/walletChains"
+import { acrossBridge } from "../../../session/walletChains"
 import { useDepositTokens } from "../../sipa/loadDepositFacts"
 import copy from "../sendFromWallet.copy"
 
@@ -15,9 +15,8 @@ export function BridgeInDetailModal({ id, onClose }: { id: string; onClose: () =
   const record = useStore(bridgeIns.list, ({ records }) => records.find((r) => r.id === id))
   const coins = useDepositTokens()?.offered ?? []
   if (!record) return null
-  const { l1Chain } = page.config
   const { pays } = record
-  const chain = profileBridge(page.config)?.chains.find((c) => c.chainId === record.originChainId)
+  const chain = acrossBridge(page.config)?.chains.find((c) => c.chainId === record.originChainId)
   return (
     <Modal
       variant="bare"
@@ -32,7 +31,6 @@ export function BridgeInDetailModal({ id, onClose }: { id: string; onClose: () =
         record={record}
         coins={coins}
         chainName={chain?.name ?? ""}
-        l1ChainName={l1Chain.name}
         payee={pays?.payee}
         onTryAgain={() => {
           onClose()

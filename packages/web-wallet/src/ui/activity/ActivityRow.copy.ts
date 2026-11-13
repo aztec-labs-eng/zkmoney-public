@@ -13,6 +13,8 @@ export default {
     backupPasskeyAdded: "Backup passkey added",
     // Proposed: a backup passkey funding's title until its add runs.
     backupPasskeyFunding: "Backup passkey funding",
+    // Proposed: a backup passkey add's fee row until its add runs.
+    backupPasskeyFee: "Backup passkey fee",
     bridgeIn: "Bridge in",
   },
   badge: {
@@ -36,8 +38,15 @@ export default {
     unpaid: "Unpaid",
     paymentDetected: "Payment detected",
     releasing: "Releasing",
+    // Proposed: a backup passkey add's fee row until its add runs.
+    inProgress: "In progress",
   },
   stuck: "Taking longer than usual",
+  // Proposed: a backup passkey fee row's line, in place of its time: the hold sent on top.
+  hold: {
+    held: "{amount} held",
+    returned: "{amount} returned",
+  },
   amount: {
     any: "Any amount",
     detecting: "Detecting amount…",
@@ -63,6 +72,10 @@ export default {
   shareText: "I sent you {amount} on zk.money",
   aria: {
     withdrawal: "Open withdrawal details",
+    // Proposed.
+    backupPasskey: "Open backup passkey details",
+    // Proposed: the row opens the add's progress while it runs.
+    backupProgress: "Open backup passkey progress",
     upgrade: "Open upgrade details",
     deposit: "Open deposit details",
     request: "Open request details",

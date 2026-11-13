@@ -70,6 +70,8 @@ export const STATUS_STYLE = {
   "Reclaiming": "pending",
   // A backup passkey's funding on its way back from its deposit address.
   "Recovering": "pending",
+  // A backup passkey add's fee, until the add runs.
+  "In progress": "pending",
   // Money has arrived but is not credited yet — the same in-flight orange a deposit row wears,
   // since that is the deposit this row stands in for.
   "Payment detected": "pending",

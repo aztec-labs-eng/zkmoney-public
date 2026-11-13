@@ -6,6 +6,7 @@ import {
   type NotificationEntry,
   type NotificationSources,
   type NotificationState,
+  type OperationRecord,
   type SipaDeposit,
   type Transaction,
   type UpgradeBatchItem,
@@ -54,6 +55,18 @@ describe("freshToasts", () => {
     expect(freshToasts([entry({})], new Set([toastKey(entry({}))]), 0)).toEqual([])
     expect(freshToasts([entry({ read: true })], new Set(), 0)).toEqual([])
     expect(freshToasts([entry({})], new Set(), 11)).toEqual([])
+  })
+
+  it("leaves the user's own send to the keep-open notice, but toasts its failure and other flows", () => {
+    const own = (flow: string, severity: NotificationEntry["severity"]) =>
+      entry({
+        id: `op:${flow}`,
+        about: { kind: "operation", record: { operationId: flow, flow } as OperationRecord },
+        severity,
+      })
+    expect(freshToasts([own("send", "success")], new Set(), 0)).toEqual([])
+    expect(freshToasts([own("send", "error")], new Set(), 0)).toHaveLength(1)
+    expect(freshToasts([own("paylink-create", "success")], new Set(), 0)).toHaveLength(1)
   })
 
   it("toasts once a live row from before the bell that settles while it watches", () => {

@@ -21,7 +21,7 @@ import { ShellRoot } from "./AppShell/AppShell"
 import { IdleBell } from "./NotificationsBell/NotificationsBell"
 import type { PreBoot } from "../session/preBoot"
 import { useStore } from "@obsidion/front-core"
-import type { LandingRate } from "../features/savings/savingsGateway"
+import type { LandingRate } from "../features/savings/landingRate"
 import { useFirstScreenShown, type BootPage } from "./PxeBoot"
 
 type PreBootPage = { kind: "landing" } | { kind: "link"; link: PaymentLink }

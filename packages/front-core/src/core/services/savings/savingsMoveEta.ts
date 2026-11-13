@@ -4,7 +4,7 @@
  * its deposit reaching L2 and the claim (the deposit arrival chain, with the escrow run as the
  * sweep). Time remaining where a leg's start is on the record, the typical duration where it is not.
  */
-import type { SavingsMove } from "../../../oxide/savingsMoves"
+import { isMoveSettled, type MoveRecord } from "../../../engine/moveTransition"
 import type { WithdrawalRecord } from "../bridge/types"
 import { SWEEP_PICKUP_SECONDS, depositArrivalSeconds } from "../deposits/depositArrival"
 
@@ -25,12 +25,12 @@ const remainingOr = (seconds: number): SavingsMoveEta | undefined =>
   seconds > 0 ? { seconds, remaining: true } : undefined
 
 export function savingsMoveEta(
-  move: Pick<SavingsMove, "deposit" | "recovered"> & { startTime: number },
+  move: Pick<MoveRecord, "phase" | "deposit" | "startTime">,
   burn: Pick<WithdrawalRecord, "phase" | "startTime" | "phaseEnteredAt" | "endTime"> | undefined,
   timing: SavingsMoveTiming,
   nowMs: number,
 ): SavingsMoveEta | undefined {
-  if (move.deposit?.claimed || move.recovered || burn?.phase === "failed") return undefined
+  if (isMoveSettled(move) || burn?.phase === "failed") return undefined
   const now = nowMs / 1000
   const arrival = (fromSeconds: number, sweepSeconds?: number) =>
     depositArrivalSeconds({ nowSeconds: fromSeconds, ...timing.grid, sweepSeconds })

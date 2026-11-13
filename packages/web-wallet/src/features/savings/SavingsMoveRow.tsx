@@ -1,44 +1,60 @@
 import { ActivityListRow, type StatusLabel } from "@obsidion/web-ds"
 import {
-  isStrandedSavingsMove,
-  savingsMoveBasis,
   savingsMoveLabel,
   savingsValue,
+  type MoveRecord,
+  type MoveState,
   type SavingsMoveEta,
-  type SavingsMoveRecord,
-  type WithdrawalRecord,
 } from "@obsidion/front-core"
 import { rowTimestamp, shortL1Addr, usdAtomicFloor } from "../../ui/format"
 import type { SavingsAccount } from "./AccountSwitcher"
 import { savingsEtaCopy } from "./savingsMoveTiming"
 
-const LABEL: Record<SavingsAccount, Record<SavingsMoveRecord["direction"], string>> = {
+const LABEL: Record<SavingsAccount, Record<MoveRecord["direction"], string>> = {
   main: { in: "To Savings", out: "From Savings" },
   savings: { in: "From Main Account", out: "To Main Account" },
 }
 
 /** The account a move's deposit lands in. */
-export const savingsMoveDestination = (move: SavingsMoveRecord): SavingsAccount =>
+export const savingsMoveDestination = (move: Pick<MoveRecord, "direction">): SavingsAccount =>
   move.direction === "in" ? "savings" : "main"
+
+/** A move an old version's record shows unfinished when that version closed. It can't finish here. */
+export const isStrandedMove = (move: Pick<MoveRecord, "phase">): boolean =>
+  move.phase === "migrated"
+
+/** A stranded move's status. */
+export const STRANDED_STATUS: StatusLabel = "Needs recovery"
 
 /**
  * One state from submit until the destination claims the deposit, like a deposit's row; nothing
  * once claimed. A move whose escrow's DAI was recovered ends there.
  */
 export function savingsMoveStatus(
-  move: SavingsMoveRecord,
-  burn?: WithdrawalRecord,
+  move: Pick<MoveRecord, "phase" | "direction">,
+  state: MoveState,
 ): StatusLabel | undefined {
-  if (burn?.phase === "failed") return "Failed"
-  if (move.recovered) return "Recovered"
-  if (move.deposit?.claimed) return undefined
-  if (isStrandedSavingsMove(move, burn)) return "Needs recovery"
-  return savingsMoveLabel(move.direction)
+  if (isStrandedMove(move)) return STRANDED_STATUS
+  switch (state.kind) {
+    case "failed":
+    case "dropped":
+      return "Failed"
+    case "recovered":
+      return "Recovered"
+    case "done":
+      return undefined
+    default:
+      return savingsMoveLabel(move.direction)
+  }
 }
 
 /** Where a recovered move's funds went, for its row and its sheet. */
-export const recoveredTo = (move: SavingsMoveRecord): string | undefined =>
-  move.recovered && `Recovered to ${shortL1Addr(move.recovered.to)}`
+export const recoveredTo = (move: Pick<MoveRecord, "recoveredTo">): string | undefined =>
+  move.recoveredTo && `Recovered to ${shortL1Addr(move.recoveredTo)}`
+
+/** The DAI value of what the move burned: its amount moving in, the quoted redemption moving out. */
+export const moveValue = (move: Pick<MoveRecord, "direction" | "amount" | "quote">) =>
+  move.direction === "in" ? move.amount : move.quote?.expectedOut
 
 /**
  * The dollars a row shows for a move, as `perspective` sees it. A credit into Savings is what the
@@ -46,27 +62,26 @@ export const recoveredTo = (move: SavingsMoveRecord): string | undefined =>
  * shown as a count, and a figure with no price or record yet is unknown.
  */
 export function savingsMoveFigure(
-  move: SavingsMoveRecord,
+  move: Pick<MoveRecord, "direction" | "amount" | "quote" | "deposit" | "assets">,
   perspective: SavingsAccount,
   sharePrice?: bigint,
-  burn?: WithdrawalRecord,
 ): bigint | undefined {
   const into = move.direction === "in"
   const credit = into === (perspective === "savings")
-  const priced = (shares: string) =>
-    sharePrice === undefined ? undefined : savingsValue(BigInt(shares), sharePrice)
-  const quoted = (figure?: string) => (figure === undefined ? undefined : BigInt(figure))
+  const priced = (shares: bigint) =>
+    sharePrice === undefined ? undefined : savingsValue(shares, sharePrice)
   if (into && credit) {
     return (
-      savingsMoveBasis(move, burn) ??
-      (move.deposit ? priced(move.deposit.amount) : BigInt(move.amount))
+      move.assets ??
+      move.quote?.conversionOut ??
+      (move.deposit ? priced(move.deposit.amount) : move.amount)
     )
   }
-  if (credit && move.deposit) return BigInt(move.deposit.amount)
+  if (credit && move.deposit) return move.deposit.amount
   // A move out's debit: the USDS the vault paid for its shares, once read.
-  if (!into && move.vault) return BigInt(move.vault.assets)
-  const fallback = into ? BigInt(move.amount) : priced(move.amount)
-  return quoted(credit ? move.net : move.value) ?? fallback
+  if (!into && move.assets !== undefined) return move.assets
+  const fallback = into ? move.amount : priced(move.amount)
+  return (credit ? move.quote?.conversionOut : moveValue(move)) ?? fallback
 }
 
 /**
@@ -75,15 +90,14 @@ export function savingsMoveFigure(
  */
 export function SavingsMoveRow({
   move,
-  burn,
+  state,
   perspective,
   sharePrice,
   eta,
   onOpen,
 }: {
-  move: SavingsMoveRecord
-  /** The burn's record, for its leg and a failure. */
-  burn?: WithdrawalRecord
+  move: MoveRecord
+  state: MoveState
   perspective: SavingsAccount
   /** The vault's share price, once the position has been read. */
   sharePrice?: bigint
@@ -92,8 +106,8 @@ export function SavingsMoveRow({
   onOpen: () => void
 }) {
   const credit = (move.direction === "in") === (perspective === "savings")
-  const figure = savingsMoveFigure(move, perspective, sharePrice, burn)
-  const status = savingsMoveStatus(move, burn)
+  const figure = savingsMoveFigure(move, perspective, sharePrice)
+  const status = savingsMoveStatus(move, state)
   // While the move is in flight the pill names the route, so the subline carries the time left.
   const note =
     recoveredTo(move) ??

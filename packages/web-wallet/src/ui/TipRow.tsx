@@ -11,12 +11,15 @@ export function TipRow({
   label,
   testId,
   className,
+  labelClassName = "ww-tiprow__label",
   children,
 }: {
   mark: ReactNode
   label: string
   testId?: string
   className?: string
+  /** The label's own look, e.g. a sheet link's. */
+  labelClassName?: string
   children: ReactNode
 }) {
   const id = useId()
@@ -59,7 +62,7 @@ export function TipRow({
       <button
         ref={button}
         type="button"
-        className="zkm-btn-reset ww-tiprow__label"
+        className={`zkm-btn-reset ${labelClassName}`}
         aria-describedby={id}
         aria-expanded={open}
         onClick={() => setOpen((was) => !was)}

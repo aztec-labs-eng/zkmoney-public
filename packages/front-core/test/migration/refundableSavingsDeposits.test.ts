@@ -6,10 +6,7 @@ import { computeRecipientCommitment } from "@oxide/oxide-lib/recipient_commitmen
 import { deriveSkyEscrowSalts } from "../../src/oxide/oxideAccountKeys"
 import { refundableSavingsDeposits } from "../../src/oxide/refundableSavingsDeposits"
 
-const h = vi.hoisted(() => ({ portals: vi.fn(), logs: vi.fn() }))
-vi.mock("../../src/core/services/savings/savingsDeployment", () => ({
-  readSkyFactoryPortals: h.portals,
-}))
+const h = vi.hoisted(() => ({ logs: vi.fn() }))
 vi.mock("@obsidion/sdk", () => ({ chunkedContractEvents: h.logs }))
 const dai = `0x${"11".repeat(20)}` as const
 const sky = `0x${"22".repeat(20)}` as const
@@ -25,8 +22,15 @@ const event = {
   blockNumber: 1928n,
   removed: false,
 }
+let factoryReads = 0
 const input = () => ({
-  publicClient: {} as never,
+  // The factory's portal immutables.
+  publicClient: {
+    readContract: async ({ functionName }: { functionName: string }) => {
+      factoryReads++
+      return functionName === "DAI_PORTAL" ? dai : sky
+    },
+  } as never,
   portal: sky,
   recipient: owner.toString(),
   masterSecret,
@@ -37,7 +41,7 @@ const input = () => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
-  h.portals.mockResolvedValue({ daiPortal: dai, sUsdsPortal: sky })
+  factoryReads = 0
   h.logs.mockResolvedValue([event])
 })
 describe("refundable Savings deposits", () => {
@@ -85,7 +89,8 @@ describe("refundable Savings deposits", () => {
   it("does not count a duplicate memo or a removed log twice", async () => {
     h.logs.mockResolvedValue([event, { ...event, removed: true }])
     expect(await refundableSavingsDeposits({ ...input(), moves: [move, move] })).toHaveLength(1)
-    expect(h.portals).toHaveBeenCalledTimes(1)
+    // One factory's two portals, read once for both moves.
+    expect(factoryReads).toBe(2)
   })
   it("propagates a failed deposit scan instead of reporting no funds", async () => {
     h.logs.mockRejectedValue(new Error("RPC unavailable"))

@@ -49,7 +49,14 @@ describe("the add entry's conditions", () => {
       { id: "migration", action: "migration" },
     ])
     expect(open({ balance: DAI })).toEqual([
-      { id: "balance", need: 2n * DAI, have: DAI, done: false, action: "deposit" },
+      {
+        id: "balance",
+        need: 2n * DAI,
+        hold: (14n * DAI) / 10n,
+        have: DAI,
+        done: false,
+        action: "deposit",
+      },
     ])
     expect(open({ chunk: { kind: "short", chunk: 3n * DAI } })).toEqual([
       { id: "pieces", send: 3n * DAI, done: false },

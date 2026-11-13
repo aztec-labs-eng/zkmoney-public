@@ -11,6 +11,7 @@ import {
 import type { FinalizationRequestBroadcastParams } from "@oxide/oxide-client/withdrawal_finalization_request.js"
 import type { BroadcastL1Operation } from "@oxide/oxide-lib/l1_operation_calldata.js"
 import { encodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal_executor.js"
+import { decodeMultiStepPayload } from "@oxide/l1-contracts/multi_step/index.js"
 import {
   BroadcasterContract,
   type ContractService,
@@ -18,11 +19,17 @@ import {
   getBroadcasterArtifact,
 } from "@obsidion/contracts"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
+import { WalletError } from "@obsidion/core/errors"
+import type { MultiStepExecutor } from "@obsidion/core/oxide"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { Address, PublicClient } from "viem"
 import type { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
-import type { PlainWithdrawalContext, WithdrawOperation } from "../../oxide/withdrawal/plainWithdrawal.js"
+import type {
+  PlainWithdrawalContext,
+  WithdrawOperation,
+} from "../../oxide/withdrawal/plainWithdrawal.js"
 import { swapOutputForRoute, type SwapOnWithdrawPlan } from "../../oxide/escrow/swapOnWithdraw.js"
+import { assertRouteOnExecutor } from "../../oxide/holdings/holdingDeployment.js"
 import { encodeWithdrawalMemo, memoDerivesEscrow, type EscrowMemo } from "./withdrawalMemo.js"
 
 export type WithdrawalDeployment = Pick<
@@ -59,23 +66,32 @@ export interface WithdrawalOptions {
     executor?: Address
     withdrawalFee: bigint
   }
+  /**
+   * A vault move `buildMove` built: the burn pays `operation`'s executor, the deployment's
+   * `MultiStepExecutor`, which the burn's recipient names, under a route through `executor`'s
+   * adapters. Its memo names the move. Nothing rides the burn tx.
+   */
+  multiStep?: { operation: WithdrawOperation; executor: MultiStepExecutor }
 }
 
 /** Where a burn settles and what rides its tx; the burn itself is a direct withdraw or a nested one. */
 export interface PlannedPayout {
+  /** The executor the burn pays. */
+  executor: EthAddress
+  /** The executor whose plain payload the batch checks, and its fee. */
   plainWithdrawal: PlainWithdrawalContext
   /** The user payload the burn commits to: the recipient it pays and the relayer tip. */
   userPayload: Buffer
   /** Where the burn tx broadcasts the finalization request, so a relayer can release the burn. */
   finalizationRequest: FinalizationRequestBroadcastParams
-  /** The burn's recovery memo: what its escrow address commits to, so a rescan rebuilds the escrow. */
+  /** The burn's recovery memo: its escrow's args or its vault move, so a rescan rebuilds it. */
   memo: Buffer
   /** The L1 operations that run the burn's escrow, broadcast in the burn tx. */
   broadcasts: ContractFunctionInteraction[]
 }
 
 export interface PlannedWithdrawal
-  extends Omit<PlannedPayout, "userPayload" | "finalizationRequest" | "memo"> {
+  extends Omit<PlannedPayout, "executor" | "userPayload" | "finalizationRequest" | "memo"> {
   operation: WithdrawOperation
 }
 
@@ -95,7 +111,8 @@ export interface PlannedBurn {
 /**
  * Plan a burn of `amount` from `from` to `recipient`. The burn settles into the deployment's plain
  * withdrawal executor, and the same tx broadcasts its finalization request. A swap or escrow
- * withdrawal pays the escrow `recipient` names and broadcasts the escrow's run too.
+ * withdrawal pays the escrow `recipient` names and broadcasts the escrow's run too. A vault move
+ * pays the `MultiStepExecutor` `recipient` names, and is refused beside an escrow or a swap.
  */
 export async function planPayout(
   wallet: ObsidionWallet,
@@ -111,6 +128,7 @@ export async function planPayout(
   if (!tuple.plainWithdrawalExecutor || !tuple.l2Broadcaster) {
     throw new Error("The withdrawal deployment has no plain withdrawal executor or broadcaster")
   }
+  if (options.multiStep) assertVaultMove(burn, options, options.multiStep)
   const executor = EthAddress.fromString(options.escrow?.executor ?? tuple.plainWithdrawalExecutor)
   const dai = EthAddress.fromString(tuple.token)
   const [broadcaster, fee] = await Promise.all([
@@ -121,6 +139,18 @@ export async function planPayout(
   const portal = EthAddress.fromString(tuple.portal)
   const finalizationRequest = { broadcaster, portal, payoutToken: dai }
   const plainWithdrawal = { executor, fee }
+
+  if (options.multiStep) {
+    const { operation } = options.multiStep
+    return {
+      executor: operation.executor,
+      plainWithdrawal,
+      userPayload: operation.userPayload,
+      finalizationRequest,
+      memo: operation.recoveryMemo ?? Buffer.alloc(0),
+      broadcasts: [],
+    }
+  }
 
   if (options.escrow) {
     const { escrow, userPayload, l1Operation: run, broadcaster: runner, memo } = options.escrow
@@ -135,6 +165,7 @@ export async function planPayout(
         ? broadcaster
         : await registerBroadcaster(wallet, service, runner)
     return {
+      executor,
       plainWithdrawal,
       userPayload,
       finalizationRequest,
@@ -145,6 +176,7 @@ export async function planPayout(
 
   if (!options.swap) {
     return {
+      executor,
       plainWithdrawal,
       userPayload: plainUserPayload(burn.recipient),
       finalizationRequest,
@@ -183,6 +215,7 @@ export async function planPayout(
   // A factory with another `Args` layout could never deploy the escrow, and the burned DAI would be lost.
   await assertSwapEscrowDeployable(options.l1, built)
   return {
+    executor,
     plainWithdrawal,
     userPayload: built.operation.userPayload,
     finalizationRequest,
@@ -210,7 +243,7 @@ export function nestedWithdrawal(
   return {
     kind: "withdraw",
     from: burn.from,
-    executor: payout.plainWithdrawal.executor,
+    executor: payout.executor,
     userPayload: payout.userPayload,
     amount: burn.amount,
     proverTip: burn.proverTip,
@@ -227,18 +260,13 @@ export async function planWithdrawal(
   burn: PlannedBurn & { authwitNonce?: Fr },
   options: WithdrawalOptions,
 ): Promise<PlannedWithdrawal> {
-  const { plainWithdrawal, userPayload, finalizationRequest, memo, broadcasts } = await planPayout(
-    wallet,
-    service,
-    token,
-    burn,
-    options,
-  )
+  const { executor, plainWithdrawal, userPayload, finalizationRequest, memo, broadcasts } =
+    await planPayout(wallet, service, token, burn, options)
   return {
     operation: {
       kind: "withdraw",
       from: burn.from,
-      executor: plainWithdrawal.executor,
+      executor,
       userPayload,
       amount: burn.amount,
       proverTip: burn.proverTip ?? 0n,
@@ -249,6 +277,33 @@ export async function planWithdrawal(
     plainWithdrawal,
     broadcasts,
   }
+}
+
+/** Throws unless `move` is this burn's, alone, over a route through its executor's adapters. */
+function assertVaultMove(
+  burn: PlannedBurn,
+  options: WithdrawalOptions,
+  move: NonNullable<WithdrawalOptions["multiStep"]>,
+): void {
+  if (options.escrow || options.swap) {
+    throw new WalletError("invariant", "a vault move's burn pays no escrow")
+  }
+  const { operation, executor } = move
+  if (
+    !operation.executor.equals(burn.recipient) ||
+    !operation.from.equals(burn.from) ||
+    operation.amount !== burn.amount ||
+    operation.proverTip !== (burn.proverTip ?? 0n)
+  ) {
+    throw new WalletError("invariant", "the vault move was built for another burn")
+  }
+  assertRouteOnExecutor(
+    {
+      executor: operation.executor.toString() as Address,
+      payload: decodeMultiStepPayload(operation.userPayload),
+    },
+    executor,
+  )
 }
 
 async function currentDeployment(service: ContractService): Promise<WithdrawalDeployment> {

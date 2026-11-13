@@ -1,15 +1,17 @@
 import { describe, expect, it } from "vitest"
 import type { Hex } from "viem"
-import { predictSkyEscrowAddressLocally, SkyRoute } from "@oxide/experiments/sky/sky_savings.js"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { SipaDeposit } from "../../src/engine/sipaDeposits"
 import type { WithdrawalRecord } from "../../src/core/services/bridge/types"
+import { SWAP_STUCK_THRESHOLD_MS } from "../../src/core/services/bridge/withdrawalPhases"
+import type { MoveState } from "../../src/engine/moveState"
 import type { BackupRotationRecord } from "../../src/engine/backupRotations"
 import type { SipaProcessingState } from "../../src/core/services/deposits/sipaProcessing"
 import { STUCK_SWEEP_MS } from "../../src/core/services/deposits/sipaStuck"
 import {
-  backupAddCost,
+  backupAddRunning,
   backupAdded,
+  backupFee,
   backupFundingQuote,
   bridgeDetailTarget,
   canSelfSweep,
@@ -20,7 +22,7 @@ import {
   migrationAmounts,
   recoveryReasonFor,
   registrationTagForDeposit,
-  savingsMoveExitOffer,
+  moveExitOffer,
   withdrawalIntent,
   type ActivityItem,
   type RegistrationRef,
@@ -269,7 +271,8 @@ describe("fundingRecovery", () => {
   it("does not read a funding as settled while this device's attempts are unread", () => {
     expect(of("unread")).toEqual({ state: "unread" })
     expect(of("unread", undefined)).toEqual({ state: "unread" })
-    expect(of("unread", { ...held, phase: "claimed", claimedInboxIndexes: ["1"] })).toBeUndefined()
+    const sweptHeld = { ...held, phase: "claimed", claimedInboxIndexes: ["1"] } as SipaDeposit
+    expect(of("unread", sweptHeld)).toEqual({ state: "unread" })
   })
 
   it("keeps the tracker's status for a landing funding, a backup added, or a healthy attempt", () => {
@@ -302,12 +305,14 @@ describe("backupAdded", () => {
   const unswept = { ...stuck, intent: "add-passkey", phase: "funded" } as SipaDeposit
   const swept = { ...unswept, phase: "claimed", sweepTxHash: "0x01" } as SipaDeposit
 
-  it("reads added once the attempt passed the account change", () => {
-    for (const phase of ["swept", "installed", "rerooted", "moved", "done"] as const) {
-      expect(backupAdded(funding, [attempt({ phase })], unswept)).toBe(true)
+  it("reads added only once the attempt is done", () => {
+    expect(backupAdded(funding, [attempt({ phase: "done" })], unswept)).toBe(true)
+    // Past the account change, the final approval is still to come.
+    for (const phase of ["swept", "installed", "rerooted", "moved"] as const) {
+      expect(backupAdded(funding, [attempt({ phase })], swept)).toBe(false)
     }
     const move = attempt({ phase: "attention", attention: "move", suspended: "moved" })
-    expect(backupAdded(funding, [move], unswept)).toBe(true)
+    expect(backupAdded(funding, [move], swept)).toBe(false)
   })
 
   it("reads not added while the funding releases, after it failed, or before the sweep", () => {
@@ -322,11 +327,10 @@ describe("backupAdded", () => {
   })
 
   // The Recovered card's Done removes the attempt's record; the deposit address outlives it.
-  it("reads the deposit address once no attempt holds the funding", () => {
+  it("reads the deposit address once the attempts are read and none holds the funding", () => {
     expect(backupAdded(funding, [], swept)).toBe(true)
-    expect(backupAdded(funding, "unread", swept)).toBe(true)
     expect(backupAdded(funding, [], unswept)).toBe(false)
-    expect(backupAdded(funding, "unread", undefined)).toBe(false)
+    expect(backupAdded(funding, "unread", swept)).toBe(false)
   })
 
   it("reads nothing for a burn that paid for something else", () => {
@@ -365,9 +369,10 @@ describe("migrationAmounts", () => {
   })
 })
 
-describe("backupAddCost", () => {
+describe("backupFee", () => {
   const cents = (n: bigint) => (n * 10n ** 16n).toString()
   const funding = {
+    localId: "wdraw_backup_a1",
     intent: "backup",
     phase: "done",
     amount: "1.3",
@@ -386,50 +391,112 @@ describe("backupAddCost", () => {
     fee: cents(50n),
     sweeps: [sweep],
   } as SipaDeposit
+  const unclaimed = { ...credit, phase: "pendingClaim", sweeps: [] } as SipaDeposit
+  const attempt = (over: Partial<BackupRotationRecord> = {}) =>
+    ({
+      attemptId: "a1",
+      phase: "funded",
+      plan: { credited: cents(60n) },
+      fundings: [{ attemptId: "a1", localId: funding.localId, outcome: "mined" }],
+      ...over,
+    } as BackupRotationRecord)
+  const returned = { amount: 70n * 10n ** 16n, hold: 60n * 10n ** 16n, returned: true }
+  const held = { ...returned, returned: false }
 
-  it("prices the add at what was sent less what came back, splitting the fees", () => {
-    expect(backupAddCost(funding, credit)).toEqual({
-      withdrawalFeeDisplay: "0.2",
-      accountChangeFeeDisplay: "0.5",
-      returnedDisplay: "0.6",
-      costDisplay: "0.7",
-    })
+  it("splits a landed funding into its fee and the hold that came back", () => {
+    expect(backupFee(funding, [], credit)).toEqual(returned)
+  })
+
+  // Someone else's 0.20 swept with the funding would read as hold until the claim splits it.
+  it("reads the planned hold until the credit is claimed, whatever the sweep credited", () => {
+    expect(backupFee({ ...funding, phase: "finalizing_l1" }, [attempt()], undefined)).toEqual(held)
+    const sweep = { index: "1", blockHash: `0x${"0a".repeat(32)}` as Hex, credited: cents(80n) }
+    expect(backupFee(funding, [attempt({ phase: "swept", sweep })], unclaimed)).toEqual(held)
   })
 
   it("prices a funding rebuilt from chain, which names no intent, by the address it paid", () => {
-    expect(backupAddCost({ ...funding, intent: undefined }, credit)).toMatchObject({
-      costDisplay: "0.7",
-    })
+    expect(backupFee({ ...funding, intent: undefined }, [], credit)).toEqual(returned)
   })
 
   // The address cannot be swept twice, so later money reopens its record for recovery.
   it("keeps the price when money reaches the address after its sweep", () => {
     const reopened = { ...credit, phase: "recoverable", amount: "0.3", fee: cents(5n) } as const
-    expect(backupAddCost(funding, reopened)).toMatchObject({ costDisplay: "0.7" })
+    expect(backupFee(funding, [], reopened)).toEqual(returned)
   })
 
-  it("prices nothing before the credit is claimed, or when the address took other money", () => {
-    expect(backupAddCost(funding, { ...credit, phase: "pendingClaim", sweeps: [] })).toBeUndefined()
-    const more = [{ ...sweep, netAmount: cents(90n) }]
-    expect(backupAddCost(funding, { ...credit, sweeps: more })).toBeUndefined()
-    expect(backupAddCost({ ...funding, intent: "registration" }, credit)).toBeUndefined()
-    expect(backupAddCost(funding, { ...credit, intent: undefined })).toBeUndefined()
+  it("prices nothing while neither the plan nor the claimed credit is known", () => {
+    expect(backupFee(funding, [], unclaimed)).toBeUndefined()
+    expect(backupFee({ ...funding, phase: "finalizing_l1" }, "unread", undefined)).toBeUndefined()
+    // A credit at an address that is no backup passkey's is not this funding's.
+    expect(backupFee(funding, [], { ...credit, intent: undefined })).toBeUndefined()
+  })
+
+  it("prices nothing for a burn that paid for something else", () => {
+    expect(backupFee({ ...funding, intent: "registration" }, [attempt()], credit)).toBeUndefined()
+  })
+
+  // No sweep will take this funding, so its money stays at the address to recover.
+  it("holds nothing back once the change ran without this funding, or the attempt stranded it", () => {
+    const releasing = { ...funding, phase: "finalizing_l1" } as const
+    expect(backupFee(releasing, [attempt({ phase: "installed" })], undefined)).toBeUndefined()
+    const stranded = attempt({ phase: "attention", attention: "stranded", suspended: "funded" })
+    expect(backupFee(releasing, [stranded], undefined)).toBeUndefined()
+    expect(backupFee(releasing, [attempt({ phase: "conflict" })], undefined)).toBeUndefined()
   })
 
   // Someone else's 0.10 swept with the funding's 1.10 would read as 0.10 more returned.
   it("prices nothing when the sweep took other money with this funding's", () => {
     const shared = [{ ...sweep, netAmount: cents(70n) }]
-    expect(backupAddCost(funding, { ...credit, sweeps: shared })).toBeUndefined()
+    expect(backupFee(funding, [attempt()], { ...credit, sweeps: shared })).toBeUndefined()
   })
 
   it("prices nothing while the funding's fees are unknown", () => {
-    expect(backupAddCost({ ...funding, withdrawalFee: undefined }, credit)).toBeUndefined()
-    expect(backupAddCost({ ...funding, relayerTip: undefined }, credit)).toBeUndefined()
+    expect(backupFee({ ...funding, withdrawalFee: undefined }, [], credit)).toBeUndefined()
+    expect(backupFee({ ...funding, relayerTip: undefined }, [], credit)).toBeUndefined()
   })
 
   // A retry pays the same address, so a failed burn would otherwise take the add's price.
-  it("prices nothing for a burn that did not land", () => {
-    expect(backupAddCost({ ...funding, phase: "failed" }, credit)).toBeUndefined()
+  it("prices nothing for a burn that did not land, or an add that stopped", () => {
+    expect(backupFee({ ...funding, phase: "failed" }, [attempt()], credit)).toBeUndefined()
+    const stopped = attempt({ phase: "attention", attention: "stranded", suspended: "funded" })
+    const parked = { ...unclaimed, phase: "recoverable" } as SipaDeposit
+    expect(backupFee(funding, [stopped], parked)).toBeUndefined()
+  })
+})
+
+describe("backupAddRunning", () => {
+  const funding = {
+    localId: "wdraw_backup_a1",
+    intent: "backup",
+    phase: "done",
+  } as WithdrawalRecord
+  const attempt = (over: Partial<BackupRotationRecord>) =>
+    ({
+      attemptId: "a1",
+      fundings: [{ attemptId: "a1", localId: funding.localId, outcome: "mined" }],
+      ...over,
+    } as BackupRotationRecord)
+  const unswept = { ...stuck, intent: "add-passkey", phase: "funded" } as SipaDeposit
+  const running = (record: WithdrawalRecord, rotation: BackupRotationRecord) =>
+    backupAddRunning(record, [rotation], unswept)
+
+  it("runs from the funding until the attempt is done, through a final approval", () => {
+    for (const phase of ["funded", "swept", "rerooted", "moved"] as const) {
+      expect(running(funding, attempt({ phase })), phase).toBe(true)
+    }
+    const route = attempt({ phase: "attention", attention: "route", suspended: "funded" })
+    expect(running({ ...funding, phase: "finalizing_l1" }, route)).toBe(true)
+  })
+
+  it("stops once the attempt ended, its funding failed or stopped, or no attempt holds it", () => {
+    expect(running(funding, attempt({ phase: "done" }))).toBe(false)
+    expect(running(funding, attempt({ phase: "recovered" }))).toBe(false)
+    expect(running({ ...funding, phase: "failed" }, attempt({ phase: "funded" }))).toBe(false)
+    const stranded = attempt({ phase: "attention", attention: "stranded", suspended: "funded" })
+    const held = { ...unswept, phase: "recoverable" } as SipaDeposit
+    expect(backupAddRunning(funding, [stranded], held)).toBe(false)
+    expect(backupAddRunning(funding, [], unswept)).toBe(false)
+    expect(backupAddRunning(funding, "unread", unswept)).toBe(false)
   })
 })
 
@@ -505,6 +572,11 @@ describe("notification target -> bridge row", () => {
     expect(
       bridgeDetailTarget(withdrawal({ localId: "m1", skyMove: { direction: "out" } })),
     ).toEqual({ kind: "savings", id: "m1" })
+    const vault = { holdingId: "fea-vault", nonce: "0x01" }
+    expect(bridgeDetailTarget(withdrawal({ localId: "v1", vaultMove: vault }))).toEqual({
+      kind: "savings",
+      id: "v1",
+    })
     expect(bridgeDetailTarget(withdrawal({ localId: "w2", groupId: "g1" }))).toEqual({
       kind: "withdrawal",
       id: "g1",
@@ -523,55 +595,43 @@ describe("notification target -> bridge row", () => {
   })
 })
 
-describe("savingsMoveExitOffer", () => {
-  it("offers a stalled move's finalize in either direction, then the escrow's run once it is funded", () => {
+describe("moveExitOffer", () => {
+  const burned = { phase: "burned" } as const
+  const both = { recoverable: true, runnable: true }
+  const recoverOnly = { recoverable: true, runnable: false }
+  const neither = { recoverable: false, runnable: false }
+
+  it("offers a stalled burn's finalize, then the recovery once the relayer dropped its release", () => {
     const later = Date.now() + 365 * 24 * 3_600_000
-    const sky = {
-      direction: "out",
-      factory: "0x00000000000000000000000000000000000000fa",
-      recipientCommitment: `0x${"02".repeat(32)}`,
-      recoveryCommitment: `0x${"03".repeat(32)}`,
-      relayerTip: "1",
-      nonce: `0x${"01".repeat(32)}`,
-    } as const
-    // The burn pays the escrow its Sky meta derives.
-    const escrow = predictSkyEscrowAddressLocally(sky.factory, {
-      ...sky,
-      route: SkyRoute.Unstake,
-      relayerTip: 1n,
-    })
-    const burn = (extra: object) =>
-      ({
-        localId: "w1",
-        l2TxHash: "0xburn",
-        recipient: escrow,
-        startTime: 0,
-        phaseEnteredAt: 0,
-        skyMove: sky,
-        ...extra,
-      } as never)
-    const move = (direction: "in" | "out", extra: object = {}) =>
-      ({
-        direction,
-        withdrawalLocalId: "w1",
-        escrow,
-        nonce: sky.nonce,
-        ...extra,
-      } as never)
-    for (const direction of ["in", "out"] as const)
-      expect(savingsMoveExitOffer(move(direction), burn({ phase: "finalizing_l1" }), later)).toBe(
-        "finalize",
-      )
-    expect(savingsMoveExitOffer(move("out"), burn({ phase: "done", endTime: 0 }), later)).toBe(
-      "run",
-    )
-    expect(
-      savingsMoveExitOffer(
-        move("out", { deposit: { inboxIndex: "1", amount: "1", claimed: false } }),
-        burn({ phase: "done", endTime: 0 }),
-        later,
-      ),
-    ).toBeNull()
-    expect(savingsMoveExitOffer(move("in"), burn({ phase: "finalizing_l1" }), 1)).toBeNull()
+    const burn = { localId: "w1", l2TxHash: "0xburn", startTime: 0, phaseEnteredAt: 0 }
+    const pending = { kind: "pending" } as const
+    const dropped = { kind: "delayed", reason: "relayerDropped", dropped: true } as const
+    const proven = { ...burn, phase: "finalizing_l1" } as WithdrawalRecord
+    const item = (state: MoveState, b?: WithdrawalRecord) => ({ state, move: burned, burn: b })
+    expect(moveExitOffer(item(pending, proven), neither, later)).toBe("finalize")
+    expect(moveExitOffer(item(pending, proven), both, 1)).toBeNull()
+    expect(moveExitOffer(item(dropped), recoverOnly, later)).toBe("recover")
+    expect(moveExitOffer(item(dropped), neither, later)).toBeNull()
+    const waiting = { kind: "delayed", reason: "vaultFull", dropped: false } as const
+    expect(moveExitOffer(item(waiting), both, later)).toBeNull()
+  })
+
+  it("offers the run once a release funded the escrow and nobody ran it within a swap's wait", () => {
+    const pending = { kind: "pending" } as const
+    const spent = { localId: "w1", phase: "done", startTime: 0, endTime: 1_000 } as WithdrawalRecord
+    const stuck = 1_000 + SWAP_STUCK_THRESHOLD_MS
+    expect(moveExitOffer({ state: pending, move: burned, burn: spent }, both, stuck - 1)).toBeNull()
+    expect(moveExitOffer({ state: pending, move: burned, burn: spent }, both, stuck)).toBe("run")
+    // Its run sheet offers recovery too, so a rail that cannot recover offers no run.
+    const runOnly = { recoverable: false, runnable: true }
+    expect(moveExitOffer({ state: pending, move: burned, burn: spent }, runOnly, stuck)).toBeNull()
+    const ran = { phase: "released" } as const
+    expect(moveExitOffer({ state: pending, move: ran, burn: spent }, both, stuck)).toBeNull()
+  })
+
+  it("offers no exit for a retired version's move, as that version offered none", () => {
+    const later = Date.now() + 365 * 24 * 3_600_000
+    const migrated = { phase: "migrated", releasedAt: 0 } as const
+    expect(moveExitOffer({ state: { kind: "done" }, move: migrated }, both, later)).toBeNull()
   })
 })

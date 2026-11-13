@@ -13,6 +13,8 @@ export interface PickerItem {
   /** One detail line: the chain and contract, or how long it takes. */
   detail?: string
   comingSoon?: boolean
+  /** Sits at the row's right, before the check. */
+  trailing?: ReactNode
   /** Replaces the row's `picker-{id}` test id. */
   testId?: string
 }
@@ -106,6 +108,7 @@ export function PickerList({
                 </b>
                 {item.detail && <small>{item.detail}</small>}
               </span>
+              {item.trailing && <span className={styles.trailing}>{item.trailing}</span>}
               {item.comingSoon ? (
                 <ComingSoonPill />
               ) : (

@@ -20,6 +20,29 @@
       "action": "screenshot",
       "file": "a2-intro.png",
       "state": "A2: before you start"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=intro-tip-short"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=intro]"
+    },
+    {
+      "action": "screenshot",
+      "file": "a2-intro-tip-short.png",
+      "state": "A2: the balance covers the add but not Faster's tip, so Standard"
     }
   ],
   "finalScreenshot": false

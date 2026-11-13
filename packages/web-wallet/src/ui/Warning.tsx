@@ -11,7 +11,10 @@ const TONE_ICON: Record<WarningTone, string | undefined> = {
   info: undefined,
 }
 
-/** Inline warning card. With a body it shows only its title until tapped open. */
+/**
+ * Inline warning card. With a body it shows only its title until tapped open, unless `expanded`
+ * keeps the body in view.
+ */
 export function Warning({
   title,
   tone,
@@ -19,6 +22,7 @@ export function Warning({
   style,
   children,
   onDismiss,
+  expanded,
   testId,
 }: {
   title: ReactNode
@@ -28,6 +32,8 @@ export function Warning({
   children?: ReactNode
   /** Adds a close button to a card with a body. */
   onDismiss?: () => void
+  /** The body stays open and cannot be folded away. */
+  expanded?: boolean
   testId?: string
 }) {
   if (!children) {
@@ -41,6 +47,23 @@ export function Warning({
       >
         {title}
       </p>
+    )
+  }
+  if (expanded) {
+    return (
+      <div
+        className="ww-withdraw__warning"
+        data-tone={tone}
+        role={role}
+        style={style}
+        data-testid={testId}
+      >
+        <div className="ww-withdraw__warning-head">
+          {TONE_ICON[tone ?? "warning"] && <Icon name={TONE_ICON[tone ?? "warning"]!} size={18} />}
+          {title}
+        </div>
+        <div className="ww-withdraw__warning-body">{children}</div>
+      </div>
     )
   }
   return (

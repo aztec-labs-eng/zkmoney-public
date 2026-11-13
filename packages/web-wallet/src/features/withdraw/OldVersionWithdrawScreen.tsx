@@ -55,6 +55,7 @@ import {
   type ZkMoneyExitStage,
   type ZkMoneyQuote,
 } from "./zkMoneyExit"
+import { refundedMoves } from "../deposit/recovery/refundedMoves"
 import { useSession } from "../../session/session"
 
 const NONE: FrozenSourceFunds = { refundable: 0n, links: 0n, waiting: 0n }
@@ -107,7 +108,7 @@ export function OldVersionWithdrawScreen({ pace }: { pace: Pick<Pace, "wait" | "
   const sources = useWithdrawableSources()
   const l1 = useL1Wallet({ expectedChainId: config.l1ChainId, rpcUrl: config.l1RpcUrl })
   const bridgeMode = isDesktopL1SubmitActive()
-  const sharePrice = useStore(session.savingsHolding, (h) => h.position?.sharePrice)
+  const sharePrice = useStore(session.savingsLine, (s) => s.price?.sharePrice)
   // The sources the screen opened with: a scan after the withdrawal must not reset them.
   const opened = useRef(sources)
   const [destination, setDestination] = useState("")
@@ -119,8 +120,8 @@ export function OldVersionWithdrawScreen({ pace }: { pace: Pick<Pace, "wait" | "
   const [sent, setSent] = useState<FrozenExitSent>()
   const [done, setDone] = useState<FrozenExitDone>()
   const [view, setView] = useState<"choose" | "destination" | "zk-review" | "review">("choose")
-  const { savingsMoves } = session
-  const [zk] = useState(() => zkMoneyExit(savingsMoves, config, pace))
+  const [moves] = useState(() => refundedMoves(session))
+  const [zk] = useState(() => zkMoneyExit(moves, config, pace))
   const [route, setRoute] = useState<"zk-money" | "wallet">("zk-money")
   const [typed, setTyped] = useState("")
   const [checked, setChecked] = useState(false)
@@ -279,7 +280,7 @@ export function OldVersionWithdrawScreen({ pace }: { pace: Pick<Pace, "wait" | "
             const exit = await openOldVersionExit(config, source, to)
             let before = 0n
             const result = await exit.lock(() =>
-              runFrozenExit(savingsMoves, exit.runtime, channel, (batch) => {
+              runFrozenExit(moves, exit.runtime, channel, (batch) => {
                 moved = true
                 progress.refunded += usd(batch.refunded - before)
                 progress.hashes.push(batch.hashes[batch.hashes.length - 1]!)

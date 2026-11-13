@@ -262,10 +262,12 @@ const FrameContext = createContext(false)
 export const useModalFrame = () => useContext(FrameContext)
 
 /** A persistent overlay for sequences that replace their card between steps. */
-export function ModalFrame({ label, role = "dialog", onClose, overlayClassName, frameRef, onAnimationEnd, children }: {
+export function ModalFrame({ label, role = "dialog", onClose, closeOnBackdrop = true, overlayClassName, frameRef, onAnimationEnd, children }: {
   label?: string
   role?: "dialog" | "alertdialog"
   onClose?: () => void
+  /** False keeps the sheet open on a click outside it; the close button and Escape still close. */
+  closeOnBackdrop?: boolean
   overlayClassName?: string
   frameRef?: RefObject<HTMLDialogElement | null>
   /** Every animation that ends inside the frame, bubbled. */
@@ -352,7 +354,7 @@ export function ModalFrame({ label, role = "dialog", onClose, overlayClassName, 
       }}
       // A top sheet must not trigger an underlying panel’s document outside-click listener.
       onMouseDown={(e) => e.stopPropagation()}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose?.() }}
+      onClick={(e) => { if (closeOnBackdrop && e.target === e.currentTarget) onClose?.() }}
       onCancel={(e: SyntheticEvent) => {
         e.preventDefault()
         e.stopPropagation()
@@ -613,6 +615,7 @@ export function Modal({
   label,
   onBack,
   onClose,
+  closeOnBackdrop = true,
   className,
   variant,
   role = "dialog",
@@ -624,6 +627,8 @@ export function Modal({
   label?: string
   onBack?: () => void
   onClose?: () => void
+  /** As `ModalFrame`'s; ignored inside `ModalSteps`, whose frame closes on a click outside. */
+  closeOnBackdrop?: boolean
   className?: string
   variant?: "create" | "bare" | "page"
   role?: "dialog" | "alertdialog"
@@ -687,6 +692,7 @@ export function Modal({
       label={label ?? title}
       role={role}
       onClose={onClose}
+      closeOnBackdrop={closeOnBackdrop}
       overlayClassName={variant === "page" ? "ww-modal-overlay--page" : undefined}
     >
       {card}

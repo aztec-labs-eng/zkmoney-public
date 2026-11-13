@@ -40,6 +40,7 @@ import {
   worstPublishDaMarginal,
   worstTransferMarginal,
   worstWithdrawMarginal,
+  MAX_WITHDRAWAL_RECOVERY_CHUNKS,
 } from "./claimFpcGasModel.js"
 import { meterClaimFpcOverheadGas } from "./claimFpcOverhead.js"
 import { CLAIM_FPC_GAS_TABLE, type ClaimFpcMeasuredTx } from "./claimFpcGasTable.js"
@@ -184,7 +185,7 @@ export function deriveClaimFpcGasBudgets(
   )
   const mPublishDa = worstPublishDaMarginal()
   const mTransfer = worstTransferMarginal()
-  const mWithdraw = worstWithdrawMarginal()
+  const mWithdraw = worstWithdrawMarginal(MAX_WITHDRAWAL_RECOVERY_CHUNKS)
   const mPaylinkDeposit = worstPaylinkDepositMarginal()
   const mPaylinkClaim = worstPaylinkClaimMarginal()
   const mPaylinkClaimToL1 = worstPaylinkClaimToL1Marginal()

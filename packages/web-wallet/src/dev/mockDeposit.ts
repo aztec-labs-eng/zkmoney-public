@@ -16,7 +16,7 @@ import type { DepositStart, FundStart } from "../features/deposit/depositStart"
 import type { DepositFlowStep } from "../features/deposit/DepositFlow/DepositFlow"
 import type { SentDeposit } from "../features/deposit/DepositFromWalletModal/DepositFromWalletModal"
 import { bridgeLanding, tokenAddress } from "../features/deposit/bridgeChains"
-import { profileBridge } from "../session/walletChains"
+import { acrossBridge } from "../session/walletChains"
 import {
   loadDepositTokens,
   settlementDecimals,
@@ -246,7 +246,7 @@ export function mockBridgeRecord(
 
 /** Quotes at 0.1% with each token's decimals; never sees a bridge call, so nothing fills. */
 export function mockBridgeIn(
-  config: Pick<WebWalletConfig, "bridge">,
+  config: Pick<WebWalletConfig, "features">,
   now: () => number,
 ): BridgeInProvider {
   const decimals = originDecimals(config)
@@ -279,9 +279,9 @@ export function mockBridgeIn(
 }
 
 /** Each profile bridge token's symbol and decimals, by lowercase address. */
-function originDecimals(config: Pick<WebWalletConfig, "bridge">) {
+function originDecimals(config: Pick<WebWalletConfig, "features">) {
   const tokens = new Map<string, { symbol: string; decimals: number }>()
-  for (const chain of profileBridge(config)?.chains ?? [])
+  for (const chain of acrossBridge(config)?.chains ?? [])
     for (const token of chain.in) {
       const address = tokenAddress(token)
       if (address)
@@ -294,7 +294,7 @@ function originDecimals(config: Pick<WebWalletConfig, "bridge">) {
 }
 
 /** The origin wallet's reads: 1,240 of every coin, and each coin's decimals. */
-export function originLoaders(config: Pick<WebWalletConfig, "bridge">): DemoMock["loaders"] {
+export function originLoaders(config: Pick<WebWalletConfig, "features">): DemoMock["loaders"] {
   const tokens = originDecimals(config)
   const facts = (token: Address) =>
     tokens.get(token.toLowerCase()) ?? { symbol: "ETH", decimals: 18 }

@@ -1,7 +1,15 @@
 // @vitest-environment node
 /** An L1 token balance for the funding form: the balance read every time, the metadata once. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { encodeFunctionResult, erc20Abi, getAddress, type Address, type Hex } from "viem"
+import {
+  encodeFunctionResult,
+  erc20Abi,
+  getAddress,
+  numberToHex,
+  zeroAddress,
+  type Address,
+  type Hex,
+} from "viem"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
   InsufficientL1BalanceError,
@@ -22,7 +30,7 @@ const BALANCE_OF = "0x70a08231"
 const DECIMALS = "0x313ce567"
 const SYMBOL = "0x95d89b41"
 
-type RpcCall = { id: number; params: [{ to: Address; data: Hex }] }
+type RpcCall = { id: number; method: string; params: [{ to: Address; data: Hex }] }
 
 /** An L1 node holding `balance` of a token with `decimals` and `symbol`; `failDecimals` reads fail first. */
 function node(balance: bigint, decimals: number, symbol: string, failDecimals = 0) {
@@ -43,6 +51,10 @@ function node(balance: bigint, decimals: number, symbol: string, failDecimals = 
     vi.fn(async (_url: string, init: { body: string }) => {
       const parsed = JSON.parse(init.body) as RpcCall | RpcCall[]
       const reply = (call: RpcCall) => {
+        if (call.method === "eth_getBalance") {
+          calls.push(call.method)
+          return { jsonrpc: "2.0", id: call.id, result: numberToHex(balance) }
+        }
         const selector = call.params[0].data.slice(0, 10)
         calls.push(selector)
         if (selector === BALANCE_OF) balanceReads.push(getAddress(call.params[0].to))
@@ -91,6 +103,15 @@ describe("readL1DepositTokenBalance", () => {
     await readL1DepositTokenBalance(ACCOUNT, token, page)
 
     expect(balanceReads).toEqual([token])
+  })
+
+  it("reads the zero address as the L1's gas coin", async () => {
+    const { calls } = node(2n * 10n ** 18n, 6, "USDC")
+
+    const balance = await readL1DepositTokenBalance(ACCOUNT, zeroAddress, page)
+
+    expect(balance).toMatchObject({ raw: 2n * 10n ** 18n, symbol: "ETH", decimals: 18 })
+    expect(calls).toEqual(["eth_getBalance"])
   })
 
   it("reads a token's decimals and symbol once, and its balance every time", async () => {

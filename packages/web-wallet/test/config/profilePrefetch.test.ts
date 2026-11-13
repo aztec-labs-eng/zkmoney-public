@@ -1,11 +1,12 @@
 /**
- * The config profile is requested as the page starts; the boot's first request for it takes that
- * response, and its deadline still applies.
+ * The config profile and its features document are requested as the page starts; the boot's first
+ * request for each takes that response, and its deadline still applies.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { prefetchProfile } from "../../src/config/profilePrefetch"
 
 const URL = "https://cdn.example.test/profiles/v5/current.json"
+const FEATURES_URL = "https://cdn.example.test/features/v5/current.json"
 const env = { VITE_CONFIG_PROFILE_URL: URL }
 const fetchMock = vi.fn()
 
@@ -18,22 +19,28 @@ afterEach(() => {
 })
 
 describe("prefetchProfile", () => {
-  it("requests the profile once, and the boot's request takes it", async () => {
+  it("requests the profile and its features once each, and the boot's requests take them", async () => {
     const profileFetch = prefetchProfile(env)!
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(fetchMock.mock.calls[0][0]).toBe(URL)
-    const response = await profileFetch(URL, { headers: { accept: "application/json" } })
-    expect(await response.text()).toBe("{}")
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([URL, FEATURES_URL])
+    for (const url of [URL, FEATURES_URL]) {
+      const response = await profileFetch(url, { headers: { accept: "application/json" } })
+      expect(await response.text()).toBe("{}")
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2)
     // A later request is a request of its own.
     await profileFetch(URL)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it("prefetches no features for a profile URL none derives from", () => {
+    prefetchProfile({ VITE_CONFIG_PROFILE_URL: "https://cdn.example.test/elsewhere.json" })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it("leaves any other request to fetch", async () => {
     const profileFetch = prefetchProfile(env)!
     await profileFetch("https://cdn.example.test/artifacts/manifest.json")
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
   it("aborts the prefetch when the boot's deadline does", async () => {

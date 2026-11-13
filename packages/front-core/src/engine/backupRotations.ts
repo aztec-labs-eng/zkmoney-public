@@ -314,11 +314,13 @@ export interface MoveSend<State extends string = MoveChunkState> {
   effect?: "reverted"
 }
 
-export interface MoveChunkRecord extends MoveSend {
+export interface TokenAmount {
   token: string
   /** Atomic units, decimal. */
   amount: string
 }
+
+export interface MoveChunkRecord extends MoveSend, TokenAmount {}
 
 /**
  * An open paylink the move takes back: its refund pays the one-key account, which the move then
@@ -389,7 +391,20 @@ export interface BackupRotationRecord {
   /** The recovery that ended the attempt at `recovered`; money recovered after it never replaces it. */
   recovered?: { txHash: Hex }
   /** The re-root's checkpoints, each written as it completes. */
-  reroot?: { batch?: Hex; switched?: boolean; rebound?: boolean; receiveCode?: boolean }
+  reroot?: {
+    batch?: Hex
+    switched?: boolean
+    rebound?: boolean
+    receiveCode?: boolean
+    /**
+     * What the one-key account held per move token, read just before the switch; a token whose
+     * read failed there is read again while a paylink refund holds the first run. Home counts it
+     * until the first run
+     * names what is left to move: the session then runs on the two-key account, whose balance
+     * leaves it out.
+     */
+    oneKeyBalances?: TokenAmount[]
+  }
   move?: { runs: MoveRun[] }
   refunds?: LinkRefunds
   createdAt: number
@@ -557,8 +572,11 @@ function isSend(v: Record<string, unknown>, states: readonly string[]): boolean 
   )
 }
 
+const isTokenAmount = (v: unknown): v is TokenAmount =>
+  isObj(v) && isStr(v.token) && isDecimal(v.amount)
+
 const isChunk = (v: unknown): v is MoveChunkRecord =>
-  isObj(v) && isStr(v.token) && isDecimal(v.amount) && isSend(v, CHUNK_STATES)
+  isObj(v) && isSend(v, CHUNK_STATES) && isTokenAmount(v)
 
 const isRefunds = (v: unknown): v is LinkRefunds =>
   isObj(v) &&
@@ -629,7 +647,8 @@ function isRecord(v: unknown, key: string): v is BackupRotationRecord {
         optional(r.batch, isWord) &&
         optional(r.switched, isBool) &&
         optional(r.rebound, isBool) &&
-        optional(r.receiveCode, isBool),
+        optional(r.receiveCode, isBool) &&
+        optional(r.oneKeyBalances, (b) => arrayOf(b, isTokenAmount)),
     )
   )
     return false
@@ -795,7 +814,8 @@ const chunkHeld = (chunk: MoveChunkRecord, anchor: number | undefined): boolean 
  * What a backup passkey add still has to move into the two-key account at `address` in `token`,
  * beyond what that account's balance read at `anchor` holds. The session runs on the two-key
  * account from the re-root, so its balance alone leaves the rest out until the move ends. A run is
- * planned only once the one before is checkpointed, so only the latest counts.
+ * planned only once the one before is checkpointed, so only the latest counts. Before the first,
+ * `reroot.oneKeyBalances` counts.
  */
 export function balanceToMove(
   records: readonly BackupRotationRecord[],
@@ -812,8 +832,12 @@ export function balanceToMove(
       // A move paused for the user's retry still owes its balance.
       movesBalance({ phase: r.suspended ?? r.phase, reroot: r.reroot }),
   )
-  return (record?.move?.runs.at(-1)?.chunks ?? [])
-    .filter((c) => c.token.toLowerCase() === unit && !chunkHeld(c, anchor))
+  const run = record?.move?.runs.at(-1)
+  const owed = run
+    ? run.chunks.filter((c) => !chunkHeld(c, anchor))
+    : record?.reroot?.oneKeyBalances ?? []
+  return owed
+    .filter((c) => c.token.toLowerCase() === unit)
     .reduce((total, c) => total + BigInt(c.amount), 0n)
 }
 

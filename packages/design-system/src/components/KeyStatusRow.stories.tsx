@@ -26,6 +26,11 @@ export const Missing: Story = {
   args: { name: "Backup passkey", detail: "Not added", status: "missing" },
 }
 
+/** A missing key on a sheet whose hero already warns. */
+export const Unmarked: Story = {
+  args: { name: "Backup passkey", detail: "Not added" },
+}
+
 export const BothKeys: Story = {
   args: Added.args,
   render: () => (

@@ -112,8 +112,10 @@ import type { FeeRow } from "../../../ui/FeeBreakdown/FeeBreakdown"
 import { addressName, asksName, connectedRecipient, walletPillName } from "./walletRecipient"
 import { openWithdrawFlow, withdrawFlowDeps, withdrawInitial } from "./withdrawFlow"
 import type { WithdrawInputs } from "./withdrawFlow"
+import { RecipientCoinBalance } from "../RecipientCoinBalance/RecipientCoinBalance"
 import { SpeedCards } from "./SpeedCards/SpeedCards"
 import copy from "./WithdrawFlow.copy"
+import brandCopy from "../../../ui/brand/brand.copy"
 import chainsCopy from "../../../ui/chains.copy"
 import balanceCopy from "../../../ui/balance.copy"
 import styles from "./WithdrawFlow.module.css"
@@ -386,10 +388,20 @@ export function WithdrawFlow({
     v.offered(id).map((symbol) => ({
       symbol,
       name: tokenName(symbol),
-      icon: <CoinIcon token={withdrawalReceiveAsset(symbol)} size={32} badge={false} />,
+      icon: <CoinIcon token={withdrawalReceiveAsset(symbol)} size={32} />,
+      // Only the connected wallet's balances: a typed or saved address is not read.
+      trailing: recipient && same(recipient, connected) && (
+        <RecipientCoinBalance
+          recipient={recipient}
+          chainId={id}
+          symbol={symbol}
+          l1ChainId={l1ChainId}
+          routes={ctx.routes}
+        />
+      ),
     }))
   const network = networks.find((n) => n.chainId === v.chainId) ?? networks[0]!
-  const chainBadge = onL1 ? undefined : { chainId: network.chainId, name: network.name }
+  const coinBadge = { id: network.chainId, name: network.name }
 
   inputs = {
     view: v,
@@ -532,8 +544,17 @@ export function WithdrawFlow({
           }
         />
       )}
+      {/* A saved contract is one the user already knows: its card opens on tap. */}
       {v.ethOnContract && (
-        <Warning title={copy.amount.contract.title}>{copy.amount.contract.body}</Warning>
+        <Warning title={copy.amount.contract.title} expanded={!match}>
+          {copy.amount.contract.body}
+        </Warning>
+      )}
+      {/* ether.fi Cash takes funds at its address on its top-up chains; ETH's own card explains. */}
+      {v.onContract && !v.ethOnContract && !etherfiCash && (
+        <Warning title={copy.amount.contractRisk.title} expanded={!match}>
+          {fmt(copy.amount.contractRisk.body, { token: coin, network: network.name })}
+        </Warning>
       )}
       {/* Past the amount step a typed From cannot move; a typed To re-solves From instead. */}
       {v.belowFee && s.amount.side === "from" && step !== "amount" && (
@@ -897,9 +918,9 @@ export function WithdrawFlow({
           },
           max: { disabled: !v.canMax, onClick: flow.max },
           asset: {
-            icon: <CoinIcon token={withdrawalReceiveAsset("DAI")} size={32} />,
+            icon: <CoinIcon token={withdrawalReceiveAsset("DAI")} size={32} badge="brand" />,
             symbol: "DAI",
-            chain: chainsCopy.ethereum,
+            chain: brandCopy.name,
           },
         }}
         receive={{
@@ -930,7 +951,7 @@ export function WithdrawFlow({
             ? { error: copy.amount.quoteFailed }
             : "unknown",
           asset: {
-            icon: <CoinIcon token={asset} size={32} chain={chainBadge} />,
+            icon: <CoinIcon token={asset} size={32} badge={coinBadge} />,
             symbol: coin,
             chain: network.name,
             onPick: openPicker,
@@ -1069,12 +1090,12 @@ export function WithdrawFlow({
       )
     }
     const speedName = v.fast ? copy.review.fast : copy.review.standard
-    const eta = v.etaSeconds
+    const eta = v.etaMinutes
     return card(
       copy.title,
       <>
         <div className="ww-deposit-sheet__head ww-deposit-sheet__head--tight">
-          <CoinIcon token={asset} chain={chainBadge} />
+          <CoinIcon token={asset} badge={coinBadge} />
           <GradientText size={24} weight={700}>
             {copy.title}
           </GradientText>
@@ -1111,7 +1132,7 @@ export function WithdrawFlow({
               <b>
                 {eta === undefined
                   ? speedName
-                  : fmt(copy.review.speed, { speed: speedName, eta: etaLabel(eta) })}
+                  : fmt(copy.review.speed, { speed: speedName, eta: etaLabel(eta * 60) })}
               </b>
             </DepositFact>
           }
@@ -1127,7 +1148,7 @@ export function WithdrawFlow({
           }
           total={dollars(v.burnAtomic)}
           network={{
-            hops: onL1 ? [copy.review.network] : [copy.review.network, network.name],
+            hops: [brandCopy.name, network.name],
             arrivesInMinutes: v.arrivesIn,
           }}
         />
@@ -1173,7 +1194,7 @@ export function WithdrawFlow({
       title={copy.picker.title}
       networks={networks}
       coinsOn={coinsOn}
-      current={{ chainId: network.chainId, symbol: coin }}
+      current={{ chainId: network.chainId }}
       onPick={choose}
       onBack={back}
       onClose={flow.close}
@@ -1200,6 +1221,11 @@ export function WithdrawFlow({
         ? "burning"
         : "releasing"
     const failed = phase === "failed"
+    // Released, a bridge-out's leg is what is left; its pill counts that leg alone.
+    const bridging = phase === "bridging"
+    const legMinutes =
+      p.route.kind === "bridge" && bridging ? p.route.choice.chain.etaMinutes : p.etaMinutes
+    const legChip = bridging ? copy.status.bridgeChip : copy.status.chip
     const sentDai = fmt(copy.review.send, {
       amount: shownAmount(p.amountAtomic, DEFAULT_DECIMALS, "DAI"),
     })
@@ -1235,12 +1261,12 @@ export function WithdrawFlow({
         key: "releasing",
         chip: {
           text:
-            p.etaMinutes === undefined
-              ? copy.status.chip
-              : fmt(copy.status.chipAbout, { chip: copy.status.chip, minutes: p.etaMinutes }),
+            legMinutes === undefined
+              ? legChip
+              : fmt(copy.status.chipAbout, { chip: legChip, minutes: legMinutes }),
           tone: "live",
         },
-        title: fmt(copy.status.releasing, { chain }),
+        title: fmt(bridging ? copy.status.bridging : copy.status.releasing, { chain }),
         line: gasFigure
           ? fmt(copy.status.onItsWayGas, { amount: estimate, name: to, gas: gasFigure })
           : fmt(copy.status.onItsWay, { amount: estimate, name: to }),

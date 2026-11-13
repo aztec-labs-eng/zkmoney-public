@@ -90,20 +90,17 @@ export function StepTracker({ label, progress, steps }: StepTrackerProps) {
   )
 }
 
-export interface NextStepsDisclosureProps {
+export interface NextStepsProps {
   /** e.g. "What happens next?". */
   title: string
   steps: { label: string; detail?: string }[]
 }
 
-/** Numbered preview of a flow's steps, closed until tapped. */
-export function NextStepsDisclosure({ title, steps }: NextStepsDisclosureProps) {
+/** Numbered preview of a flow's steps. */
+export function NextSteps({ title, steps }: NextStepsProps) {
   return (
-    <details className="zkm-next-steps">
-      <summary className="zkm-next-steps__summary">
-        {title}
-        <Icon name="chevron-up-mini" size={20} className="zkm-next-steps__chevron" />
-      </summary>
+    <section className="zkm-sheet-card zkm-next-steps">
+      <h3 className="zkm-next-steps__title">{title}</h3>
       <ol className="zkm-next-steps__list">
         {steps.map((step, i) => (
           <li key={i} className="zkm-next-steps__item">
@@ -115,6 +112,6 @@ export function NextStepsDisclosure({ title, steps }: NextStepsDisclosureProps) 
           </li>
         ))}
       </ol>
-    </details>
+    </section>
   )
 }

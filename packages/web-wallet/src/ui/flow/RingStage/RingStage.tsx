@@ -18,8 +18,6 @@ export interface RingStageBlock {
   chip?: { text: string; tone: "live" | "done" }
   title: string
   line: string
-  /** A second line under `line`, such as a time estimate. */
-  subline?: string
   note?: ReactNode
   /**
    * Shows the note as a banner: yellow with a warning sign, or grey with a blinking dot: bold with
@@ -90,7 +88,6 @@ export function RingStage({
                 </GradientText>
                 <div className={styles.lines}>
                   <p className={styles.line}>{block.line}</p>
-                  {block.subline && <p className={styles.line}>{block.subline}</p>}
                 </div>
               </div>
               {block.note && (

@@ -1,7 +1,7 @@
 const copy = {
   speed: "Speed",
   standard: "Standard",
-  faster: "Faster",
+  faster: "Fast",
   eta: "{eta} once confirmed",
   fasterDetail: "{eta} once confirmed · {tip}",
   checking: "Checking…",

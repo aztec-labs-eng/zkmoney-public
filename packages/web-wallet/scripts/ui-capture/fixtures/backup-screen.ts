@@ -16,3 +16,21 @@ export const selectBackupScreen: typeof actual.selectBackupScreen = (input) => {
     document.documentElement.dataset.backupScreen = screen.id
   return screen
 }
+
+/** Home's and Settings' step under the open fixture: its driver, funding and release, at its time. */
+export const selectAddStep: typeof actual.selectAddStep = (saved, input = {}) => {
+  const fixture = backupFixture()
+  if (!fixture) return actual.selectAddStep(saved, input)
+  const { drive, funding, release } = fixture.input
+  return actual.selectAddStep(saved, {
+    ...input,
+    ...(drive && { drive }),
+    ...(funding && { funding }),
+    ...(release && { release }),
+    ...(input.now !== undefined && { now: CAPTURE_NOW }),
+  })
+}
+
+/** How the Passkeys sheet closes under the open fixture: with its driver, as its screen reads it. */
+export const selectSheetClose: typeof actual.selectSheetClose = (saved, drive) =>
+  actual.selectSheetClose(saved, backupFixture()?.input.drive ?? drive)

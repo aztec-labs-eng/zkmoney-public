@@ -1,6 +1,7 @@
 // @vitest-environment node
 /** The calculator's figures: the start amount, the typed rate, and the steps and bars it shows. */
 import { describe, expect, it } from "vitest"
+import { RATE_SCALE } from "@obsidion/front-core"
 import {
   barsThatFit,
   calculatorStart,
@@ -9,15 +10,18 @@ import {
   parseApyPercent,
 } from "../../../src/features/savings/EarningsCalculator"
 
+/** A yearly rate of `tenths` tenths of a percent, at `RATE_SCALE`. */
+const tenths = (n: bigint) => (n * RATE_SCALE) / 1000n
+
 describe("EarningsCalculator", () => {
   it("reads a typed rate leniently, clamped to 0–100%", () => {
     // Lenient: a percent sign, a comma, junk; and clamped to 0–100.
-    expect(parseApyPercent("3.8%")).toBe(0.038)
-    expect(parseApyPercent("3,8")).toBe(0.038)
-    expect(parseApyPercent("abc")).toBe(0)
-    expect(parseApyPercent("")).toBe(0)
-    expect(parseApyPercent("-4")).toBe(0)
-    expect(parseApyPercent("250%")).toBe(1)
+    expect(parseApyPercent("3.8%")).toBe(tenths(38n))
+    expect(parseApyPercent("3,8")).toBe(tenths(38n))
+    expect(parseApyPercent("abc")).toBe(0n)
+    expect(parseApyPercent("")).toBe(0n)
+    expect(parseApyPercent("-4")).toBe(0n)
+    expect(parseApyPercent("250%")).toBe(RATE_SCALE)
   })
 
   it("starts from the Savings balance to the cent, else Main's DAI, else the default", () => {
@@ -71,7 +75,7 @@ describe("EarningsCalculator", () => {
 
   it("breaks one year into months named from next month, whose twelfth is the year's figure", () => {
     const NOV_2026 = Date.UTC(2026, 10, 15)
-    const months = calculatorSteps(500, 50, 1, 0.055, NOV_2026)
+    const months = calculatorSteps(500, 50, 1, tenths(55n), NOV_2026)
     expect(months.map((m) => m.label)).toEqual([
       "Dec",
       "Jan",
@@ -86,12 +90,12 @@ describe("EarningsCalculator", () => {
       "Oct",
       "Nov",
     ])
-    const [year] = calculatorSteps(500, 50, 5, 0.055, NOV_2026)
+    const [year] = calculatorSteps(500, 50, 5, tenths(55n), NOV_2026)
     expect(year.label).toBe("Year 1")
     expect(months[11].balance).toBe(year.balance)
     expect(months[11].added).toBe(year.added)
     expect(months[5].balance).toBeGreaterThan(months[4].balance)
-    expect(calculatorSteps(500, 50, 5, 0.055, NOV_2026).map((s) => s.label)).toEqual([
+    expect(calculatorSteps(500, 50, 5, tenths(55n), NOV_2026).map((s) => s.label)).toEqual([
       "Year 1",
       "Year 2",
       "Year 3",

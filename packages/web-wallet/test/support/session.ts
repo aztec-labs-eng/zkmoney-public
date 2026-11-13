@@ -19,8 +19,9 @@ export interface SessionValues {
   account?: unknown
   token?: unknown
   teeSigner?: unknown
-  savings?: unknown
-  savingsHolding?: unknown
+  savingsLine?: unknown
+  moveQuote?: unknown
+  moveCommands?: unknown
   balances?: Pick<Balances, "view" | "records">
   /** Main's token row, a store. */
   mainToken?: unknown
@@ -48,7 +49,8 @@ const PLAIN = new Set([
   "auth",
   "balances",
   "mainToken",
-  "savingsHolding",
+  "savingsLine",
+  "moveQuote",
   "sipaProcessingObserver",
   "sipaAddresses",
   "fundDeposit",

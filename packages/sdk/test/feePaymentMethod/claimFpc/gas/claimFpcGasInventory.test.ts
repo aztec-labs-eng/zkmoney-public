@@ -168,7 +168,7 @@ describe("ClaimFPC per-call inventory", () => {
     )
     expect(claimFpcCallGas({ name: "gift_voucher" })).toEqual(budgets.mGift)
     expect(claimFpcCallGas({ name: "transfer" })).toEqual(budgets.mTransfer)
-    expect(claimFpcCallGas({ name: "withdraw" })).toEqual(budgets.mWithdraw)
+    expect(claimFpcCallGas({ name: "withdraw", recoveryChunks: 6 })).toEqual(budgets.mWithdraw)
     expect(claimFpcCallGas({ name: "deposit" })).toEqual(budgets.mPaylinkDeposit)
     expect(claimFpcCallGas({ name: "claim" })).toEqual(budgets.mPaylinkClaim)
     expect(claimFpcCallGas({ name: "refund" })).toEqual(budgets.mPaylinkClaim)
@@ -231,6 +231,26 @@ describe("ClaimFPC per-call inventory", () => {
 const OPEN_POLICY_ONLY = new Set([
   "sponsor[paylink_direct.claim_with_withdrawal,oxide_token.notify_sipa_recipient,broadcaster.broadcast_l1_operation_2k,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]",
 ])
+
+describe("ClaimFPC withdraw declarations", () => {
+  /** An escrow burn's price, which every burn of up to two chunks keeps. */
+  const ESCROW_BURN = { daGas: 2944, l2Gas: 1233214 }
+
+  it("prices a burn that declares no chunks, one or two as an escrow burn", () => {
+    expect(
+      [undefined, 1, 2].map((recoveryChunks) =>
+        claimFpcCallGas({ name: "withdraw", recoveryChunks }),
+      ),
+    ).toEqual([ESCROW_BURN, ESCROW_BURN, ESCROW_BURN])
+  })
+
+  it("prices a longer burn by its chunks, up to the budget's, and refuses more", () => {
+    const four = claimFpcCallGas({ name: "withdraw", recoveryChunks: 4 })
+    expect(four.l2Gas).toBeGreaterThan(ESCROW_BURN.l2Gas)
+    expect(four.l2Gas).toBeLessThan(claimFpcCallGas({ name: "withdraw", recoveryChunks: 6 }).l2Gas)
+    expect(() => claimFpcCallGas({ name: "withdraw", recoveryChunks: 7 })).toThrow(/6 recovery/)
+  })
+})
 
 describe("ClaimFPC flat batch caps", () => {
   it("declares the caps for any batch an open policy sponsors", async () => {

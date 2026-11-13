@@ -17,8 +17,9 @@ const FIELDS: Record<Field, true> = {
   oxideEnv: true,
   currentTxAmountCap: true,
   activeWithdrawalExecutor: true,
-  skySavings: true,
-  savingsTuple: true,
+  holdings: true,
+  savingsPrice: true,
+  savingsPrices: true,
 }
 
 /** Members that are no read: a fake for one stands as given. */

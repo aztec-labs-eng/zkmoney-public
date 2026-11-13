@@ -3,12 +3,15 @@ import { fmt } from "../../../../lib/fmt"
 import { MoveSteps, type MoveStepRow } from "../../../../ui/MoveSteps/MoveSteps"
 import stepsCopy from "../../../../ui/MoveSteps/MoveSteps.copy"
 import { relandingCopy } from "../../backupPasskeyCopy"
-import type { BackupMoveRow, BackupProgress, BackupScreenProps } from "../../backupScreen"
+import {
+  offersClose,
+  promptsLeft,
+  type BackupMoveRow,
+  type BackupScreenProps,
+} from "../../backupScreen"
 import trackerCopy from "../AddTracker/AddTracker.copy"
 import {
   AddTracker,
-  approveLabel,
-  approverOf,
   closeAction,
   failedLine,
   retryAction,
@@ -19,24 +22,11 @@ import copy from "./FinishScreen.copy"
 
 type Finish = BackupScreenProps<"finish">["screen"]
 
-/**
- * The prompts step 4 still asks for. Paylinks are taken back before the move, whose parts are
- * counted only once it is planned.
- */
-function promptsLeft({ refunds, moved, out = 0 }: BackupProgress): number | "several" {
-  if (refunds) return "several"
-  return moved ? moved.total - moved.included - out : 1
-}
-
-const promptsLine = (left: number | "several") =>
-  left === "several" ? copy.several : left > 1 ? fmt(copy.count, { count: left }) : copy.one
-
-const keepOpenLead = (left: number | "several") =>
-  left === "several"
-    ? copy.working.keepOpen.several
-    : left > 1
-    ? fmt(copy.working.keepOpen.count, { count: left })
-    : copy.working.keepOpen.one
+/** The line of `lines` for the prompts left. */
+const byLeft = (
+  lines: { one: string; count: `${string}{count}${string}`; several: string },
+  left: number | "several",
+) => (left === "several" ? lines.several : left > 1 ? fmt(lines.count, { count: left }) : lines.one)
 
 const rowLabel = (row: BackupMoveRow) =>
   row.kind !== "links"
@@ -49,12 +39,12 @@ const rowLabel = (row: BackupMoveRow) =>
 const warningOf = ({ failure, paused }: Finish) =>
   failure ? failedLine(failure).detail : paused ? copy.paused.detail : undefined
 
-/** The line of a row the move works on, or waits for the user on. */
-function rowLine(screen: Finish, row: BackupMoveRow) {
+/** The line of a row the move works on; none while it waits on the button, which says it. */
+function rowLine(screen: Finish, row: BackupMoveRow): string | undefined {
   if (row.kind === "links" && screen.linkExpiring) return copy.working.linkExpiring
   if (row.state === "confirming") return stepsCopy.confirming
   if (row.state === "sending" || screen.busy || screen.approving) return stepsCopy.preparing
-  return screen.ask === "approve" ? approveLabel(screen) : copy.working.detail
+  return screen.ask === "approve" ? undefined : copy.working.detail
 }
 
 /** Step 4 as the move's rows; while something holds the move, no row works. */
@@ -68,7 +58,8 @@ function moveRows(screen: Finish, rows: readonly BackupMoveRow[], held: boolean)
         state: "todo",
         ...(row.state === "confirming" && { detail: stepsCopy.confirming }),
       }
-    return { label, state: "current", detail: rowLine(screen, row) }
+    const line = rowLine(screen, row)
+    return { label, state: "current", ...(line && { detail: line }) }
   })
 }
 
@@ -85,13 +76,11 @@ function FinishSteps({
   const { rows, relanding } = screen.progress
   if (!rows)
     return <AddTracker screen={screen} {...(line && { line })} {...(prompt && { prompt })} />
-  const left = promptsLeft(screen.progress)
   const warning = warningOf(screen)
   return (
     <>
       <MoveSteps
         caption={copy.step}
-        header={left === "several" || left > 0 ? promptsLine(left) : ""}
         rows={moveRows(screen, rows, warning !== undefined)}
         {...(warning && { warning })}
       />
@@ -105,7 +94,6 @@ function FinishSteps({
  * a closed prompt, shown on the step.
  */
 export function FinishScreen({ screen, actions }: BackupScreenProps<"finish">) {
-  const approver = approverOf(screen)
   const { ask, failure } = screen
   const loading = screen.busy || screen.approving
   if (screen.delay && !ask) return <DelayedSheet screen={screen} actions={actions} />
@@ -114,10 +102,10 @@ export function FinishScreen({ screen, actions }: BackupScreenProps<"finish">) {
     return (
       <SheetShell
         hero="warning"
-        title={copy.title}
+        title={screen.declined ? copy.finishTitle : copy.title}
         lead={screen.declined ? copy.closed : copy.paused.lead}
         primary={{
-          label: screen.declined ? approveLabel(screen) : trackerCopy.tryAgain,
+          label: screen.declined ? copy.finish : trackerCopy.tryAgain,
           onClick: actions.retryMove,
           loading: loading || screen.checking,
           testId: "backup-move-retry",
@@ -133,20 +121,19 @@ export function FinishScreen({ screen, actions }: BackupScreenProps<"finish">) {
     )
   const left = promptsLeft(screen.progress)
   if (ask === "approve" || screen.approving) {
-    const more = left === "several" || left > 1
     return (
       <SheetShell
         hero={failure ? "warning" : "key"}
-        title={copy.title}
-        lead={fmt(more ? copy.leadMore : copy.lead, { approver })}
+        title={copy.finishTitle}
+        lead={byLeft(copy.lead, left)}
         primary={{
-          label: approveLabel(screen),
+          label: copy.finish,
           onClick: actions.approveMove,
           loading,
           testId: "backup-move-approve",
         }}
       >
-        <FinishSteps screen={screen} prompt={{ detail: promptsLine(left) }} />
+        <FinishSteps screen={screen} />
       </SheetShell>
     )
   }
@@ -161,15 +148,14 @@ export function FinishScreen({ screen, actions }: BackupScreenProps<"finish">) {
         <AddTracker screen={screen} />
       </SheetShell>
     )
-  // While an approval is still to come the sheet asks to stay open, and offers no Close. A paylink
-  // waiting to expire can take long, so that wait keeps Close.
-  const asksMore = !screen.linkExpiring && (left === "several" || left > 0)
+  // While an approval is still to come the sheet asks to stay open, and offers no Close.
+  const closes = offersClose(screen)
   return (
     <SheetShell
       hero="key"
       title={copy.working.title}
-      lead={asksMore ? keepOpenLead(left) : copy.working.lead}
-      primary={asksMore ? undefined : closeAction(actions, "plain")}
+      lead={closes ? copy.working.lead : byLeft(copy.working.keepOpen, left)}
+      primary={closes ? closeAction(actions, "plain") : undefined}
     >
       <FinishSteps
         screen={screen}

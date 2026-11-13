@@ -14,6 +14,7 @@ import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import {
   DEMO_COMPLETE_ADDRESS,
   DEMO_CREDENTIAL_ID,
+  DEMO_L2_ADDRESS,
   DEMO_L2_TOKEN,
 } from "../../../src/dev/demoFixtures"
 import { saveIdentity } from "../../../src/session/account"
@@ -65,23 +66,31 @@ export const seedDemo: typeof actual = async (scenario, boot, _primed, pace) => 
     const atomic = parseUnits(balance, 18)
     await balanceStore.write(scope, DEMO_L2_TOKEN, atomic, undefined, undefined, WALLET_TOKEN_SYMBOL)
   }
-  // `?backupFixture=<name>`: the session signs with the demo passkey, whose record Settings and the
-  // sheet read the one-device verdict from, and the fixture's keys carry their names on this device.
+  // `?backupFixture=<name>`: the session signs with the demo passkey, whose record Settings reads the
+  // one-device verdict from, and the fixture's keys carry their names and managers on this device.
   const backup = backupFixture()
   if (backup) {
+    const records = new WebPasskeyIdentityMap(seeded.database, config.rpId)
     await writeDeviceKeys(seeded.database, { credentialId: DEMO_CREDENTIAL_ID })
-    if (backup.input.oneDevice)
-      await new WebPasskeyIdentityMap(seeded.database, config.rpId).setBackupEligible(
-        DEMO_CREDENTIAL_ID,
-        false,
+    if (backup.oneDevice) await records.setBackupEligible(DEMO_CREDENTIAL_ID, false)
+    if (typeof backup.keys === "object") {
+      const own = await sessionPubkeyHex()
+      const names = Object.fromEntries(
+        backup.keys.flatMap((key) => (key.name ? [[keyPubkey(key, own), key.name]] : [])),
       )
-  }
-  if (backup && typeof backup.keys === "object") {
-    const own = await sessionPubkeyHex()
-    const names = Object.fromEntries(
-      backup.keys.flatMap((key) => (key.name ? [[keyPubkey(key, own), key.name]] : [])),
-    )
-    await writeDeviceKeys(seeded.database, { passkeyNames: JSON.stringify(names) })
+      await writeDeviceKeys(seeded.database, { passkeyNames: JSON.stringify(names) })
+      // A record per key this browser saw created, which the key list reads the manager from.
+      for (const key of backup.keys) {
+        if (!key.aaguid) continue
+        await records.upsert({
+          credentialId: `capture-${key.role}`,
+          l2Address: DEMO_L2_ADDRESS,
+          pubkey: keyPubkey(key, own),
+          isMskRoot: key.role === "sign-up",
+          prfAaguid: key.aaguid,
+        })
+      }
+    }
   }
   if (desktopState()) {
     installDesktopBridge()

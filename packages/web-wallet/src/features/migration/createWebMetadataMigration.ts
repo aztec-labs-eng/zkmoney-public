@@ -2,8 +2,6 @@ import {
   accountRecordState,
   createMetadataMigrationSession,
   pubkeyToR1KeyArg,
-  readSavingsPrice,
-  readSavingsVault,
   savingsValue,
   UpgradeActivity,
   type SipaDeposits,
@@ -36,6 +34,7 @@ import { sourceSweptDeposits } from "./sourceSipaSources"
 import { oldVersionScope } from "./oldVersionBalance"
 import { FREEZE_POLL_MS, ManifestUnavailableError, pause } from "./freezeWatch"
 import { SourceBusyError } from "./migrationErrors"
+import { sharePriceAt } from "../savings/savingsLine"
 import type { WebAlphaAuthService } from "../../platform/auth/WebAlphaAuthService"
 
 export const webMetadataMigrationKey = (
@@ -198,15 +197,7 @@ export async function createWebMetadataMigration(params: {
       const value =
         params.current.portal.toLowerCase() === config.oxideProfile.portal.toLowerCase()
           ? amount
-          : savingsValue(
-              amount,
-              (
-                await readSavingsPrice(
-                  client,
-                  await readSavingsVault(client, params.current.portal as Address),
-                )
-              ).sharePrice,
-            )
+          : savingsValue(amount, await sharePriceAt(pageChain, params.current.portal))
       checkSession()
       await balances.write(
         oldVersionScope(config, params.historic.portal, params.account.getAddress().toString()),

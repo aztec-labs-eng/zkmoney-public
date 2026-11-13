@@ -1,14 +1,10 @@
 import { describe, expect, it } from "vitest"
-import {
-  acrossEscrowFactory,
-  bridgeOutChains,
-  bridgeOutDecimals,
-} from "../../../src/features/withdraw/bridgeOutQuote"
+import { bridgeOutChains, bridgeOutDecimals } from "../../../src/features/withdraw/bridgeOutQuote"
 
 const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-const MANIFEST_FACTORY = `0x${"fa".repeat(20)}`
+const FACTORY = `0x${"fa".repeat(20)}`
 const L2_TOKEN = `0x${"0b".repeat(32)}`
-const PROFILE_FACTORY = `0x${"fb".repeat(20)}`
+const DAI_BRIDGE = "brg-dai-v6"
 const chain = (chainId: number, name: string) => ({
   chainId,
   name,
@@ -20,49 +16,43 @@ const chain = (chainId: number, name: string) => ({
     { symbol: "USDT", address: `0x${"07".repeat(20)}` },
   ],
 })
-/** A config whose only field the reads take is its bridge block. */
-const cfg = (bridge: object) => ({ bridge } as never)
-const across = (patch: object = {}) => ({
-  provider: "across",
-  apiUrl: "https://across.example",
-  chains: [chain(8453, "Base")],
-  ...patch,
+/** A config whose only field the reads take is its Across feature. */
+const cfg = (chains = [chain(8453, "Base")]) =>
+  ({
+    features: {
+      across: { apiUrl: "https://across.example", chains, oxide: { exit: "fea-across-v6" } },
+    },
+  } as never)
+const exit = () => ({
+  feature: {
+    id: "fea-across-v6",
+    project: "across",
+    bridges: { dai: DAI_BRIDGE },
+    contracts: { acrossBridgeEscrowFactory: FACTORY },
+    variables: {},
+  },
+  pinnedBridges: new Set([DAI_BRIDGE]),
 })
+const burn = (bridgeId: string) => ({ bridgeId, l2Token: L2_TOKEN })
 
 describe("bridgeOutChains", () => {
-  it("offers nothing until the manifest or the profile names the escrow factory", () => {
-    const config = cfg(across())
-    expect(bridgeOutChains(config, { l2Token: L2_TOKEN })).toEqual([])
-    expect(bridgeOutChains(config, { acrossBridgeEscrowFactory: MANIFEST_FACTORY, l2Token: L2_TOKEN })).toHaveLength(1)
-    const profile = cfg(across({ escrowFactory: PROFILE_FACTORY }))
-    expect(bridgeOutChains(profile, { l2Token: L2_TOKEN })).toHaveLength(1)
+  it.each<[string, ReturnType<typeof exit> | undefined, number]>([
+    ["lists routes for a burn its exit has an escrow for", exit(), 1],
+    ["lists none without an exit", undefined, 0],
+  ])("%s", (_, binding, routes) => {
+    expect(bridgeOutChains(cfg(), binding, burn(DAI_BRIDGE))).toHaveLength(routes)
   })
 
-  it("prefers the manifest's escrow factory to the profile's", () => {
-    const config = cfg(across({ escrowFactory: PROFILE_FACTORY, chains: [] }))
-    expect(acrossEscrowFactory(config, { acrossBridgeEscrowFactory: MANIFEST_FACTORY })).toBe(
-      MANIFEST_FACTORY,
+  it("keeps the tokens oxide's Across table delivers there, and drops chains it reaches none on", () => {
+    const routes = bridgeOutChains(
+      cfg([chain(8453, "Base"), chain(424242, "Nowhere")]),
+      exit(),
+      burn(DAI_BRIDGE),
     )
-    expect(acrossEscrowFactory(config, {})).toBe(PROFILE_FACTORY)
-  })
-
-  it("keeps the profile's tokens oxide's Across table delivers there, and drops chains it reaches none on", () => {
-    const config = cfg(across({ chains: [chain(8453, "Base"), chain(424242, "Nowhere")] }))
-    const routes = bridgeOutChains(config, { acrossBridgeEscrowFactory: MANIFEST_FACTORY, l2Token: L2_TOKEN })
     expect(routes.map((r) => [r.provider, r.l2Token, r.chain.name])).toEqual([
       ["across", L2_TOKEN, "Base"],
     ])
     expect(routes[0]!.tokens.map((t) => t.symbol)).toEqual(["USDC", "USDT"])
-  })
-
-  it("offers no bridge-out for a provider oxide has no escrow for", () => {
-    const config = cfg({
-      provider: "lifi",
-      apiUrl: "https://lifi.example",
-      integrator: "zkmoney",
-      chains: [],
-    })
-    expect(bridgeOutChains(config, { acrossBridgeEscrowFactory: MANIFEST_FACTORY, l2Token: L2_TOKEN })).toEqual([])
   })
 })
 

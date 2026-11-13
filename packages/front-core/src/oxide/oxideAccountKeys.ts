@@ -25,6 +25,7 @@ import { secp256k1 } from "@noble/curves/secp256k1"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { OXIDE_L1_BOOTSTRAP_KEY_LABEL, OXIDE_SELF_SIPA_KEY_LABEL } from "@obsidion/core/constants"
 import type { SipaSelfResolverKeys } from "@obsidion/sdk"
+import { WalletError } from "../engine/errors"
 
 /** Aztec `Fr` (or any field element); only `.toString()` (0x-hex) is used, matching oxide. */
 export interface FieldLike {
@@ -127,14 +128,33 @@ export function deriveSkyEscrowSalts(
   masterSecret: FieldLike,
   nonce: Hex,
 ): { recipient: Fr; recovery: Fr } {
+  return moveSalts(masterSecret, nonce, "sky-escrow")
+}
+
+/**
+ * A vault move's two salts, as {@link deriveSkyEscrowSalts}'s: the secret of the deposit its route
+ * makes into the destination portal, and the salt that hides its recovery account.
+ */
+export function deriveVaultMoveSalts(
+  masterSecret: FieldLike,
+  nonce: Hex,
+): { recipient: Fr; recovery: Fr } {
+  return moveSalts(masterSecret, nonce, "position-move")
+}
+
+function moveSalts(
+  masterSecret: FieldLike,
+  nonce: Hex,
+  label: string,
+): { recipient: Fr; recovery: Fr } {
   if (!/^0x[0-9a-fA-F]{64}$/.test(nonce)) {
-    throw new Error("deriveSkyEscrowSalts: nonce must be 0x-prefixed 32-byte hex")
+    throw new WalletError("invariant", "a move's nonce must be 0x-prefixed 32-byte hex")
   }
   const salt = (purpose: string) =>
     new Fr(
       deriveScalar(
         masterSecret,
-        `oxide:sky-escrow-${purpose}-salt:${nonce.toLowerCase()}`,
+        `oxide:${label}-${purpose}-salt:${nonce.toLowerCase()}`,
         Fr.MODULUS,
       ),
     )

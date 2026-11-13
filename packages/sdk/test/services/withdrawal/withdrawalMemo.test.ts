@@ -10,6 +10,7 @@ import {
   predictAcrossBridgeEscrowAddressLocally,
 } from "../../../src/oxide/escrow/acrossBridgeOnWithdraw.js"
 import {
+  WITHDRAWAL_MEMO_TAGS,
   decodeWithdrawalMemo,
   encodeWithdrawalMemo,
   type BridgeWithdrawalMemo,
@@ -120,6 +121,13 @@ function bridgeBytes(): number[] {
   ]
 }
 
+const MOVE_NONCE = `0x${"aa".repeat(32)}` as Hex
+
+/** The bytes `encodeWithdrawalMemo({ vaultMove: { nonce } })` lays out. */
+function vaultMoveBytes(nonce: number[] = hex(MOVE_NONCE)): number[] {
+  return [0x01, ...entry(0x10, nonce)]
+}
+
 const decode = (bytes: number[]) => decodeWithdrawalMemo(Buffer.from(bytes))
 
 /** `bytes` without the entry of `type`. */
@@ -221,6 +229,84 @@ describe("withdrawalMemo", () => {
     zeroChain.fill(0, 6, 8)
     expect(decode(zeroChain)).toEqual({})
     expect(decode([...bridgeBytes(), ...entry(0x09, [SkyRoute.Stake])])).toEqual({})
+  })
+
+  it("keeps the documented tag table, one tag per entry", () => {
+    expect(WITHDRAWAL_MEMO_TAGS).toEqual({
+      swapRoute: 0x01,
+      swapRecipient: 0x02,
+      escrowFactory: 0x03,
+      recoveryCommitment: 0x04,
+      relayerTip: 0x05,
+      escrowNonce: 0x06,
+      daiForGas: 0x07,
+      minEthForGas: 0x08,
+      skyRoute: 0x09,
+      recipientCommitment: 0x0a,
+      bridgeProvider: 0x0b,
+      bridgeChain: 0x0c,
+      bridgeToken: 0x0d,
+      bridgeFee: 0x0e,
+      bridgeMinReceived: 0x0f,
+      vaultMoveNonce: 0x10,
+    })
+    const tags = Object.values(WITHDRAWAL_MEMO_TAGS)
+    expect(new Set(tags).size).toBe(tags.length)
+  })
+
+  it("lays out a Sky move and a bridge-out in the bytes burns already carry", () => {
+    const recoveryCommitment = `0x${"0c".repeat(32)}` as Hex
+    expect(encodeWithdrawalMemo({ sky: { ...SKY, recoveryCommitment } }).toString("hex")).toBe(
+      "010901010314fbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfb0a202c2c2c2c2c2c2c2c2c2c2c2c" +
+        "2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c04200c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c" +
+        "0c0c0c0c0c0c0c0c0c0c0c0c0c0c050829a2241af62c000006208888888888888888888888888888" +
+        "888888888888888888888888888888888888",
+    )
+    expect(
+      encodeWithdrawalMemo({ bridge: { ...BRIDGE, recoveryCommitment } }).toString("hex"),
+    ).toBe(
+      "010b01010c0221050d01020214b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b10314fcfcfcfcfc" +
+        "fcfcfcfcfcfcfcfcfcfcfcfcfcfcfc0e0303d0900f0405d75c8004200c0c0c0c0c0c0c0c0c0c0c0c" +
+        "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c05081bc16d674ec8000006209999999999999999" +
+        "999999999999999999999999999999999999999999999999",
+    )
+  })
+
+  it("round-trips a vault move's nonce alone", () => {
+    const memo = encodeWithdrawalMemo({ vaultMove: { nonce: MOVE_NONCE } })
+    expect([...memo]).toEqual(vaultMoveBytes())
+    expect(decodeWithdrawalMemo(memo)).toEqual({ vaultMove: { nonce: MOVE_NONCE } })
+  })
+
+  it("decodes a vault move nonce beside any other kind as nothing", () => {
+    const nonce = entry(0x10, hex(MOVE_NONCE))
+    for (const bytes of [swapBytes(), skyBytes(), bridgeBytes()]) {
+      expect(decode([...bytes, ...nonce])).toEqual({})
+    }
+    for (const kind of [entry(0x01, [0]), entry(0x09, [SkyRoute.Stake]), entry(0x0b, [1])]) {
+      expect(decode([...vaultMoveBytes(), ...kind])).toEqual({})
+    }
+  })
+
+  it("decodes a vault move nonce beside a malformed kind entry as nothing", () => {
+    for (const tag of [0x01, 0x09, 0x0b]) {
+      for (const value of [[], [1, 2]]) {
+        expect(decode([...vaultMoveBytes(), ...entry(tag, value)])).toEqual({})
+        expect(decode([...entry(tag, value), ...vaultMoveBytes()])).toEqual({})
+      }
+    }
+  })
+
+  it("decodes a malformed vault move nonce as nothing, and keeps the first of two", () => {
+    for (const nonce of [[], Array(31).fill(0xaa), Array(33).fill(0xaa)]) {
+      expect(decode(vaultMoveBytes(nonce))).toEqual({})
+    }
+    expect(decode(vaultMoveBytes().slice(0, -1))).toEqual({})
+    const twice = [...vaultMoveBytes(), ...entry(0x10, Array(32).fill(0xbb))]
+    expect(decode(twice)).toEqual({ vaultMove: { nonce: MOVE_NONCE } })
+    expect(() => encodeWithdrawalMemo({ vaultMove: { nonce: "0xaa" as Hex } })).toThrow(
+      /vault move nonce/,
+    )
   })
 
   it("refuses to encode a malformed value", () => {

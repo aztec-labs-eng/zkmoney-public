@@ -14,7 +14,7 @@ import {
   type WithdrawalRecord,
   type WithdrawalSpeedupEstimate,
 } from "@obsidion/front-core"
-import type { BridgeOutQuote, BridgeOutToken } from "@obsidion/sdk"
+import type { BridgeOutToken } from "@obsidion/sdk"
 import type { WebWalletConfig } from "../../config/env"
 import type { PageLoaders } from "../../app/pageChain"
 import type { Session } from "../../session/session"
@@ -24,6 +24,7 @@ import {
   bridgeOutChains,
   bridgeOutDecimals,
   type BridgeOutChain,
+  type BridgeOutPriced,
 } from "../../features/withdraw/bridgeOutQuote"
 import type { L1AddressActivity } from "../../features/withdraw/addressFacts"
 import { ETHERFI_CONTACT_NAME } from "../../features/withdraw/etherfi"
@@ -37,7 +38,7 @@ import type { WithdrawStart } from "../../features/withdraw/WithdrawFlow/withdra
 import type { WithdrawSent } from "../../features/withdraw/WithdrawFlow/withdrawTransition"
 import type { WithdrawStage } from "../../features/withdraw/withdrawGateway"
 import type { WithdrawalReceiveAsset } from "../../features/withdraw/withdrawAssets"
-import { DEMO_NETWORK_ID, DEMO_OXIDE_TUPLE } from "../demoFixtures"
+import { DEMO_NETWORK_ID, DEMO_OXIDE_TUPLE, demoAcrossExit } from "../demoFixtures"
 import { playJourney, savedWallet, seedSavedWallets, type DemoMock } from "../demoMock"
 import type { WithdrawMockName } from "../../app/devRoutes"
 
@@ -184,7 +185,7 @@ const quoteFor = (amountOut: bigint, decimals: number, proverTip: bigint): Fresh
 })
 
 /** Oxide's bridge-out quote: the escrow tip, the 1% swap floor, then Across's fee. */
-function bridgeQuote(amountAtomic: bigint, proverTip: bigint, decimals: number): BridgeOutQuote {
+function bridgeQuote(amountAtomic: bigint, proverTip: bigint, decimals: number): BridgeOutPriced {
   const relayerTip = dai("0.05")
   const acrossFee = parseUnits("0.05", ACROSS_INPUT_DECIMALS)
   const atFloor =
@@ -201,6 +202,8 @@ function bridgeQuote(amountAtomic: bigint, proverTip: bigint, decimals: number):
       baseFee: 1_500_000_000n,
       priorityFee: 500_000_000n,
     },
+    withdrawalFee: BASE_FEE - WITHDRAW_RELAYER_TIP,
+    proverTip,
   }
 }
 
@@ -620,14 +623,9 @@ export async function mockQuoteBridgeOut(args: {
   token: BridgeOutToken
   amount: bigint
   proverTip?: bigint
-}): Promise<BridgeOutQuote & { withdrawalFee: bigint; proverTip: bigint }> {
-  const proverTip = args.proverTip ?? 0n
+}): Promise<BridgeOutPriced> {
   await delay(500)
-  return {
-    ...bridgeQuote(args.amount, proverTip, bridgeOutDecimals(args.token, args.chainId)),
-    withdrawalFee: BASE_FEE - WITHDRAW_RELAYER_TIP,
-    proverTip,
-  }
+  return bridgeQuote(args.amount, args.proverTip ?? 0n, bridgeOutDecimals(args.token, args.chainId))
 }
 
 /** What the reads say about `address`; the recipient's per the mock, the others' fixed. */
@@ -646,7 +644,7 @@ const never = <T>() => new Promise<T>(() => {})
 export function withdrawMock(name: string, config: WebWalletConfig): DemoMock | undefined {
   const def = WITHDRAW_MOCKS[name as WithdrawMockName]
   if (!def) return undefined
-  const routes = def.noBridge ? [] : bridgeOutChains(config, DEMO_OXIDE_TUPLE)
+  const routes = def.noBridge ? [] : bridgeOutChains(config, demoAcrossExit(), DEMO_OXIDE_TUPLE)
   const reads = readsOf(def)
   const loaders: Partial<PageLoaders> = {
     bridgeOutRoutes: async () => routes,

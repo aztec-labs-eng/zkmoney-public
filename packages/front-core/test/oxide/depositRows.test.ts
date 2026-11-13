@@ -115,6 +115,34 @@ describe("depositRows", () => {
 
     expect(underlying(depositRows(table(SKY_ROWS, { features })).main)).toEqual([SUSDS, DAI])
   })
+
+  it("offers only the portals the profile lists as Main and the fee token's, and no other row", () => {
+    const rows = table([...SKY_ROWS, bridge("usd2", USD2, l1("cc"), "a3")], {
+      features: SKY_FEATURE,
+    })
+
+    const listed = depositRows(rows, [MAIN_PORTAL.toUpperCase().replace("0X", "0x")])
+    expect(underlying(listed.main)).toEqual([DAI])
+    expect(listed.product).toEqual([])
+
+    expect(underlying(depositRows(rows, [l1("cc")]).main)).toEqual([DAI, USD2])
+  })
+
+  it("keeps a vault feature's base on Main whatever pays the fees, and its held row a product's", () => {
+    const features = {
+      "fea-vault-susds-sandbox": {
+        project: "position",
+        bridges: { main: "brg-dai-sandbox", position: "brg-susds-sandbox" },
+        contracts: {},
+      },
+    }
+    const rows = depositRows(
+      table([...SKY_ROWS, bridge("usd2", USD2, l1("cc"), "a3")], { features }, USD2),
+    )
+
+    expect(underlying(rows.main)).toEqual([DAI, USD2])
+    expect(rows.product).toMatchObject([{ role: "position" }])
+  })
 })
 
 describe("mainDepositTokenRoutes", () => {

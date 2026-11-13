@@ -69,7 +69,8 @@ export function FailedScreen({ screen, actions }: BackupScreenProps<"failed">) {
     back: { label: place ? copy.otherPlace : panelCopy.cancel, onClick: () => actions.dismiss() },
     cancel: {
       label: kind === "damaged" ? copy.startOver : panelCopy.cancel,
-      onClick: () => actions.cancel(),
+      // A sheet whose only way on is dropping the attempt drops it at once.
+      onClick: () => (primary === "cancel" ? actions.cancel() : actions.askCancel()),
     },
     keys: {
       label: copy.check,

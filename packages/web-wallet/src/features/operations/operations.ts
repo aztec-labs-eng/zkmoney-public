@@ -17,6 +17,7 @@ import {
   type RecordSet,
 } from "@obsidion/front-core"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
+import { useState } from "react"
 import { openedSession, useSession, type Session } from "../../session/session"
 import { flowCopy } from "./operationCopy"
 
@@ -243,6 +244,31 @@ export type TabLine = "keep" | "safe"
 export function tabLineOf(record: OperationRecord | null, live: boolean): TabLine | undefined {
   if (record?.state === "sent") return "safe"
   return record?.state === "local" && live ? "keep" : undefined
+}
+
+/** How long the keep-open notice says the tab may close before it goes. */
+export const SAFE_SHOWN_MS = 4000
+
+const NO_CLOCK = memoryStore(0).readonly
+
+/**
+ * The operation this tab proves, and its tab line: `keep` while it binds the tab, then `safe` for a
+ * moment once it is sent. A failed or cancelled one shows nothing: its flow and the bell report it.
+ */
+export function useKeepOpenNotice(): { operation: OperationRecord; line: TabLine } | undefined {
+  const { operations, page } = useSession()
+  const bound = useStore(operations.tabBound)
+  const { records } = useStore(operations.view)
+  const [shown, show] = useState<{ id: string; safeAt?: number }>()
+  if (bound && bound.operationId !== shown?.id) show({ id: bound.operationId })
+  const operation = bound ?? records.find((r) => r.operationId === shown?.id)
+  const sent = !bound && (operation?.state === "sent" || operation?.state === "settled")
+  if (sent && shown?.safeAt === undefined) show({ id: operation.operationId, safeAt: page.now() })
+  const now = useStore(shown?.safeAt === undefined ? NO_CLOCK : page.seconds)
+  const safe = sent && (shown?.safeAt === undefined || now - shown.safeAt < SAFE_SHOWN_MS)
+  if (!bound && shown && !safe) show(undefined)
+  if (bound) return { operation: bound, line: "keep" }
+  return operation && safe ? { operation, line: "safe" } : undefined
 }
 
 export function useTabLine(operationId: string | undefined): TabLine | undefined {

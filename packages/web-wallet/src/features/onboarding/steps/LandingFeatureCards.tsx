@@ -6,7 +6,7 @@ import chainsArt from "../../../assets/onboarding/landing-withdraw-chains.webp"
 import paylinksArt from "../../../assets/onboarding/landing-paylinks.webp"
 import { apyPercent } from "../../savings/EarningsCalculator"
 import { useStore } from "@obsidion/front-core"
-import type { LandingRate } from "../../savings/savingsGateway"
+import type { LandingRate } from "../../savings/landingRate"
 import { useDomEffect } from "../../../ui/useDomEffect"
 
 const CARDS: {
@@ -52,18 +52,18 @@ const cardsShown = () =>
  * shows the cards waits for it, rather than swap it in. Decided once, so a resize never puts the
  * landing back behind the boot screen.
  */
-export function useLandingRate(landing: LandingRate): { ready: boolean; apy: number | undefined } {
+export function useLandingRate(landing: LandingRate): { ready: boolean; apy: bigint | undefined } {
   const rate = useStore(landing)
   const [waits] = useState(cardsShown)
   const settled = rate.status === "ready" ? rate.value : undefined
-  return { ready: !!settled || !waits, apy: settled?.apy }
+  return { ready: !!settled || !waits, apy: settled?.rate }
 }
 
 /**
  * Desktop landing's feature column: auto-advancing cards, with the indicator as the hold timer.
  * `apy` is Sky's live rate; without one the Savings card names the reward, not a figure.
  */
-export function LandingFeatureCards({ apy }: { apy: number | undefined }) {
+export function LandingFeatureCards({ apy }: { apy: bigint | undefined }) {
   // Unbounded so each step slides one card in the same direction, wrapping included.
   const [pos, setPos] = useState(0)
   const [paused, setPaused] = useState(false)

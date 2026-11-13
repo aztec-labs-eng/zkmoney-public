@@ -82,15 +82,10 @@ describe("a pending deposit's reason on a cold page", () => {
   it("costs at most one L1 call more than the observer's own terms read", async () => {
     const calls = countingL1()
     const query = testQuery()
-    const chain = createPageChain(
-      defaultConfig,
-      { query, database: testChain().database },
-      undefined,
-      {
-        tuple: DEMO_OXIDE_TUPLE,
-        deployment: DEMO_OXIDE_DEPLOYMENT,
-      },
-    )
+    const chain = createPageChain(defaultConfig, { ...testChain(), query }, undefined, {
+      tuple: DEMO_OXIDE_TUPLE,
+      deployment: DEMO_OXIDE_DEPLOYMENT,
+    })
     // Capacity reads are the same before and after, so they read no L1 here.
     const registry = createPortalCapacityRegistry({
       read: async () => new Promise(() => {}),

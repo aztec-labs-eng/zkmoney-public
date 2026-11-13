@@ -11,7 +11,7 @@ import type { PageScreens } from "../app/sessionDeps"
 import type { PageLoaders } from "../app/pageChain"
 import type { Session } from "../session/session"
 import type { SavedL1Wallet } from "../session/savedL1Wallets"
-import { profileBridge } from "../session/walletChains"
+import { acrossBridge } from "../session/walletChains"
 
 export interface DemoMock {
   loaders: Partial<PageLoaders>
@@ -62,10 +62,10 @@ export function playJourney(pace: Pace, steps: { at: number; run: () => Promise<
 export function chainFor(
   network: string | null,
   bridged: boolean,
-  config: Pick<WebWalletConfig, "l1ChainId" | "bridge">,
+  config: Pick<WebWalletConfig, "l1ChainId" | "features">,
 ): number {
   const l1 = config.l1ChainId
-  const chains = profileBridge(config)?.chains ?? []
+  const chains = acrossBridge(config)?.chains ?? []
   const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "")
   if (network) {
     if (["ethereum", "l1", "mainnet", String(l1)].includes(slug(network))) return l1

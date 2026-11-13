@@ -25,10 +25,6 @@
   justify-content: center;
   width: var(--badge-size);
   height: var(--badge-size);
-  border-radius: 50%;
-  background: #627eea;
-}
-.coinBadgeChain {
   overflow: hidden;
-  background: none;
+  border-radius: 50%;
 }

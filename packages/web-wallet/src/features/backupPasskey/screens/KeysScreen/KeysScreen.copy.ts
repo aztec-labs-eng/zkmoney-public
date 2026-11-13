@@ -1,6 +1,6 @@
 export default {
   title: "Protect your account",
-  lead: "Add a second passkey on another device so you can always recover your funds.",
+  lead: "Add a second passkey on another device so you can recover your funds if you lose this device.",
   onAccount: "On this account",
   roles: { "sign-up": "Sign-up passkey", "backup": "Backup passkey", "unknown": "Passkey" },
   notAdded: "Not added",

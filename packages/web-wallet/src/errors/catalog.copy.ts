@@ -160,6 +160,18 @@ export default {
   "bridge.quoteFailed": "Couldn't get a bridge quote. Try again.",
   "withdraw.bridgeBelowFloor": "This amount is too small to bridge.",
   "withdraw.escrowRan": "This escrow has already run. The record will update shortly.",
+  // Proposed copy for the Savings move refusals, pending review.
+  "move.routeMismatch": "Savings changed on the network since this move was set up. Try again.",
+  "move.tipsExceedAmount": "This amount does not cover the L1 fees. Try a larger amount.",
+  "move.recoveryKeysMismatch":
+    "This move's recovery key doesn't match this account, so it can't be recovered here.",
+  "move.quoteChanged": "Fees went up since your review. Nothing was sent.",
+  "move.escrowRan": "This move's escrow has already run. Savings will update shortly.",
+  "move.noRecovery": "This move has nothing left to recover. Savings will update shortly.",
+  "move.escrowEmpty": "This move has nothing left to recover. Savings will update shortly.",
+  "move.overNetworkLimit": "This withdrawal is over the network's maximum per withdrawal.",
+  "move.overspent": "Balance not enough",
+  "move.signerUnreachable": "The Savings co-signer isn't reachable. Try again in a moment.",
   // Proposed copy for the two operation refusals, pending review.
   "operation.running": "This transaction is already in progress.",
   "operation.sent": "This transaction was already sent.",

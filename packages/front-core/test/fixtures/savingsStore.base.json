@@ -1,0 +1,679 @@
+{
+  "about": "The Savings store as the base build wrote it: a generator test run on earn/f2-sky-escrow-rail@d3bb5e77bfa07555f3391a5a6ec022566e31f8e2 drove that build's own stores (createWithdrawals, createSavingsMoves, settleSavingsMoves, importHistoricActivity) over an in-memory Database, with a scripted chain and the production v6 factory and portals; `base` holds that build's rows, feed, ledger and arriving funds. The cursorOnly and restored databases came from a second generator run on the same commit, over the scripted `chain`: a move kept with a cursor past its deposit and no floor, and a move that build's settle pass adopted from a rebuilt burn.",
+  "now": 1794225600000,
+  "secret": "0x2fb5c33780de0b267a6d1b10e983a2b3cc4cdf4a10a43cae2a3f070a40ef9a6b",
+  "recipient": "0x0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7",
+  "recoveryAccount": "0x4c1a2b3d5e6f708192a3b4c5d6e7f8091a2b3c4d",
+  "recoveredTo": "0x9a8b7c6d5e4f30211203f4e5d6c7b8a9f0e1d2c3",
+  "networkId": "0x1f2c3b4a5d6e7f8091a2b3c4d5e6f708192a3b4c",
+  "retiredNetworkId": "0x603bb2c05d474794ea97805e8de69bccfb3bca12",
+  "retiredRollupVersion": "1714840162",
+  "keys": "relative to the account's namespace (obsidion.<storageId>.) in the rollup's wallet database",
+  "addresses": {
+    "factory": "0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09",
+    "skyExecutor": "0xfe0b2b24cca52d1680103e258985a5aca33742d5",
+    "main": {
+      "bridgeId": "brg-dai-v6",
+      "portal": "0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042",
+      "token": "0x6b175474e89094c44da98b954eedeac495271d0f",
+      "l2Token": "0x11d2bed21a36289fd6f6a6af93a546b5be7115caf957f0f700f42d56e25fe0a3",
+      "plainWithdrawalExecutor": "0x7c8c2147d1bb8b83e0a0501097372de170ee702a",
+      "deployedAtBlock": "26276712",
+      "symbol": "OXDAI"
+    },
+    "savings": {
+      "bridgeId": "brg-susds-v6",
+      "portal": "0x2EbFEE284bABf94869FAC44BC85eDb3C34e536D8",
+      "token": "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd",
+      "l2Token": "0x2905e147613fbf166db8a599524724b1fedce4d97caaf55a9d9b174ba2dc18ac",
+      "deployedAtBlock": "26276922",
+      "symbol": "OXSUSDS"
+    }
+  },
+  "databases": {
+    "current": {
+      "@obsidion/historic-activity/imported/v2": "{\"at\":1793476800000,\"databases\":[\"1714840162\"]}",
+      "acct/meta/savingsMoves": "1",
+      "acct/meta/withdrawals": "1",
+      "acct/savingsMoves/case-burned": "{\"direction\":\"in\",\"withdrawalLocalId\":\"case-burned\",\"escrow\":\"0x1874cfa3a5168b5a200d783f14109a6f60281821\",\"nonce\":\"0x2f8e6e0aca768f594c0b6f89112899f3e5d1ae254d7a656e184cb04c095717b2\",\"recipientCommitment\":\"0x20b21954470a34e6b4c8fb70de1a02bb1e4fecbc81dd507608eeb1e5f8304bbc\",\"amount\":\"200000000000000000000\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"depositScanFrom\":\"26586137\",\"depositScanFloor\":\"26576600\",\"startTime\":1794132000000,\"value\":\"200000000000000000000\",\"net\":\"198980000000000000000\",\"lastCheck\":{\"at\":1794247200000,\"message\":\"no deposit on the destination portal yet, searched to block 26586137\"}}",
+      "acct/savingsMoves/case-claimed": "{\"direction\":\"in\",\"withdrawalLocalId\":\"case-claimed\",\"escrow\":\"0x3978b4ed77b688994990ca99d8fdae4f8b360dc5\",\"nonce\":\"0x26d689f473599a36aa9c2c06f5ed3de4169cb88ee9170cd6a2dd548a6f8c6efd\",\"recipientCommitment\":\"0x0c08fa76c08241ff08f115651aa65785b297a057932cf0d0857092586c36b7ba\",\"amount\":\"1000000000000000000000\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"depositScanFrom\":\"26526200\",\"depositScanFloor\":\"26526200\",\"startTime\":1793527200000,\"value\":\"1000000000000000000000\",\"net\":\"998980000000000000000\",\"deposit\":{\"inboxIndex\":\"91111\",\"amount\":\"937129455909943714821\",\"claimed\":true,\"txHash\":\"0x5c7de8b5b7fe86829e72438c9376c15696a39430273fbdfc28fd2c47b75f035d\",\"blockNumber\":\"26526550\",\"at\":1793531400000,\"storedAt\":1793532000000},\"vault\":{\"txHash\":\"0x5c7de8b5b7fe86829e72438c9376c15696a39430273fbdfc28fd2c47b75f035d\",\"assets\":\"998980000000000000000\",\"shares\":\"937129455909943714821\"},\"vaultLookup\":2,\"lastCheck\":{\"at\":1793532000000,\"message\":\"claimed\"},\"endTime\":1793532000000}",
+      "acct/savingsMoves/case-deposit-seen": "{\"direction\":\"in\",\"withdrawalLocalId\":\"case-deposit-seen\",\"escrow\":\"0x6412cf39f3dab4d06f2fdd6914c98d5d8707293c\",\"nonce\":\"0x252ceffa499e5c827b942f33fac171d74ff5e544fdca3bccb525a67d7cf9f99f\",\"recipientCommitment\":\"0x06c35e63535d3d8aedb9c43a5775d2fa389665e6f088f497359453c3093675eb\",\"amount\":\"250000000000000000000\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"depositScanFrom\":\"26540600\",\"depositScanFloor\":\"26540600\",\"startTime\":1793700000000,\"value\":\"250000000000000000000\",\"net\":\"248980000000000000000\",\"deposit\":{\"inboxIndex\":\"91185\",\"amount\":\"233345829428303655107\",\"claimed\":false,\"txHash\":\"0x098d155b25790f21d65368c91d0629b864517f99cb34d93ee52475b6452ca384\",\"blockNumber\":\"26540950\",\"at\":1793704200000},\"vault\":{\"txHash\":\"0x098d155b25790f21d65368c91d0629b864517f99cb34d93ee52475b6452ca384\",\"assets\":\"248980000000000000000\",\"shares\":\"233345829428303655107\"},\"vaultLookup\":2,\"lastCheck\":{\"at\":1794247200000,\"message\":\"claim refused: Assertion failed: Message not in state 'tree_index < leaf_index'\"}}",
+      "acct/savingsMoves/case-failed-burn": "{\"direction\":\"in\",\"withdrawalLocalId\":\"case-failed-burn\",\"escrow\":\"0x6279f361cf1434189d65dc9f05a3eff78655ae31\",\"nonce\":\"0x14f0fa58330994d23526fc4dda69a0ab7b8669479a230c33beda45a930144d27\",\"recipientCommitment\":\"0x088d4eade21bc5ca83ebba875685159d4a044328383bf16b0fd8d4e241899223\",\"amount\":\"150000000000000000000\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"depositScanFrom\":\"26555000\",\"depositScanFloor\":\"26555000\",\"startTime\":1793872800000,\"value\":\"150000000000000000000\",\"net\":\"148980000000000000000\"}",
+      "acct/savingsMoves/case-no-factory": "{\"direction\":\"in\",\"withdrawalLocalId\":\"case-no-factory\",\"escrow\":\"0x9e51375f2e4ccf39d7abfb50c4fcc494741d4a92\",\"nonce\":\"0x1d4cfaf4393f0575eb7602ee454be900191d12aed26e332f5e3f5427e54fac8f\",\"recipientCommitment\":\"0x2d3aa39ed1decf9dcb7e60899ef3a27894aec45c84decc4b74d2a2a97d5748ce\",\"amount\":\"500000000000000000000\",\"depositScanFrom\":\"26533400\",\"depositScanFloor\":\"26533400\",\"startTime\":1793613600000,\"value\":\"500000000000000000000\",\"net\":\"498980000000000000000\",\"deposit\":{\"inboxIndex\":\"91148\",\"amount\":\"467866854195968120018\",\"claimed\":true,\"txHash\":\"0xed43459d4c4fa8f5b9b9e477bb0671d44cc4018cc87e8d8c6dcf8b3a5add1796\",\"blockNumber\":\"26533750\",\"at\":1793617800000,\"storedAt\":1793618400000},\"vault\":{\"txHash\":\"0xed43459d4c4fa8f5b9b9e477bb0671d44cc4018cc87e8d8c6dcf8b3a5add1796\",\"assets\":\"498980000000000000000\",\"shares\":\"467866854195968120018\"},\"vaultLookup\":2,\"lastCheck\":{\"at\":1793618400000,\"message\":\"claimed\"},\"endTime\":1793618400000}",
+      "acct/savingsMoves/case-recovered": "{\"direction\":\"in\",\"withdrawalLocalId\":\"case-recovered\",\"escrow\":\"0xace90e10a3995ae7512a6a0de27b2bc289dcc042\",\"nonce\":\"0x25e036902ba08349827fc721e8ce094af7a1a480cede52eaeb10e2e166c40f51\",\"recipientCommitment\":\"0x0d03e6d24bed3489f0ec93eee3f82841d5dd50a3d7316703000142d257fdf3a7\",\"amount\":\"300000000000000000000\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"depositScanFrom\":\"26557337\",\"depositScanFloor\":\"26547800\",\"startTime\":1793786400000,\"value\":\"300000000000000000000\",\"net\":\"298980000000000000000\",\"lastCheck\":{\"at\":1793901600000,\"message\":\"no deposit on the destination portal yet, searched to block 26557337\"},\"recovered\":{\"to\":\"0x9a8b7c6d5e4f30211203f4e5d6c7b8a9f0e1d2c3\",\"txHashes\":[\"0xc24965200dda8d96036aaf3bbbd90aacd3a7355bf698f504054bc5a0e0fba1f3\"]}}",
+      "acct/savingsMoves/case-released-no-deposit": "{\"direction\":\"out\",\"withdrawalLocalId\":\"case-released-no-deposit\",\"escrow\":\"0x9dd635dcd1af387a44db4f58318eeb41ed900b9d\",\"nonce\":\"0x1f77da3698a6a2d4fde2fdb3d16001f63aaea3c15dcbce18bbc3060ff48a36fa\",\"recipientCommitment\":\"0x210282018942d0d85ddd576eb5199feaec66317bafa4b8c0a71da57ad2b4b6f8\",\"amount\":\"100000000000000000000\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"depositScanFrom\":\"26586137\",\"depositScanFloor\":\"26562200\",\"startTime\":1793959200000,\"value\":\"106850000000000000000\",\"net\":\"105890000000000000000\",\"lastCheck\":{\"at\":1794247200000,\"message\":\"no deposit on the destination portal yet, searched to block 26586137\"}}",
+      "acct/savingsMoves/case-retired-claimed": "{\"direction\":\"in\",\"withdrawalLocalId\":\"case-retired-claimed\",\"escrow\":\"0x1dd171aaa92826f4164c6828a8b962d84c41002c\",\"nonce\":\"0x036e775070b6e91a882d0ec8982a929efd80332c6093700cea5943516d397084\",\"recipientCommitment\":\"0x13c58a4451925520a3cafb1f11553b23e4eb80dae3d617a90da071984d827099\",\"amount\":\"400000000000000000000\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"depositScanFrom\":\"26439800\",\"depositScanFloor\":\"26439800\",\"startTime\":1792490400000,\"value\":\"400000000000000000000\",\"net\":\"398980000000000000000\",\"deposit\":{\"inboxIndex\":\"91000\",\"amount\":\"375687382297551789077\",\"claimed\":true,\"txHash\":\"0xb87065ad36626b287b2a4c1d0f38dcca5d077253a7e98fe71ce4638406f3fb52\",\"blockNumber\":\"26440150\",\"at\":1792494600000,\"storedAt\":1792495200000},\"vault\":{\"txHash\":\"0xb87065ad36626b287b2a4c1d0f38dcca5d077253a7e98fe71ce4638406f3fb52\",\"assets\":\"398980000000000000000\",\"shares\":\"375687382297551789077\"},\"vaultLookup\":2,\"lastCheck\":{\"at\":1792495200000,\"message\":\"claimed\"},\"endTime\":1792495200000,\"retired\":true}",
+      "acct/savingsMoves/case-retired-open": "{\"direction\":\"in\",\"withdrawalLocalId\":\"case-retired-open\",\"escrow\":\"0x9ba853430cc5e6f05f5002644a17e0cf7ced0d70\",\"nonce\":\"0x1a447a59003bd410d9f0820ba837532bfa7ffb0999a5df39e926b4fb1cf73eec\",\"recipientCommitment\":\"0x1de9f000da4778d39c3da7a35e7dd86127cf6b5e19908972194f86156484e756\",\"amount\":\"120000000000000000000\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"depositScanFrom\":\"26454200\",\"depositScanFloor\":\"26454200\",\"startTime\":1792663200000,\"value\":\"120000000000000000000\",\"net\":\"118980000000000000000\",\"deposit\":{\"inboxIndex\":\"91037\",\"amount\":\"111928504233301975540\",\"claimed\":false,\"txHash\":\"0x432929a6a514dca16a6846ad5c7b3d8b18280820e78d406af335b6bb3e85375e\",\"blockNumber\":\"26454550\",\"at\":1792667400000},\"vault\":{\"txHash\":\"0x432929a6a514dca16a6846ad5c7b3d8b18280820e78d406af335b6bb3e85375e\",\"assets\":\"118980000000000000000\",\"shares\":\"111928504233301975540\"},\"vaultLookup\":2,\"lastCheck\":{\"at\":1794247200000,\"message\":\"claim refused: Assertion failed: Message not in state 'tree_index < leaf_index'\"},\"retired\":true}",
+      "acct/withdrawals.i/hash/0x0070f2781bfcc02774765374307297489c47300856fcda3db68096a73c504f00/case-recovered": "",
+      "acct/withdrawals.i/hash/0x031f68dde86aa397be090fe40cf5c59062b83c55161668ced6b0d5f013e18232/case-deposit-seen": "",
+      "acct/withdrawals.i/hash/0x0868deed400aa8ba19555a6268588b00b6b9f0e5d2f47b144e64f863847a2dc7/case-released-no-deposit": "",
+      "acct/withdrawals.i/hash/0x09dc663f526f94a20b2035637a581199780b0a71826a2ea7723856449d718f42/case-claimed": "",
+      "acct/withdrawals.i/hash/0x13683990814c827d1b78b5c09c311cff7a30e86c7dbe78bd9626c5f8dbf85e32/case-retired-claimed": "",
+      "acct/withdrawals.i/hash/0x1cb0505fa4eeee118440a1fc1251859b0ff26c09dfcd0f0c271a669192a317c1/case-retired-open": "",
+      "acct/withdrawals.i/hash/0x1efd9af7fd1a89ab2e518c67d98415611e88ad9da6d0eb3d2ded0a8582249b6f/case-burned": "",
+      "acct/withdrawals.i/hash/0x2541bf265e7e727d11ded1793bce5e8955777789a63b59754258eae5ce07a41e/case-no-factory": "",
+      "acct/withdrawals/case-burned": "{\"recipient\":\"0x1874cfa3a5168b5a200d783f14109a6f60281821\",\"recipientProvenance\":\"saved-recipient\",\"recipientAlias\":\"Savings\",\"amount\":\"200\",\"rawAmount\":\"200000000000000000000\",\"relayerTip\":\"420000000000000000\",\"withdrawalFee\":\"250000000000000000\",\"tokenSymbol\":\"OXDAI\",\"tokenDecimals\":18,\"phase\":\"finalizing_l1\",\"startTime\":1794132000000,\"deployment\":{\"portal\":\"0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042\",\"l2Token\":\"0x11d2bed21a36289fd6f6a6af93a546b5be7115caf957f0f700f42d56e25fe0a3\",\"executor\":\"0x7c8c2147d1bb8b83e0a0501097372de170ee702a\"},\"skyMove\":{\"direction\":\"in\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"recipientCommitment\":\"0x20b21954470a34e6b4c8fb70de1a02bb1e4fecbc81dd507608eeb1e5f8304bbc\",\"recoveryCommitment\":\"0x00bbda742cbb077f03d1b485430bc471556a935f8e6f6754ebb7997d6ae4d5f2\",\"relayerTip\":\"350000000000000000\",\"nonce\":\"0x2f8e6e0aca768f594c0b6f89112899f3e5d1ae254d7a656e184cb04c095717b2\",\"depositScanFrom\":\"26576600\",\"value\":\"200000000000000000000\"},\"localId\":\"case-burned\",\"operationId\":\"withdraw-mw7nvb40-burned\",\"networkId\":\"0x1f2c3b4a5d6e7f8091a2b3c4d5e6f708192a3b4c\",\"version\":2,\"l2TxHash\":\"0x1efd9af7fd1a89ab2e518c67d98415611e88ad9da6d0eb3d2ded0a8582249b6f\",\"blockNumber\":4145600,\"minedAt\":1794132180000,\"phaseEnteredAt\":1794134400000,\"withdrawalId\":\"0x9864399595ad4579ae6bf0d21d09d027d9c22da5bed63656e6909c17c18d6914\"}",
+      "acct/withdrawals/case-claimed": "{\"recipient\":\"0x3978b4ed77b688994990ca99d8fdae4f8b360dc5\",\"recipientProvenance\":\"saved-recipient\",\"recipientAlias\":\"Savings\",\"amount\":\"1000\",\"rawAmount\":\"1000000000000000000000\",\"relayerTip\":\"420000000000000000\",\"withdrawalFee\":\"250000000000000000\",\"tokenSymbol\":\"OXDAI\",\"tokenDecimals\":18,\"phase\":\"done\",\"startTime\":1793527200000,\"deployment\":{\"portal\":\"0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042\",\"l2Token\":\"0x11d2bed21a36289fd6f6a6af93a546b5be7115caf957f0f700f42d56e25fe0a3\",\"executor\":\"0x7c8c2147d1bb8b83e0a0501097372de170ee702a\"},\"skyMove\":{\"direction\":\"in\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"recipientCommitment\":\"0x0c08fa76c08241ff08f115651aa65785b297a057932cf0d0857092586c36b7ba\",\"recoveryCommitment\":\"0x0000afc99e2bf41d856a59fd14baa80bdfc2eec171d862478140d08c662e0575\",\"relayerTip\":\"350000000000000000\",\"nonce\":\"0x26d689f473599a36aa9c2c06f5ed3de4169cb88ee9170cd6a2dd548a6f8c6efd\",\"depositScanFrom\":\"26526200\",\"value\":\"1000000000000000000000\"},\"localId\":\"case-claimed\",\"operationId\":\"withdraw-mvxnscg0-claimed\",\"networkId\":\"0x1f2c3b4a5d6e7f8091a2b3c4d5e6f708192a3b4c\",\"version\":2,\"l2TxHash\":\"0x09dc663f526f94a20b2035637a581199780b0a71826a2ea7723856449d718f42\",\"blockNumber\":4137200,\"minedAt\":1793527380000,\"phaseEnteredAt\":1793530320000,\"withdrawalId\":\"0x95380a9d3a7a9e46713fb99e3aeaf0b787536a1f3bcf1355c252ec7c9dac787d\",\"l1TxHash\":\"0x8b1f3f80a97ca67fb2bc5010c7895b1ffdabadc29b917a795db9d5e72c006168\",\"endTime\":1793530200000,\"receivedAmount\":\"999330000000000000000\"}",
+      "acct/withdrawals/case-deposit-seen": "{\"recipient\":\"0x6412cf39f3dab4d06f2fdd6914c98d5d8707293c\",\"recipientProvenance\":\"saved-recipient\",\"recipientAlias\":\"Savings\",\"amount\":\"250\",\"rawAmount\":\"250000000000000000000\",\"relayerTip\":\"420000000000000000\",\"withdrawalFee\":\"250000000000000000\",\"tokenSymbol\":\"OXDAI\",\"tokenDecimals\":18,\"phase\":\"done\",\"startTime\":1793700000000,\"deployment\":{\"portal\":\"0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042\",\"l2Token\":\"0x11d2bed21a36289fd6f6a6af93a546b5be7115caf957f0f700f42d56e25fe0a3\",\"executor\":\"0x7c8c2147d1bb8b83e0a0501097372de170ee702a\"},\"skyMove\":{\"direction\":\"in\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"recipientCommitment\":\"0x06c35e63535d3d8aedb9c43a5775d2fa389665e6f088f497359453c3093675eb\",\"recoveryCommitment\":\"0x00ee4df3cf8173018d62fdef134a346d99ea2a68e5d50923f31ee97e30a2d834\",\"relayerTip\":\"350000000000000000\",\"nonce\":\"0x252ceffa499e5c827b942f33fac171d74ff5e544fdca3bccb525a67d7cf9f99f\",\"depositScanFrom\":\"26540600\",\"value\":\"250000000000000000000\"},\"localId\":\"case-deposit-seen\",\"operationId\":\"withdraw-mw0io1s0-depositSeen\",\"networkId\":\"0x1f2c3b4a5d6e7f8091a2b3c4d5e6f708192a3b4c\",\"version\":2,\"l2TxHash\":\"0x031f68dde86aa397be090fe40cf5c59062b83c55161668ced6b0d5f013e18232\",\"blockNumber\":4139600,\"minedAt\":1793700180000,\"phaseEnteredAt\":1793703120000,\"withdrawalId\":\"0x787c53910e05e48d98411a6024aa251838a9f0ade5bb063968c8317d32405670\",\"l1TxHash\":\"0x79ff2e18229fbf1f2241be4551206dbf6efa060a52dc56ba9d9cae48178063af\",\"endTime\":1793703000000,\"receivedAmount\":\"249330000000000000000\"}",
+      "acct/withdrawals/case-failed-burn": "{\"recipient\":\"0x6279f361cf1434189d65dc9f05a3eff78655ae31\",\"recipientProvenance\":\"saved-recipient\",\"recipientAlias\":\"Savings\",\"amount\":\"150\",\"rawAmount\":\"150000000000000000000\",\"relayerTip\":\"420000000000000000\",\"withdrawalFee\":\"250000000000000000\",\"tokenSymbol\":\"OXDAI\",\"tokenDecimals\":18,\"phase\":\"failed\",\"startTime\":1793872800000,\"deployment\":{\"portal\":\"0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042\",\"l2Token\":\"0x11d2bed21a36289fd6f6a6af93a546b5be7115caf957f0f700f42d56e25fe0a3\",\"executor\":\"0x7c8c2147d1bb8b83e0a0501097372de170ee702a\"},\"skyMove\":{\"direction\":\"in\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"recipientCommitment\":\"0x088d4eade21bc5ca83ebba875685159d4a044328383bf16b0fd8d4e241899223\",\"recoveryCommitment\":\"0x00b0a75e5698ca1de4e50bc906107a4404b0a5f5ad7585aa73d912d6c18a20b4\",\"relayerTip\":\"350000000000000000\",\"nonce\":\"0x14f0fa58330994d23526fc4dda69a0ab7b8669479a230c33beda45a930144d27\",\"depositScanFrom\":\"26555000\",\"value\":\"150000000000000000000\"},\"localId\":\"case-failed-burn\",\"operationId\":\"withdraw-mw3djr40-failedBurn\",\"networkId\":\"0x1f2c3b4a5d6e7f8091a2b3c4d5e6f708192a3b4c\",\"version\":2,\"failure\":{\"code\":\"withdrawal.failed\",\"detail\":\"Simulation failed: Assertion failed: Balance too low 'subtracted > 0'\"},\"endTime\":1793872920000}",
+      "acct/withdrawals/case-no-factory": "{\"recipient\":\"0x9e51375f2e4ccf39d7abfb50c4fcc494741d4a92\",\"recipientProvenance\":\"saved-recipient\",\"recipientAlias\":\"Savings\",\"amount\":\"500\",\"rawAmount\":\"500000000000000000000\",\"relayerTip\":\"420000000000000000\",\"withdrawalFee\":\"250000000000000000\",\"tokenSymbol\":\"OXDAI\",\"tokenDecimals\":18,\"phase\":\"done\",\"startTime\":1793613600000,\"deployment\":{\"portal\":\"0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042\",\"l2Token\":\"0x11d2bed21a36289fd6f6a6af93a546b5be7115caf957f0f700f42d56e25fe0a3\",\"executor\":\"0x7c8c2147d1bb8b83e0a0501097372de170ee702a\"},\"skyMove\":{\"direction\":\"in\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"recipientCommitment\":\"0x2d3aa39ed1decf9dcb7e60899ef3a27894aec45c84decc4b74d2a2a97d5748ce\",\"recoveryCommitment\":\"0x00ab8ba396ebea1694df61651e2cd7b023429a53650af1d8d9539edc59b02395\",\"relayerTip\":\"350000000000000000\",\"nonce\":\"0x1d4cfaf4393f0575eb7602ee454be900191d12aed26e332f5e3f5427e54fac8f\",\"depositScanFrom\":\"26533400\",\"value\":\"500000000000000000000\"},\"localId\":\"case-no-factory\",\"operationId\":\"withdraw-mvz38740-noFactory\",\"networkId\":\"0x1f2c3b4a5d6e7f8091a2b3c4d5e6f708192a3b4c\",\"version\":2,\"l2TxHash\":\"0x2541bf265e7e727d11ded1793bce5e8955777789a63b59754258eae5ce07a41e\",\"blockNumber\":4138400,\"minedAt\":1793613780000,\"phaseEnteredAt\":1793616720000,\"withdrawalId\":\"0xaaee47deafcd11b11f662ce810daa3b2fa86f9889c5193df30ea073c871746a4\",\"l1TxHash\":\"0xfa073aa238f9ad46ba0c03300cb76d3b246ae3e39f3316de8bc9201eb75cd7f0\",\"endTime\":1793616600000,\"receivedAmount\":\"499330000000000000000\"}",
+      "acct/withdrawals/case-recovered": "{\"recipient\":\"0xace90e10a3995ae7512a6a0de27b2bc289dcc042\",\"recipientProvenance\":\"saved-recipient\",\"recipientAlias\":\"Savings\",\"amount\":\"300\",\"rawAmount\":\"300000000000000000000\",\"relayerTip\":\"420000000000000000\",\"withdrawalFee\":\"250000000000000000\",\"tokenSymbol\":\"OXDAI\",\"tokenDecimals\":18,\"phase\":\"done\",\"startTime\":1793786400000,\"deployment\":{\"portal\":\"0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042\",\"l2Token\":\"0x11d2bed21a36289fd6f6a6af93a546b5be7115caf957f0f700f42d56e25fe0a3\",\"executor\":\"0x7c8c2147d1bb8b83e0a0501097372de170ee702a\"},\"skyMove\":{\"direction\":\"in\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"recipientCommitment\":\"0x0d03e6d24bed3489f0ec93eee3f82841d5dd50a3d7316703000142d257fdf3a7\",\"recoveryCommitment\":\"0x0083dfa0f85a31a81d85302620159c7ff51c017ad8fcf0f8d63539d65005c789\",\"relayerTip\":\"350000000000000000\",\"nonce\":\"0x25e036902ba08349827fc721e8ce094af7a1a480cede52eaeb10e2e166c40f51\",\"depositScanFrom\":\"26547800\",\"value\":\"300000000000000000000\"},\"localId\":\"case-recovered\",\"operationId\":\"withdraw-mw1y3wg0-recovered\",\"networkId\":\"0x1f2c3b4a5d6e7f8091a2b3c4d5e6f708192a3b4c\",\"version\":2,\"l2TxHash\":\"0x0070f2781bfcc02774765374307297489c47300856fcda3db68096a73c504f00\",\"blockNumber\":4140800,\"minedAt\":1793786580000,\"phaseEnteredAt\":1793789520000,\"withdrawalId\":\"0x08649374700e32b8fb7db1f57aa7160c737f7a84f21c5b1de72045ee72cf938d\",\"l1TxHash\":\"0x8c6502199fafb7913a73fb2c635dfe79457eb2eee2ead9cb1464dd182b0cf7fc\",\"endTime\":1793789400000,\"receivedAmount\":\"299330000000000000000\"}",
+      "acct/withdrawals/case-released-no-deposit": "{\"recipient\":\"0x9dd635dcd1af387a44db4f58318eeb41ed900b9d\",\"recipientProvenance\":\"saved-recipient\",\"recipientAlias\":\"Main Account\",\"amount\":\"100\",\"rawAmount\":\"100000000000000000000\",\"relayerTip\":\"610000000000000000\",\"tokenSymbol\":\"OXSUSDS\",\"tokenDecimals\":18,\"phase\":\"done\",\"startTime\":1793959200000,\"deployment\":{\"portal\":\"0x2EbFEE284bABf94869FAC44BC85eDb3C34e536D8\",\"l2Token\":\"0x2905e147613fbf166db8a599524724b1fedce4d97caaf55a9d9b174ba2dc18ac\",\"executor\":\"0xfe0b2b24cca52d1680103e258985a5aca33742d5\"},\"skyMove\":{\"direction\":\"out\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"recipientCommitment\":\"0x210282018942d0d85ddd576eb5199feaec66317bafa4b8c0a71da57ad2b4b6f8\",\"recoveryCommitment\":\"0x00a13ddd303753f3a5efe803074e37c33d06dc7b6995b6c7a6993659bab323d0\",\"relayerTip\":\"350000000000000000\",\"nonce\":\"0x1f77da3698a6a2d4fde2fdb3d16001f63aaea3c15dcbce18bbc3060ff48a36fa\",\"depositScanFrom\":\"26562200\",\"value\":\"106850000000000000000\"},\"localId\":\"case-released-no-deposit\",\"operationId\":\"withdraw-mw4szls0-releasedNoDeposit\",\"networkId\":\"0x1f2c3b4a5d6e7f8091a2b3c4d5e6f708192a3b4c\",\"version\":2,\"l2TxHash\":\"0x0868deed400aa8ba19555a6268588b00b6b9f0e5d2f47b144e64f863847a2dc7\",\"blockNumber\":4143200,\"minedAt\":1793959380000,\"phaseEnteredAt\":1793962320000,\"withdrawalId\":\"0xbff24ecb09784952ab2bda9c6949f24dc9e7709012acf102241ca60e72c141a0\",\"l1TxHash\":\"0xdb5d1b753b695bd9403dbc383f003fa8478d49a04e6d2aaedd2db6cca6f19e1e\",\"endTime\":1793962200000,\"receivedAmount\":\"106240000000000000000\"}",
+      "acct/withdrawals/case-retired-claimed": "{\"recipient\":\"0x1dd171aaa92826f4164c6828a8b962d84c41002c\",\"recipientProvenance\":\"saved-recipient\",\"recipientAlias\":\"Savings\",\"amount\":\"400\",\"rawAmount\":\"400000000000000000000\",\"relayerTip\":\"420000000000000000\",\"withdrawalFee\":\"250000000000000000\",\"tokenSymbol\":\"OXDAI\",\"tokenDecimals\":18,\"phase\":\"done\",\"startTime\":1792490400000,\"deployment\":{\"portal\":\"0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042\",\"l2Token\":\"0x11d2bed21a36289fd6f6a6af93a546b5be7115caf957f0f700f42d56e25fe0a3\",\"executor\":\"0x7c8c2147d1bb8b83e0a0501097372de170ee702a\"},\"skyMove\":{\"direction\":\"in\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"recipientCommitment\":\"0x13c58a4451925520a3cafb1f11553b23e4eb80dae3d617a90da071984d827099\",\"recoveryCommitment\":\"0x0065a05d5410a52202ffa39118cbb7881e40fdae7d12b1466b5427412038b1c4\",\"relayerTip\":\"350000000000000000\",\"nonce\":\"0x036e775070b6e91a882d0ec8982a929efd80332c6093700cea5943516d397084\",\"depositScanFrom\":\"26439800\",\"value\":\"400000000000000000000\"},\"localId\":\"case-retired-claimed\",\"operationId\":\"withdraw-mvgii4g0-retiredClaimed\",\"networkId\":\"0x603bb2c05d474794ea97805e8de69bccfb3bca12\",\"version\":2,\"l2TxHash\":\"0x13683990814c827d1b78b5c09c311cff7a30e86c7dbe78bd9626c5f8dbf85e32\",\"blockNumber\":4122800,\"minedAt\":1792490580000,\"phaseEnteredAt\":1792493520000,\"withdrawalId\":\"0x7c4a95a4ea2adec45526320606ca9ba6089e4a2aa3c2804834bad63907055973\",\"l1TxHash\":\"0x4cd116880406b798cd7f0f22b470c6744ec5bf0cd12c385666a041bc3543a76e\",\"endTime\":1792493400000,\"receivedAmount\":\"399330000000000000000\"}",
+      "acct/withdrawals/case-retired-open": "{\"recipient\":\"0x9ba853430cc5e6f05f5002644a17e0cf7ced0d70\",\"recipientProvenance\":\"saved-recipient\",\"recipientAlias\":\"Savings\",\"amount\":\"120\",\"rawAmount\":\"120000000000000000000\",\"relayerTip\":\"420000000000000000\",\"withdrawalFee\":\"250000000000000000\",\"tokenSymbol\":\"OXDAI\",\"tokenDecimals\":18,\"phase\":\"done\",\"startTime\":1792663200000,\"deployment\":{\"portal\":\"0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042\",\"l2Token\":\"0x11d2bed21a36289fd6f6a6af93a546b5be7115caf957f0f700f42d56e25fe0a3\",\"executor\":\"0x7c8c2147d1bb8b83e0a0501097372de170ee702a\"},\"skyMove\":{\"direction\":\"in\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"recipientCommitment\":\"0x1de9f000da4778d39c3da7a35e7dd86127cf6b5e19908972194f86156484e756\",\"recoveryCommitment\":\"0x00de3a4486d0589bf10fa4f8d6cf0b9c43e8484c968949fc83f394eef547382f\",\"relayerTip\":\"350000000000000000\",\"nonce\":\"0x1a447a59003bd410d9f0820ba837532bfa7ffb0999a5df39e926b4fb1cf73eec\",\"depositScanFrom\":\"26454200\",\"value\":\"120000000000000000000\"},\"localId\":\"case-retired-open\",\"operationId\":\"withdraw-mvjddts0-retiredOpen\",\"networkId\":\"0x603bb2c05d474794ea97805e8de69bccfb3bca12\",\"version\":2,\"l2TxHash\":\"0x1cb0505fa4eeee118440a1fc1251859b0ff26c09dfcd0f0c271a669192a317c1\",\"blockNumber\":4125200,\"minedAt\":1792663380000,\"phaseEnteredAt\":1792666320000,\"withdrawalId\":\"0x759f0f9b56fa2822af899f9c33eed55f162e8a958820affa85320a2e56349dbd\",\"l1TxHash\":\"0xedf7e79c660e3b73f90d9e002bbc9fc8eb2a274a76510eb8be327d54560b22d4\",\"endTime\":1792666200000,\"receivedAmount\":\"119330000000000000000\"}",
+      "acct/savingsMoves/case-damaged": "{\"direction\":\"sideways\"}"
+    },
+    "blobOnly": {
+      "@obsidion/savings/moves": "{\"case-blob-only\":{\"direction\":\"in\",\"withdrawalLocalId\":\"case-blob-only\",\"escrow\":\"0x4bdfdd6608df3f5bb3495fb0dbbf569b9dc79136\",\"nonce\":\"0x09d8ceea8dca26e3a702005161b92ff6a4f79b6dfa65b1f6891bc38f42d5cdfd\",\"recipientCommitment\":\"0x17c5a038a5a2fe83718ab7e4dd74e81e9fb30717b80b80ed6066ec1a3a6b3062\",\"amount\":\"600000000000000000000\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"depositScanFrom\":\"26497400\",\"depositScanFloor\":\"26497400\",\"startTime\":1793181600000,\"value\":\"600000000000000000000\",\"net\":\"598980000000000000000\",\"deposit\":{\"inboxIndex\":\"91074\",\"amount\":\"562422535211267605633\",\"claimed\":true,\"txHash\":\"0x772e6d88781b177fef3b8527ce6a5ce58c8248a954fe7554df44ee0eaaac9c7c\",\"blockNumber\":\"26497750\",\"at\":1793185800000,\"storedAt\":1793186400000},\"vault\":{\"txHash\":\"0x772e6d88781b177fef3b8527ce6a5ce58c8248a954fe7554df44ee0eaaac9c7c\",\"assets\":\"598980000000000000000\",\"shares\":\"562422535211267605633\"},\"vaultLookup\":2,\"lastCheck\":{\"at\":1793186400000,\"message\":\"claimed\"},\"endTime\":1793186400000}}",
+      "acct/meta/withdrawals": "1",
+      "acct/withdrawals.i/hash/0x22643dfef352d47b8f0a93320ea387c10e618ab3481bdd8d65db120bfd9f400a/case-blob-only": "",
+      "acct/withdrawals/case-blob-only": "{\"recipient\":\"0x4bdfdd6608df3f5bb3495fb0dbbf569b9dc79136\",\"recipientProvenance\":\"saved-recipient\",\"recipientAlias\":\"Savings\",\"amount\":\"600\",\"rawAmount\":\"600000000000000000000\",\"relayerTip\":\"420000000000000000\",\"withdrawalFee\":\"250000000000000000\",\"tokenSymbol\":\"OXDAI\",\"tokenDecimals\":18,\"phase\":\"done\",\"startTime\":1793181600000,\"deployment\":{\"portal\":\"0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042\",\"l2Token\":\"0x11d2bed21a36289fd6f6a6af93a546b5be7115caf957f0f700f42d56e25fe0a3\",\"executor\":\"0x7c8c2147d1bb8b83e0a0501097372de170ee702a\"},\"skyMove\":{\"direction\":\"in\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"recipientCommitment\":\"0x17c5a038a5a2fe83718ab7e4dd74e81e9fb30717b80b80ed6066ec1a3a6b3062\",\"recoveryCommitment\":\"0x00c97d9aac02380094e1d560aebadfdb3e358ef36e6458f47bad03d20897c0d7\",\"relayerTip\":\"350000000000000000\",\"nonce\":\"0x09d8ceea8dca26e3a702005161b92ff6a4f79b6dfa65b1f6891bc38f42d5cdfd\",\"depositScanFrom\":\"26497400\",\"value\":\"600000000000000000000\"},\"localId\":\"case-blob-only\",\"operationId\":\"withdraw-mvry0xs0-blobOnly\",\"networkId\":\"0x1f2c3b4a5d6e7f8091a2b3c4d5e6f708192a3b4c\",\"version\":2,\"l2TxHash\":\"0x22643dfef352d47b8f0a93320ea387c10e618ab3481bdd8d65db120bfd9f400a\",\"blockNumber\":4132400,\"minedAt\":1793181780000,\"phaseEnteredAt\":1793184720000,\"withdrawalId\":\"0xd39d7df3d2fcb0ab3de0ac5a8ec8ec0aad6b6340f802a4d72dc648913a3c3ba6\",\"l1TxHash\":\"0x5f17e0de5198e2a9a7d904507026724b364432cbad50f2b1ebe768560f363878\",\"endTime\":1793184600000,\"receivedAmount\":\"599330000000000000000\"}"
+    },
+    "cursorOnly": {
+      "acct/meta/savingsMoves": "1",
+      "acct/meta/withdrawals": "1",
+      "acct/savingsMoves/case-cursor-only": "{\"direction\":\"in\",\"withdrawalLocalId\":\"case-cursor-only\",\"escrow\":\"0xc5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5\",\"nonce\":\"0x0c5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"recipientCommitment\":\"0x2a603ac2a9cfa1b53ca4c3b43f186aebbfbb9138b6e81406a924f9a11ddbfff7\",\"amount\":\"320000000000000000000\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"depositScanFrom\":\"26601200\",\"startTime\":1794307200000,\"value\":\"320000000000000000000\",\"net\":\"318980000000000000000\"}",
+      "acct/withdrawals.i/hash/0x1414141414141414141414141414141414141414141414141414141414141414/case-cursor-only": "",
+      "acct/withdrawals/case-cursor-only": "{\"localId\":\"case-cursor-only\",\"networkId\":\"0x1f2c3b4a5d6e7f8091a2b3c4d5e6f708192a3b4c\",\"recipient\":\"0xc5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5\",\"recipientProvenance\":\"saved-recipient\",\"amount\":\"320\",\"rawAmount\":\"320000000000000000000\",\"relayerTip\":\"420000000000000000\",\"withdrawalFee\":\"250000000000000000\",\"tokenSymbol\":\"OXDAI\",\"tokenDecimals\":18,\"phase\":\"done\",\"startTime\":1794307200000,\"deployment\":{\"portal\":\"0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042\",\"l2Token\":\"0x11d2bed21a36289fd6f6a6af93a546b5be7115caf957f0f700f42d56e25fe0a3\",\"executor\":\"0x7c8c2147d1bb8b83e0a0501097372de170ee702a\"},\"skyMove\":{\"direction\":\"in\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"recipientCommitment\":\"0x2a603ac2a9cfa1b53ca4c3b43f186aebbfbb9138b6e81406a924f9a11ddbfff7\",\"recoveryCommitment\":\"0x0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\",\"relayerTip\":\"350000000000000000\",\"nonce\":\"0x0c5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\"},\"l2TxHash\":\"0x1414141414141414141414141414141414141414141414141414141414141414\",\"blockNumber\":4200300,\"minedAt\":1794307380000,\"withdrawalId\":\"0x7474747474747474747474747474747474747474747474747474747474747474\",\"l1TxHash\":\"0x8484848484848484848484848484848484848484848484848484848484848484\",\"endTime\":1794310200000,\"version\":2}"
+    },
+    "restored": {
+      "acct/meta/savingsMoves": "1",
+      "acct/meta/withdrawals": "1",
+      "acct/savingsMoves/case-restored": "{\"direction\":\"in\",\"withdrawalLocalId\":\"case-restored\",\"escrow\":\"0xd6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"nonce\":\"0x0d6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b\",\"recipientCommitment\":\"0x20cfb9abfef8b5b829bded16fb531f7d4b250fa19f97353b173f5b2924bb83c9\",\"amount\":\"700000000000000000000\",\"startTime\":1794324000000,\"depositScanFrom\":\"26602000\",\"depositScanFloor\":\"26602000\",\"deposit\":{\"inboxIndex\":\"91407\",\"amount\":\"653252336448598130841\",\"claimed\":true,\"txHash\":\"0xdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdf\",\"blockNumber\":\"26602150\",\"at\":1794325800000,\"storedAt\":1794328800000},\"lastCheck\":{\"at\":1794328800000,\"message\":\"claimed\"},\"endTime\":1794328800000}",
+      "acct/withdrawals.i/hash/0x1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f/case-restored": "",
+      "acct/withdrawals/case-restored": "{\"localId\":\"case-restored\",\"networkId\":\"0x1f2c3b4a5d6e7f8091a2b3c4d5e6f708192a3b4c\",\"recipient\":\"0xd6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6\",\"recipientProvenance\":\"saved-recipient\",\"amount\":\"700\",\"rawAmount\":\"700000000000000000000\",\"relayerTip\":\"420000000000000000\",\"withdrawalFee\":\"250000000000000000\",\"tokenSymbol\":\"OXDAI\",\"tokenDecimals\":18,\"phase\":\"done\",\"startTime\":1794324000000,\"deployment\":{\"portal\":\"0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042\",\"l2Token\":\"0x11d2bed21a36289fd6f6a6af93a546b5be7115caf957f0f700f42d56e25fe0a3\",\"executor\":\"0x7c8c2147d1bb8b83e0a0501097372de170ee702a\"},\"skyMove\":{\"direction\":\"in\",\"factory\":\"0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09\",\"recipientCommitment\":\"0x20cfb9abfef8b5b829bded16fb531f7d4b250fa19f97353b173f5b2924bb83c9\",\"recoveryCommitment\":\"0x0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\",\"relayerTip\":\"350000000000000000\",\"nonce\":\"0x0d6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b\"},\"l2TxHash\":\"0x1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f\",\"blockNumber\":4200407,\"minedAt\":1794324180000,\"withdrawalId\":\"0x7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f\",\"l1TxHash\":\"0x8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f\",\"endTime\":1794327000000,\"rebuilt\":true,\"version\":2}"
+    }
+  },
+  "cases": {
+    "retiredClaimed": {
+      "withdrawalLocalId": "case-retired-claimed",
+      "database": "current",
+      "direction": "in",
+      "startTime": 1792490400000,
+      "amount": "400000000000000000000",
+      "nonce": "0x036e775070b6e91a882d0ec8982a929efd80332c6093700cea5943516d397084",
+      "escrow": "0x1dd171aaa92826f4164c6828a8b962d84c41002c",
+      "recipientCommitment": "0x13c58a4451925520a3cafb1f11553b23e4eb80dae3d617a90da071984d827099",
+      "recoveryCommitment": "0x0065a05d5410a52202ffa39118cbb7881e40fdae7d12b1466b5427412038b1c4",
+      "l2TxHash": "0x13683990814c827d1b78b5c09c311cff7a30e86c7dbe78bd9626c5f8dbf85e32",
+      "withdrawalId": "0x7c4a95a4ea2adec45526320606ca9ba6089e4a2aa3c2804834bad63907055973",
+      "inboxIndex": "91000",
+      "depositShares": "375687382297551789077",
+      "quote": {
+        "value": "400000000000000000000",
+        "withdrawalFee": "250000000000000000",
+        "releaseTip": "420000000000000000",
+        "escrowTip": "350000000000000000",
+        "escrowFunding": "399330000000000000000",
+        "net": "398980000000000000000",
+        "fee": "1020000000000000000"
+      },
+      "retiredNetworkId": "0x603bb2c05d474794ea97805e8de69bccfb3bca12"
+    },
+    "retiredOpen": {
+      "withdrawalLocalId": "case-retired-open",
+      "database": "current",
+      "direction": "in",
+      "startTime": 1792663200000,
+      "amount": "120000000000000000000",
+      "nonce": "0x1a447a59003bd410d9f0820ba837532bfa7ffb0999a5df39e926b4fb1cf73eec",
+      "escrow": "0x9ba853430cc5e6f05f5002644a17e0cf7ced0d70",
+      "recipientCommitment": "0x1de9f000da4778d39c3da7a35e7dd86127cf6b5e19908972194f86156484e756",
+      "recoveryCommitment": "0x00de3a4486d0589bf10fa4f8d6cf0b9c43e8484c968949fc83f394eef547382f",
+      "l2TxHash": "0x1cb0505fa4eeee118440a1fc1251859b0ff26c09dfcd0f0c271a669192a317c1",
+      "withdrawalId": "0x759f0f9b56fa2822af899f9c33eed55f162e8a958820affa85320a2e56349dbd",
+      "inboxIndex": "91037",
+      "depositShares": "111928504233301975540",
+      "quote": {
+        "value": "120000000000000000000",
+        "withdrawalFee": "250000000000000000",
+        "releaseTip": "420000000000000000",
+        "escrowTip": "350000000000000000",
+        "escrowFunding": "119330000000000000000",
+        "net": "118980000000000000000",
+        "fee": "1020000000000000000"
+      },
+      "retiredNetworkId": "0x603bb2c05d474794ea97805e8de69bccfb3bca12"
+    },
+    "blobOnly": {
+      "withdrawalLocalId": "case-blob-only",
+      "database": "blobOnly",
+      "direction": "in",
+      "startTime": 1793181600000,
+      "amount": "600000000000000000000",
+      "nonce": "0x09d8ceea8dca26e3a702005161b92ff6a4f79b6dfa65b1f6891bc38f42d5cdfd",
+      "escrow": "0x4bdfdd6608df3f5bb3495fb0dbbf569b9dc79136",
+      "recipientCommitment": "0x17c5a038a5a2fe83718ab7e4dd74e81e9fb30717b80b80ed6066ec1a3a6b3062",
+      "recoveryCommitment": "0x00c97d9aac02380094e1d560aebadfdb3e358ef36e6458f47bad03d20897c0d7",
+      "l2TxHash": "0x22643dfef352d47b8f0a93320ea387c10e618ab3481bdd8d65db120bfd9f400a",
+      "withdrawalId": "0xd39d7df3d2fcb0ab3de0ac5a8ec8ec0aad6b6340f802a4d72dc648913a3c3ba6",
+      "inboxIndex": "91074",
+      "depositShares": "562422535211267605633",
+      "quote": {
+        "value": "600000000000000000000",
+        "withdrawalFee": "250000000000000000",
+        "releaseTip": "420000000000000000",
+        "escrowTip": "350000000000000000",
+        "escrowFunding": "599330000000000000000",
+        "net": "598980000000000000000",
+        "fee": "1020000000000000000"
+      }
+    },
+    "claimed": {
+      "withdrawalLocalId": "case-claimed",
+      "database": "current",
+      "direction": "in",
+      "startTime": 1793527200000,
+      "amount": "1000000000000000000000",
+      "nonce": "0x26d689f473599a36aa9c2c06f5ed3de4169cb88ee9170cd6a2dd548a6f8c6efd",
+      "escrow": "0x3978b4ed77b688994990ca99d8fdae4f8b360dc5",
+      "recipientCommitment": "0x0c08fa76c08241ff08f115651aa65785b297a057932cf0d0857092586c36b7ba",
+      "recoveryCommitment": "0x0000afc99e2bf41d856a59fd14baa80bdfc2eec171d862478140d08c662e0575",
+      "l2TxHash": "0x09dc663f526f94a20b2035637a581199780b0a71826a2ea7723856449d718f42",
+      "withdrawalId": "0x95380a9d3a7a9e46713fb99e3aeaf0b787536a1f3bcf1355c252ec7c9dac787d",
+      "inboxIndex": "91111",
+      "depositShares": "937129455909943714821",
+      "quote": {
+        "value": "1000000000000000000000",
+        "withdrawalFee": "250000000000000000",
+        "releaseTip": "420000000000000000",
+        "escrowTip": "350000000000000000",
+        "escrowFunding": "999330000000000000000",
+        "net": "998980000000000000000",
+        "fee": "1020000000000000000"
+      }
+    },
+    "noFactory": {
+      "withdrawalLocalId": "case-no-factory",
+      "database": "current",
+      "direction": "in",
+      "startTime": 1793613600000,
+      "amount": "500000000000000000000",
+      "nonce": "0x1d4cfaf4393f0575eb7602ee454be900191d12aed26e332f5e3f5427e54fac8f",
+      "escrow": "0x9e51375f2e4ccf39d7abfb50c4fcc494741d4a92",
+      "recipientCommitment": "0x2d3aa39ed1decf9dcb7e60899ef3a27894aec45c84decc4b74d2a2a97d5748ce",
+      "recoveryCommitment": "0x00ab8ba396ebea1694df61651e2cd7b023429a53650af1d8d9539edc59b02395",
+      "l2TxHash": "0x2541bf265e7e727d11ded1793bce5e8955777789a63b59754258eae5ce07a41e",
+      "withdrawalId": "0xaaee47deafcd11b11f662ce810daa3b2fa86f9889c5193df30ea073c871746a4",
+      "inboxIndex": "91148",
+      "depositShares": "467866854195968120018",
+      "quote": {
+        "value": "500000000000000000000",
+        "withdrawalFee": "250000000000000000",
+        "releaseTip": "420000000000000000",
+        "escrowTip": "350000000000000000",
+        "escrowFunding": "499330000000000000000",
+        "net": "498980000000000000000",
+        "fee": "1020000000000000000"
+      }
+    },
+    "depositSeen": {
+      "withdrawalLocalId": "case-deposit-seen",
+      "database": "current",
+      "direction": "in",
+      "startTime": 1793700000000,
+      "amount": "250000000000000000000",
+      "nonce": "0x252ceffa499e5c827b942f33fac171d74ff5e544fdca3bccb525a67d7cf9f99f",
+      "escrow": "0x6412cf39f3dab4d06f2fdd6914c98d5d8707293c",
+      "recipientCommitment": "0x06c35e63535d3d8aedb9c43a5775d2fa389665e6f088f497359453c3093675eb",
+      "recoveryCommitment": "0x00ee4df3cf8173018d62fdef134a346d99ea2a68e5d50923f31ee97e30a2d834",
+      "l2TxHash": "0x031f68dde86aa397be090fe40cf5c59062b83c55161668ced6b0d5f013e18232",
+      "withdrawalId": "0x787c53910e05e48d98411a6024aa251838a9f0ade5bb063968c8317d32405670",
+      "inboxIndex": "91185",
+      "depositShares": "233345829428303655107",
+      "quote": {
+        "value": "250000000000000000000",
+        "withdrawalFee": "250000000000000000",
+        "releaseTip": "420000000000000000",
+        "escrowTip": "350000000000000000",
+        "escrowFunding": "249330000000000000000",
+        "net": "248980000000000000000",
+        "fee": "1020000000000000000"
+      }
+    },
+    "recovered": {
+      "withdrawalLocalId": "case-recovered",
+      "database": "current",
+      "direction": "in",
+      "startTime": 1793786400000,
+      "amount": "300000000000000000000",
+      "nonce": "0x25e036902ba08349827fc721e8ce094af7a1a480cede52eaeb10e2e166c40f51",
+      "escrow": "0xace90e10a3995ae7512a6a0de27b2bc289dcc042",
+      "recipientCommitment": "0x0d03e6d24bed3489f0ec93eee3f82841d5dd50a3d7316703000142d257fdf3a7",
+      "recoveryCommitment": "0x0083dfa0f85a31a81d85302620159c7ff51c017ad8fcf0f8d63539d65005c789",
+      "l2TxHash": "0x0070f2781bfcc02774765374307297489c47300856fcda3db68096a73c504f00",
+      "withdrawalId": "0x08649374700e32b8fb7db1f57aa7160c737f7a84f21c5b1de72045ee72cf938d",
+      "quote": {
+        "value": "300000000000000000000",
+        "withdrawalFee": "250000000000000000",
+        "releaseTip": "420000000000000000",
+        "escrowTip": "350000000000000000",
+        "escrowFunding": "299330000000000000000",
+        "net": "298980000000000000000",
+        "fee": "1020000000000000000"
+      }
+    },
+    "failedBurn": {
+      "withdrawalLocalId": "case-failed-burn",
+      "database": "current",
+      "direction": "in",
+      "startTime": 1793872800000,
+      "amount": "150000000000000000000",
+      "nonce": "0x14f0fa58330994d23526fc4dda69a0ab7b8669479a230c33beda45a930144d27",
+      "escrow": "0x6279f361cf1434189d65dc9f05a3eff78655ae31",
+      "recipientCommitment": "0x088d4eade21bc5ca83ebba875685159d4a044328383bf16b0fd8d4e241899223",
+      "recoveryCommitment": "0x00b0a75e5698ca1de4e50bc906107a4404b0a5f5ad7585aa73d912d6c18a20b4",
+      "quote": {
+        "value": "150000000000000000000",
+        "withdrawalFee": "250000000000000000",
+        "releaseTip": "420000000000000000",
+        "escrowTip": "350000000000000000",
+        "escrowFunding": "149330000000000000000",
+        "net": "148980000000000000000",
+        "fee": "1020000000000000000"
+      }
+    },
+    "releasedNoDeposit": {
+      "withdrawalLocalId": "case-released-no-deposit",
+      "database": "current",
+      "direction": "out",
+      "startTime": 1793959200000,
+      "amount": "100000000000000000000",
+      "nonce": "0x1f77da3698a6a2d4fde2fdb3d16001f63aaea3c15dcbce18bbc3060ff48a36fa",
+      "escrow": "0x9dd635dcd1af387a44db4f58318eeb41ed900b9d",
+      "recipientCommitment": "0x210282018942d0d85ddd576eb5199feaec66317bafa4b8c0a71da57ad2b4b6f8",
+      "recoveryCommitment": "0x00a13ddd303753f3a5efe803074e37c33d06dc7b6995b6c7a6993659bab323d0",
+      "l2TxHash": "0x0868deed400aa8ba19555a6268588b00b6b9f0e5d2f47b144e64f863847a2dc7",
+      "withdrawalId": "0xbff24ecb09784952ab2bda9c6949f24dc9e7709012acf102241ca60e72c141a0",
+      "quote": {
+        "value": "106850000000000000000",
+        "withdrawalFee": "0",
+        "releaseTip": "610000000000000000",
+        "escrowTip": "350000000000000000",
+        "escrowFunding": "106240000000000000000",
+        "net": "105890000000000000000",
+        "fee": "960000000000000000"
+      }
+    },
+    "burned": {
+      "withdrawalLocalId": "case-burned",
+      "database": "current",
+      "direction": "in",
+      "startTime": 1794132000000,
+      "amount": "200000000000000000000",
+      "nonce": "0x2f8e6e0aca768f594c0b6f89112899f3e5d1ae254d7a656e184cb04c095717b2",
+      "escrow": "0x1874cfa3a5168b5a200d783f14109a6f60281821",
+      "recipientCommitment": "0x20b21954470a34e6b4c8fb70de1a02bb1e4fecbc81dd507608eeb1e5f8304bbc",
+      "recoveryCommitment": "0x00bbda742cbb077f03d1b485430bc471556a935f8e6f6754ebb7997d6ae4d5f2",
+      "l2TxHash": "0x1efd9af7fd1a89ab2e518c67d98415611e88ad9da6d0eb3d2ded0a8582249b6f",
+      "withdrawalId": "0x9864399595ad4579ae6bf0d21d09d027d9c22da5bed63656e6909c17c18d6914",
+      "quote": {
+        "value": "200000000000000000000",
+        "withdrawalFee": "250000000000000000",
+        "releaseTip": "420000000000000000",
+        "escrowTip": "350000000000000000",
+        "escrowFunding": "199330000000000000000",
+        "net": "198980000000000000000",
+        "fee": "1020000000000000000"
+      }
+    },
+    "damaged": {
+      "withdrawalLocalId": "case-damaged",
+      "key": "acct/savingsMoves/case-damaged",
+      "database": "current"
+    },
+    "cursorOnly": {
+      "withdrawalLocalId": "case-cursor-only",
+      "database": "cursorOnly",
+      "direction": "in",
+      "startTime": 1794307200000,
+      "amount": "320000000000000000000",
+      "nonce": "0x0c5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "escrow": "0xc5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5",
+      "recipientCommitment": "0x2a603ac2a9cfa1b53ca4c3b43f186aebbfbb9138b6e81406a924f9a11ddbfff7",
+      "withdrawalId": "0x7474747474747474747474747474747474747474747474747474747474747474",
+      "cursor": "26601200",
+      "head": "26601300"
+    },
+    "restored": {
+      "withdrawalLocalId": "case-restored",
+      "database": "restored",
+      "direction": "in",
+      "startTime": 1794324000000,
+      "amount": "700000000000000000000",
+      "nonce": "0x0d6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b",
+      "escrow": "0xd6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6",
+      "recipientCommitment": "0x20cfb9abfef8b5b829bded16fb531f7d4b250fa19f97353b173f5b2924bb83c9",
+      "withdrawalId": "0x7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f"
+    }
+  },
+  "base": {
+    "sharePrice": "1070000000000000000",
+    "held": "1680683692403463623916",
+    "rows": {
+      "case-burned": {
+        "status": "Moving to Savings",
+        "figure": {
+          "savings": "198980000000000000000",
+          "main": "200000000000000000000"
+        },
+        "settled": false
+      },
+      "case-claimed": {
+        "status": null,
+        "figure": {
+          "savings": "998980000000000000000",
+          "main": "1000000000000000000000"
+        },
+        "settled": true
+      },
+      "case-deposit-seen": {
+        "status": "Moving to Savings",
+        "figure": {
+          "savings": "248980000000000000000",
+          "main": "250000000000000000000"
+        },
+        "settled": false
+      },
+      "case-failed-burn": {
+        "status": "Failed",
+        "figure": {
+          "savings": "148980000000000000000",
+          "main": "150000000000000000000"
+        },
+        "settled": true
+      },
+      "case-no-factory": {
+        "status": null,
+        "figure": {
+          "savings": "498980000000000000000",
+          "main": "500000000000000000000"
+        },
+        "settled": true
+      },
+      "case-recovered": {
+        "status": "Recovered",
+        "figure": {
+          "savings": "298980000000000000000",
+          "main": "300000000000000000000"
+        },
+        "settled": true
+      },
+      "case-released-no-deposit": {
+        "status": "Moving to Main Account",
+        "figure": {
+          "savings": "106850000000000000000",
+          "main": "105890000000000000000"
+        },
+        "settled": false
+      },
+      "case-retired-claimed": {
+        "status": null,
+        "figure": {
+          "savings": "398980000000000000000",
+          "main": "400000000000000000000"
+        },
+        "settled": true
+      },
+      "case-retired-open": {
+        "status": "Needs recovery",
+        "figure": {
+          "savings": "118980000000000000000",
+          "main": "120000000000000000000"
+        },
+        "settled": true
+      }
+    },
+    "feed": {
+      "savings": [
+        {
+          "id": "case-burned",
+          "kind": "savings",
+          "ts": 1794132000000,
+          "direction": "in",
+          "pending": true
+        },
+        {
+          "id": "case-released-no-deposit",
+          "kind": "savings",
+          "ts": 1793959200000,
+          "direction": "out",
+          "pending": true
+        },
+        {
+          "id": "case-failed-burn",
+          "kind": "savings",
+          "ts": 1793872800000,
+          "direction": "in",
+          "pending": false
+        },
+        {
+          "id": "case-recovered",
+          "kind": "savings",
+          "ts": 1793786400000,
+          "direction": "in",
+          "pending": false
+        },
+        {
+          "id": "case-deposit-seen",
+          "kind": "savings",
+          "ts": 1793700000000,
+          "direction": "in",
+          "pending": true
+        },
+        {
+          "id": "case-no-factory",
+          "kind": "savings",
+          "ts": 1793613600000,
+          "direction": "in",
+          "pending": false
+        },
+        {
+          "id": "case-claimed",
+          "kind": "savings",
+          "ts": 1793527200000,
+          "direction": "in",
+          "pending": false
+        },
+        {
+          "id": "case-retired-open",
+          "kind": "savings",
+          "ts": 1792663200000,
+          "direction": "in",
+          "pending": false
+        },
+        {
+          "id": "case-retired-claimed",
+          "kind": "savings",
+          "ts": 1792490400000,
+          "direction": "in",
+          "pending": false
+        }
+      ],
+      "main": [
+        {
+          "id": "case-burned",
+          "kind": "savingsMove",
+          "ts": 1794132000000,
+          "direction": "out",
+          "pending": true
+        },
+        {
+          "id": "case-released-no-deposit",
+          "kind": "savingsMove",
+          "ts": 1793962200000,
+          "direction": "in",
+          "pending": true
+        },
+        {
+          "id": "case-failed-burn",
+          "kind": "savingsMove",
+          "ts": 1793872920000,
+          "direction": "out",
+          "pending": false
+        },
+        {
+          "id": "case-recovered",
+          "kind": "savingsMove",
+          "ts": 1793789400000,
+          "direction": "out",
+          "pending": false
+        },
+        {
+          "id": "case-deposit-seen",
+          "kind": "savingsMove",
+          "ts": 1793703000000,
+          "direction": "out",
+          "pending": true
+        },
+        {
+          "id": "case-no-factory",
+          "kind": "savingsMove",
+          "ts": 1793616600000,
+          "direction": "out",
+          "pending": false
+        },
+        {
+          "id": "case-claimed",
+          "kind": "savingsMove",
+          "ts": 1793530200000,
+          "direction": "out",
+          "pending": false
+        },
+        {
+          "id": "case-retired-open",
+          "kind": "savingsMove",
+          "ts": 1792666200000,
+          "direction": "out",
+          "pending": false
+        },
+        {
+          "id": "case-retired-claimed",
+          "kind": "savingsMove",
+          "ts": 1792493400000,
+          "direction": "out",
+          "pending": false
+        }
+      ]
+    },
+    "ledger": {
+      "basis": "1790411254434883920832",
+      "shares": "1680683692403463623916",
+      "counted": 4,
+      "excluded": 0,
+      "excludedEntries": [],
+      "value": "1798331550871706077590",
+      "earned": "7920296436822156758",
+      "earningsPending": false
+    },
+    "arriving": {
+      "balanceReadAt": {
+        "main": 1794225540000,
+        "savings": 1794225540000
+      },
+      "main": "105890000000000000000",
+      "savings": "448660037488284910964"
+    },
+    "blobOnly": {
+      "note": "the blobOnly device opened by this build (the blob carried into acct/savingsMoves)",
+      "held": "562422535211267605633",
+      "rows": {
+        "case-blob-only": {
+          "status": null,
+          "figure": {
+            "savings": "598980000000000000000",
+            "main": "600000000000000000000"
+          },
+          "settled": true
+        }
+      },
+      "feed": {
+        "savings": [
+          {
+            "id": "case-blob-only",
+            "kind": "savings",
+            "ts": 1793181600000,
+            "direction": "in",
+            "pending": false
+          }
+        ],
+        "main": [
+          {
+            "id": "case-blob-only",
+            "kind": "savingsMove",
+            "ts": 1793184600000,
+            "direction": "out",
+            "pending": false
+          }
+        ]
+      },
+      "ledger": {
+        "basis": "598980000000000000000",
+        "shares": "562422535211267605633",
+        "counted": 1,
+        "excluded": 0,
+        "excludedEntries": [],
+        "value": "601792112676056338027",
+        "earned": "2812112676056338027",
+        "earningsPending": false
+      },
+      "arriving": {
+        "balanceReadAt": {
+          "main": 1794225540000,
+          "savings": 1794225540000
+        },
+        "main": "0",
+        "savings": "0"
+      }
+    },
+    "cursorOnly": {
+      "note": "the cursorOnly device after one settle pass of this build",
+      "move": {
+        "direction": "in",
+        "withdrawalLocalId": "case-cursor-only",
+        "escrow": "0xc5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5",
+        "nonce": "0x0c5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "recipientCommitment": "0x2a603ac2a9cfa1b53ca4c3b43f186aebbfbb9138b6e81406a924f9a11ddbfff7",
+        "amount": "320000000000000000000",
+        "factory": "0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09",
+        "depositScanFrom": "26600600",
+        "startTime": 1794307200000,
+        "value": "320000000000000000000",
+        "net": "318980000000000000000",
+        "depositScanFloor": "26600600",
+        "deposit": {
+          "inboxIndex": "91300",
+          "amount": "298112149532710280373",
+          "claimed": true,
+          "txHash": "0xd4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+          "blockNumber": "26600700",
+          "at": 1794308400000,
+          "storedAt": 1794315600000
+        },
+        "lastCheck": {
+          "at": 1794315600000,
+          "message": "claimed"
+        },
+        "endTime": 1794315600000
+      },
+      "claims": 1
+    },
+    "restored": {
+      "note": "the restored device as this build's settle pass left it",
+      "held": "653252336448598130841",
+      "ledger": {
+        "basis": "699230000000000000000",
+        "shares": "653252336448598130841",
+        "counted": 1,
+        "excluded": 0,
+        "value": "698979999999999999999",
+        "earned": "-250000000000000001"
+      }
+    }
+  },
+  "chain": {
+    "firstBlock": "26600000",
+    "firstBlockAt": 1794300000000,
+    "blockMs": 12000
+  }
+}

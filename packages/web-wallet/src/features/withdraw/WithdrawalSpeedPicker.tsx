@@ -52,6 +52,8 @@ interface SpeedChoiceProps {
   fasterBlocked?: string
   /** The choice is frozen, as while the burn it priced goes out. */
   disabled?: boolean
+  /** Seconds the trip takes after the release, such as a bridge's leg; both ETAs add them. */
+  afterSeconds?: number
 }
 
 /** Standard (no tip) or Faster (a prover tip), each with its ETA. */
@@ -76,6 +78,7 @@ export function SpeedChoicePill({
   settled,
   fasterBlocked,
   disabled,
+  afterSeconds = 0,
   labelId,
   label,
 }: SpeedChoiceProps & { labelId?: string; label?: string }) {
@@ -89,13 +92,14 @@ export function SpeedChoicePill({
     {
       id: "standard",
       name: copy.standard,
-      detail: fmt(copy.eta, { eta: etaLabel(faster.standardEtaSeconds) }),
+      detail: fmt(copy.eta, { eta: etaLabel(faster.standardEtaSeconds + afterSeconds) }),
     },
     {
       id: "faster",
       name: copy.faster,
       detail:
-        fasterBlocked ?? fmt(copy.fasterDetail, { eta: etaLabel(faster.tippedEtaSeconds), tip }),
+        fasterBlocked ??
+        fmt(copy.fasterDetail, { eta: etaLabel(faster.tippedEtaSeconds + afterSeconds), tip }),
       disabled: fasterBlocked !== undefined,
     },
   ]

@@ -73,6 +73,7 @@ describe("withdrawTransitions", () => {
     const done = { phase: "done" as const, endTime: 3_661_000 }
     const records = [
       record({ ...done, localId: "sky", skyMove: {} as WithdrawalRecord["skyMove"] }),
+      record({ ...done, localId: "vault", vaultMove: { holdingId: "fea-vault", nonce: "0x01" } }),
       record({ ...done, localId: "link", source: "paylink" }),
       record({ ...done, localId: "reg", intent: "registration" }),
       record({ ...done, localId: "mig", intent: "migration" }),

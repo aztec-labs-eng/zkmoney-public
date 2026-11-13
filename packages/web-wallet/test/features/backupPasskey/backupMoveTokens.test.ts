@@ -2,13 +2,14 @@
 import type { SpendShape } from "@obsidion/sdk"
 import { describe, expect, it, vi } from "vitest"
 import { fakeReads } from "../../support/fakeReads"
+import { holdingsOf } from "../../support/holdings"
 
 const DAI = 10n ** 18n
 const MAIN = { l2Token: "0xmain", portal: "0xmainportal" }
 const SAVINGS = { l2Token: "0xsavings", portal: "0xsavingsportal" }
 const caps: Record<string, bigint> = { "0xmainportal": 2n * DAI, "0xsavingsportal": 7n * DAI }
 const h = vi.hoisted(() => ({
-  savings: undefined as unknown,
+  holdings: undefined as unknown,
   shapes: {} as Record<string, unknown>,
 }))
 
@@ -26,7 +27,7 @@ const { backupMoveTokens, moveCap, moveCount, readMoveBalances } = await import(
 
 const reads = fakeReads({
   feeTokenBridgeTuple: async () => MAIN,
-  savingsTuple: () => h.savings,
+  holdings: () => h.holdings,
   bridgeOfToken: async (token: string) => {
     const bridge = [MAIN, SAVINGS].find((b) => b.l2Token === token.toLowerCase())
     if (!bridge) throw new Error(`No oxide bridge lists the token ${token}`)
@@ -43,13 +44,8 @@ const shape = (...notes: bigint[]): SpendShape => ({
 })
 
 describe("backupMoveTokens", () => {
-  it("moves Main Account's token, then Savings' shares", async () => {
-    h.savings = Promise.resolve(SAVINGS)
-    expect(await backupMoveTokens(reads)).toEqual(["0xmain", "0xsavings"])
-  })
-
   it("moves Main Account's token alone where the deployment has no Savings", async () => {
-    h.savings = Promise.resolve(undefined)
+    h.holdings = Promise.resolve(holdingsOf())
     expect(await backupMoveTokens(reads)).toEqual(["0xmain"])
   })
 })
@@ -63,7 +59,7 @@ describe("moveCap", () => {
 
 describe("readMoveBalances and moveCount", () => {
   it("reads every moved balance under its own cap, and counts the sends they take", async () => {
-    h.savings = Promise.resolve(SAVINGS)
+    h.holdings = Promise.resolve(holdingsOf(SAVINGS))
     h.shapes = { "0xmain": shape(3n * DAI), "0xsavings": shape(10n * DAI) }
     const balances = await readMoveBalances(reads, {} as never, {} as never, {} as never)
     expect(balances).toEqual([

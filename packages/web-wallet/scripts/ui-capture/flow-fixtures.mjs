@@ -46,6 +46,10 @@ export function flowFixturePlugin(walletDir) {
     "features/backupPasskey/BackupPasskeyHost/BackupPasskeyHost.tsx",
     "ui/PasskeysModal.tsx",
   ].map((file) => path.join(walletDir, "src", file)))
+  const rotationReaders = new Set([
+    "ui/PasskeysModal.tsx",
+    "features/backupPasskey/useBackupNudge.ts",
+  ].map((file) => path.join(walletDir, "src", file)))
   return {
     name: "wallet-ui-flow-fixtures",
     enforce: "pre",
@@ -68,8 +72,8 @@ export function flowFixturePlugin(walletDir) {
         return path.join(fixtures, "sipa-terms.ts")
       }
       const resolved = await this.resolve(source, importer, { skipSelf: true })
-      // The Passkeys sheet reads the backup fixture's saved attempt.
-      if (owner === path.join(walletDir, "src/ui/PasskeysModal.tsx") && resolved?.id === path.join(walletDir, "src/features/backupPasskey/backupRotations.ts")) {
+      // The Passkeys sheet and Home's card read the backup fixture's saved attempt.
+      if (rotationReaders.has(owner) && resolved?.id === path.join(walletDir, "src/features/backupPasskey/backupRotations.ts")) {
         return path.join(fixtures, "backup-rotations.ts")
       }
       // The pay page reads its rollup through the boot's identity check.

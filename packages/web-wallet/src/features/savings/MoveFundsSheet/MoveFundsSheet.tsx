@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from "react"
-import { parseUnits } from "viem"
+import { parseUnits, type Address } from "viem"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
-  SavingsFeeError,
+  assetUsd,
+  bestEffort,
   savingsMoveEta,
   savingsPaybackYears,
+  UNREAD,
   useStore,
+  type MoveQuote,
   type SavingsDirection,
-  type SavingsMoveStage,
   type SavingsMoveTiming,
-  type SavingsPosition,
-  type SavingsQuote,
   WalletError,
 } from "@obsidion/front-core"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
@@ -41,7 +41,7 @@ import {
   useSponsoredActionBlock,
 } from "../../allowance/SponsoredActionNotice"
 import { SavingsTermsAccept } from "../SavingsTerms"
-import { useBusyLabel, useUserFlowActive } from "../../operations/operations"
+import { failureCodeOf, useBusyLabel, useUserFlowActive } from "../../operations/operations"
 import { OperationHandOff } from "../../operations/OperationHandOff"
 import { FEE_UNAVAILABLE_COPY, ProtocolFeeNote } from "../../withdraw/withdrawQuote"
 import { LimitNotice, usdFigureGrouped } from "../../limits/publicLimit"
@@ -52,9 +52,9 @@ import {
   withdrawalMaxAtomic,
 } from "../../limits/withdrawalLimit"
 import { apyPercent } from "../EarningsCalculator"
-import { SavingsQuoteChangedError } from "../quoteChanged"
+import { moveOperationId } from "../movesSession"
+import { moveOutSource, type SavingsPosition } from "../savingsLine"
 import { savingsEtaCopy, useSavingsMoveTiming } from "../savingsMoveTiming"
-import { moveSavings, quoteSavings } from "../savingsFlows"
 import { useTxAmountCap } from "../../token/useTxAmountCap"
 import { useSession } from "../../../session/session"
 import styles from "./MoveFundsSheet.module.css"
@@ -82,11 +82,40 @@ const FALLBACK_ESTIMATE = copy.fallbackEstimate
 function moveEstimate(timing: SavingsMoveTiming | undefined, nowMs: number): string {
   if (!timing) return FALLBACK_ESTIMATE
   const burn = { phase: "submitting" as const, startTime: nowMs }
-  const eta = savingsMoveEta({ startTime: nowMs }, burn, timing, nowMs)
+  const eta = savingsMoveEta({ phase: "burning", startTime: nowMs }, burn, timing, nowMs)
   return eta ? savingsEtaCopy(eta) : FALLBACK_ESTIMATE
 }
 
-/** The shares worth `value` DAI at the position's price; every share for the whole value. */
+/** A move's quote as the sheet shows it, in DAI: what leaves the source, what lands, the fee. */
+interface SheetQuote {
+  /** What the source burns: DAI moving in, shares moving out. */
+  amount: bigint
+  value: bigint
+  net: bigint
+  fee: bigint
+  quote: MoveQuote
+}
+
+/** `assetDecimals`: the vault's asset's, which the quote's vault side is in. */
+export function sheetQuote(
+  direction: SavingsDirection,
+  amount: bigint,
+  quote: MoveQuote,
+  assetDecimals: number,
+): SheetQuote {
+  const usd = (assets: bigint) => assetUsd(assets, { assetDecimals })
+  const value = direction === "in" ? amount : usd(quote.expectedOut)
+  const net = direction === "in" ? usd(quote.conversionOut) : quote.conversionOut
+  return { amount, value, net, fee: value - net, quote }
+}
+
+/** The tips a quote refused for exceeding the burn, in the burn's units. */
+const tipsOf = (err: unknown): bigint | undefined =>
+  err instanceof WalletError && err.code === "move.tipsExceedAmount" && err.data?.tips
+    ? BigInt(err.data.tips)
+    : undefined
+
+/** The shares worth `value` dollars, at the position's dollar value; every share for all of it. */
 export function sharesFor(
   position: Pick<SavingsPosition, "shares" | "value">,
   value: bigint,
@@ -112,17 +141,32 @@ export function MoveFundsSheet({
 }) {
   const txAmountCap = useTxAmountCap()
   const session = useSession()
-  const savingsCap = useTxAmountCap(session.page.chain.savingsTuple)
-  const { position } = useStore(session.savingsHolding)
-  const wallet = useStore(session.balances.view)
-  const [direction, setDirection] = useState(initialDirection)
+  const savings = useStore(session.savingsLine)
+  const [chosen, setDirection] = useState(initialDirection)
+  // A line the profile no longer lists only lets its shares leave.
+  const direction: SavingsDirection = savings.line?.exitOnly ? "out" : chosen
   const [amount, setAmount] = useState(initialAmount)
+  const parsed = parseAmount(amount)
+  const valueAtomic =
+    !amountError(amount) && parsed > 0 ? parseUnits(amount, DEFAULT_DECIMALS) : undefined
+  // A move in goes to the first line. A move out empties a line the profile no longer lists first,
+  // and takes from the next what that line cannot cover.
+  const source = direction === "out" ? moveOutSource(savings, valueAtomic) : undefined
+  const line = source?.line ?? savings.line
+  const position = source?.position ?? savings.position
+  const assetDecimals = position?.assetDecimals ?? savings.price?.assetDecimals
+  // What the shares are worth, in dollars like the typed figure.
+  const worth = position ? assetUsd(position.value, position) : undefined
+  const savingsCap = useStore(
+    line ? session.page.chain.txAmountCap(line.held.portal as Address) : UNREAD,
+    (state) => (state.status === "ready" ? state.value : undefined),
+  )
+  const wallet = useStore(session.balances.view)
   const [maxed, setMaxed] = useState(false)
   const [phase, setPhase] = useState<"amount" | "confirm" | "working">("amount")
-  const [stage, setStage] = useState<SavingsMoveStage>("building")
   const [priced, setPriced] = useState<{
     key: string
-    quote?: SavingsQuote
+    quote?: SheetQuote
     error?: string
   } | null>(null)
   const [quoting, setQuoting] = useState(false)
@@ -131,9 +175,13 @@ export function MoveFundsSheet({
   // A move in needs the terms accepted here, each time; a move out is the user's own funds coming back.
   const [accepted, setAccepted] = useState(false)
   const termsNeeded = direction === "in" && !accepted
-  /** Aborted by a cancel, which only the build allows. */
-  const cancelled = useRef<AbortController | undefined>(undefined)
   const left = useRef(false)
+  /** The move this sheet runs: its operation, and the cancel its build honors. */
+  const [running, setRunning] = useState<{ operationId: string; cancel: AbortController }>()
+  // The burn sequence seeds the burn's record just before the burn: past it a cancel is too late.
+  const seeded = useStore(session.withdrawals.list, ({ records }) =>
+    records.some((r) => r.operationId === running?.operationId),
+  )
   const outcome = useProvingOutcome("savings")
   const busy = useUserFlowActive()
   const busyLabel = useBusyLabel()
@@ -142,18 +190,15 @@ export function MoveFundsSheet({
 
   const from = direction === "in" ? copy.main : copy.savings
   const to = direction === "in" ? copy.savings : copy.main
-  const available = direction === "in" ? wallet.main?.atomic ?? 0n : position?.value ?? 0n
+  const available = direction === "in" ? wallet.main?.atomic ?? 0n : worth ?? 0n
   const availableKnown = direction === "in" ? wallet.readThisSession : position !== null
-  const parsed = parseAmount(amount)
-  const valueAtomic =
-    !amountError(amount) && parsed > 0 ? parseUnits(amount, DEFAULT_DECIMALS) : undefined
   const maxShares = position ? sharesBurnMax(position.shares, savingsCap) : undefined
   // MAX moving in stops at Main's withdrawal limit; moving out, at the per-burn share maximum.
   const maxValue =
     direction === "in"
       ? withdrawalMaxAtomic(available, txAmountCap) ?? 0n
-      : position && maxShares !== undefined && position.shares > 0n
-      ? (position.value * maxShares) / position.shares
+      : position && worth !== undefined && maxShares !== undefined && position.shares > 0n
+      ? (worth * maxShares) / position.shares
       : available
   // MAX shows the balance to the cent, rounded down; while it stands, the move takes the whole
   // balance, so a move out leaves no share behind and a move in none of the DAI past the cent.
@@ -170,8 +215,8 @@ export function MoveFundsSheet({
       ? undefined
       : direction === "in"
       ? valueAtomic
-      : position
-      ? sharesFor(position, valueAtomic)
+      : position && worth !== undefined
+      ? sharesFor({ shares: position.shares, value: worth }, valueAtomic)
       : undefined
   // A move in pays its fee on top, so Savings receives what was typed; MAX has nothing on top.
   const feeOnTop = direction === "in" && !maxed
@@ -184,30 +229,45 @@ export function MoveFundsSheet({
       : direction === "in"
       ? withdrawalLimitProblem(burnAtomic, txAmountCap)
       : sharesBurnLimitProblem(burnAtomic, savingsCap)
+  // The line is in the key: a quote of one line never prices a move out of another.
   const key =
-    burnAtomic === undefined ? "" : `${direction}:${burnAtomic}:${feeOnTop ? "top" : "off"}`
+    burnAtomic === undefined
+      ? ""
+      : `${line?.id}:${direction}:${burnAtomic}:${feeOnTop ? "top" : "off"}`
 
   // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
-    if (!key || burnAtomic === undefined || burnAtomic <= 0n || overspent) {
+    if (
+      !key ||
+      burnAtomic === undefined ||
+      burnAtomic <= 0n ||
+      overspent ||
+      assetDecimals === undefined
+    ) {
       setPriced(null)
       setQuoting(false)
       return
     }
     const stale = new AbortController()
     setQuoting(true)
+    const quoteOf = async (amount: bigint) => {
+      if (!line || !session.moveQuote) throw new WalletError("invariant", "a move without Savings")
+      const quote = await session.moveQuote(line.id, direction, amount).read(stale.signal)
+      return sheetQuote(direction, amount, quote, assetDecimals)
+    }
     const priceMove = async () => {
-      if (!feeOnTop) return quoteSavings(session, direction, burnAtomic, stale.signal)
+      if (!feeOnTop) return quoteOf(burnAtomic)
       // Burn the shortfall on top until the net lands at the typed figure; fees can move between quotes.
       let gross = burnAtomic
       for (let attempt = 0; attempt < 4; attempt++) {
         try {
-          const result = await quoteSavings(session, "in", gross, stale.signal)
+          const result = await quoteOf(gross)
           if (result.net >= burnAtomic) return result
           gross += burnAtomic - result.net
         } catch (err) {
-          if (!(err instanceof SavingsFeeError)) throw err
-          gross = burnAtomic + err.fee
+          const tips = tipsOf(err)
+          if (tips === undefined) throw err
+          gross = burnAtomic + tips
         }
       }
       throw new WalletError("savings.feeUnsettled")
@@ -223,10 +283,16 @@ export function MoveFundsSheet({
             !stale.signal.aborted &&
             setPriced({
               key,
-              error:
-                err instanceof SavingsFeeError
-                  ? fmt(copy.feeNotCovered, { fee: usdAtomic(err.fee) })
-                  : FEE_UNAVAILABLE_COPY,
+              error: (() => {
+                const tips = tipsOf(err)
+                const fee =
+                  tips === undefined || direction === "in" || !position || worth === undefined
+                    ? tips
+                    : (tips * worth) / (position.shares || 1n)
+                return fee === undefined
+                  ? FEE_UNAVAILABLE_COPY
+                  : fmt(copy.feeNotCovered, { fee: usdAtomic(fee) })
+              })(),
             }),
         )
         .finally(() => !stale.signal.aborted && setQuoting(false))
@@ -235,7 +301,18 @@ export function MoveFundsSheet({
       stale.abort()
       clearTimeout(timer)
     }
-  }, [key, direction, burnAtomic, overspent, feeOnTop, session])
+  }, [
+    key,
+    direction,
+    burnAtomic,
+    overspent,
+    feeOnTop,
+    session,
+    line,
+    position,
+    worth,
+    assetDecimals,
+  ])
 
   const current = priced?.key === key ? priced : null
   const quoted = current?.quote
@@ -247,17 +324,17 @@ export function MoveFundsSheet({
       ? withdrawalLimitProblem(quoted.amount, txAmountCap)
       : undefined
   const payback =
-    direction === "in" && quoted && position?.apy !== undefined
-      ? savingsPaybackYears(quoted.net, quoted.fee, position.apy)
+    direction === "in" && quoted && position?.rate !== undefined
+      ? savingsPaybackYears(quoted.net, quoted.fee, position.rate)
       : undefined
   const paybackLine =
     payback !== undefined &&
     Number.isFinite(payback) &&
-    position?.apy !== undefined &&
+    position?.rate !== undefined &&
     quoted &&
     quoted.fee > 0n
       ? fmt(copy.payback.line, {
-          apy: apyPercent(position.apy),
+          apy: apyPercent(position.rate),
           time: paybackLabel(payback),
           fee: usdAtomic(quoted.fee),
         })
@@ -278,40 +355,39 @@ export function MoveFundsSheet({
     quoting ? "…" : value === undefined ? "$--" : usdAtomic(value)
 
   const run = async () => {
-    if (!valid || quoted === undefined) return
+    if (!valid || quoted === undefined || !line) return
     outcome.start("building")
     setRequoted(undefined)
     setPhase("working")
-    setStage("building")
-    const cancellation = new Error("Cancelled")
-    const cancel = (cancelled.current = new AbortController())
+    const operationId = moveOperationId()
+    const cancel = new AbortController()
+    setRunning({ operationId, cancel })
     try {
-      await moveSavings(
-        session,
-        direction,
-        quoted.amount,
-        (next) => {
-          // Only here: past the proof the burn is away, and a cancel would erase a real move.
-          if (next === "proving" && cancel.signal.aborted) throw cancellation
-          outcome.updateStage(next)
-          setStage(next)
-        },
-        cancel.signal,
-      )
+      const moves = await session.moveCommands?.ready()
+      if (!moves) throw new WalletError("account.locked", "moves need a signed-in account")
+      const move = direction === "in" ? moves.add : moves.withdraw
+      await move(line.id, quoted.amount, operationId, quoted.quote, cancel.signal)
       outcome.finish()
       if (!left.current) onClose()
     } catch (e) {
-      if (e === cancellation || cancel.signal.aborted || isPasskeyCancelled(e)) {
+      // A cancel taken after the burn went out stops nothing: what the burn then throws is shown.
+      const cancelled = cancel.signal.aborted && failureCodeOf(e) === "aborted"
+      if (cancelled || isPasskeyCancelled(e)) {
         outcome.cancel()
         setPhase("confirm")
         return
       }
       outcome.finish()
-      if (e instanceof SavingsQuoteChangedError) {
+      if (e instanceof WalletError && e.code === "move.quoteChanged") {
         if (left.current) return
-        setPriced({ key, quote: e.quote })
-        // eslint-disable-next-line local/message-in-state -- debt
-        setRequoted(e.message)
+        const entry = session.moveQuote?.(line.id, direction, quoted.amount)
+        entry?.refresh()
+        const now = entry && (await bestEffort("unknown", entry.read()))
+        if (now && assetDecimals !== undefined) {
+          const next = sheetQuote(direction, quoted.amount, now, assetDecimals)
+          setPriced({ key, quote: next })
+          setRequoted(fmt(copy.quoteChanged, { fee: usdAtomic(next.fee) }))
+        }
         setPhase("confirm")
         return
       }
@@ -363,6 +439,7 @@ export function MoveFundsSheet({
                 type="button"
                 className={`zkm-btn-reset ${styles.moveSwap}`}
                 aria-label={copy.swap}
+                disabled={savings.line?.exitOnly}
                 onClick={() => {
                   setDirection(direction === "in" ? "out" : "in")
                   setMaxed(false)
@@ -431,8 +508,8 @@ export function MoveFundsSheet({
               <b style={{ fontSize: 14 }}>{figure(quoted?.fee)}</b>
             </div>
             <ProtocolFeeNote
-              fee={quoting ? undefined : quoted?.withdrawalFee}
-              beneficiary={quoted?.feeBeneficiary}
+              fee={quoting ? undefined : quoted?.quote.withdrawalFee}
+              beneficiary={quoted?.quote.feeBeneficiary}
             />
             <div className="ww-deposit__input ww-sheet__fact">
               {feeOnTop ? (
@@ -458,8 +535,8 @@ export function MoveFundsSheet({
             )}
             {direction === "in" && (
               <p className="ww-sheet__note">
-                {position?.apy !== undefined
-                  ? fmt(copy.apy, { apy: apyPercent(position.apy) })
+                {position?.rate !== undefined
+                  ? fmt(copy.apy, { apy: apyPercent(position.rate) })
                   : copy.rateUnavailable}
               </p>
             )}
@@ -496,8 +573,8 @@ export function MoveFundsSheet({
                 <b>{exact(quoted?.fee)}</b>
               </DepositFact>
               <ProtocolFeeNote
-                fee={quoting ? undefined : quoted?.withdrawalFee}
-                beneficiary={quoted?.feeBeneficiary}
+                fee={quoting ? undefined : quoted?.quote.withdrawalFee}
+                beneficiary={quoted?.quote.feeBeneficiary}
               />
               <hr className="ww-divider" />
               {feeOnTop ? (
@@ -534,7 +611,7 @@ export function MoveFundsSheet({
       {phase === "working" && (
         <OperationHandOff
           onLeave={leave}
-          onCancel={stage === "building" ? () => cancelled.current?.abort() : undefined}
+          onCancel={running && !seeded ? () => running.cancel.abort() : undefined}
         />
       )}
     </Modal>

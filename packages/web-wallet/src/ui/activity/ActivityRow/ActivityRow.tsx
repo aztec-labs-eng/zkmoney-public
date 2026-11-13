@@ -20,13 +20,13 @@ import {
   worstWithdrawalPhase,
   type BridgeInRecord,
   type FeedItem,
-  type SavingsItem,
+  type MoveItem,
   type WithdrawalExit,
   type WithdrawalRecord,
+  bridgeInReturned,
 } from "@obsidion/front-core"
 import { fmt } from "../../../lib/fmt"
 import { useSession } from "../../../session/session"
-import { recoveryCopy } from "../../../features/backupPasskey/backupPasskeyCopy"
 import { REMIND_TITLE } from "../../../features/contacts/useRemind"
 import { contactDisplayName } from "../../../features/contacts/contactsView"
 import { SavingsMoveRow } from "../../../features/savings/SavingsMoveRow"
@@ -52,7 +52,8 @@ import {
 } from "../../screens/activityView"
 import copy from "../ActivityRow.copy"
 import styles from "./ActivityRow.module.css"
-import { backupFundingTitle, withdrawalHeroAmount } from "../../screens/WithdrawalDetailModal"
+import { backupFeeStatus, backupFundingTitle, backupHoldLine } from "../../screens/backupFee"
+import { withdrawalHeroAmount } from "../../screens/WithdrawalDetailModal"
 import { useActivityHost } from "../ActivityDetailHost/ActivityDetailHost"
 
 type Of<K extends FeedItem["kind"]> = Extract<FeedItem, { kind: K }>
@@ -208,7 +209,7 @@ function TxRow({ item }: { item: RowItem }) {
 
 function WithdrawalRow({ item }: { item: Of<"withdrawal"> }) {
   const host = useActivityHost()
-  const { record, intent, exit, registrationTag, delayed, recovery, cost } = item
+  const { record, intent, exit, registrationTag, delayed, fee } = item
   const migration = intent === "migration"
   // A burn to a backup passkey's deposit address pays for the key; the add has this one row.
   const backup = intent === "backup"
@@ -220,7 +221,7 @@ function WithdrawalRow({ item }: { item: Of<"withdrawal"> }) {
         migration
           ? copy.counterparty.upgrade
           : backup
-          ? backupFundingTitle(item)
+          ? backupFundingTitle(item, copy.counterparty.backupPasskeyFee)
           : registrationTag
           ? fmt(copy.counterparty.tag, { tag: registrationTag })
           : record.recipientAlias ?? ensName ?? shortL1Addr(record.recipient)
@@ -239,9 +240,15 @@ function WithdrawalRow({ item }: { item: Of<"withdrawal"> }) {
           ? copy.badge.paylinkToEthereum
           : undefined
       }
-      timestamp={delayed ? copy.stuck : rowTimestamp(item.ts)}
-      amount={withdrawalHeroAmount(record, cost)}
-      statusLabel={recovery ? recoveryCopy.badge[recovery.state] : phaseLabel(record.phase)}
+      timestamp={
+        delayed
+          ? copy.stuck
+          : fee
+          ? backupHoldLine(fee, record.tokenDecimals)
+          : rowTimestamp(item.ts)
+      }
+      amount={withdrawalHeroAmount(record, fee)}
+      statusLabel={backup ? backupFeeStatus(item) : phaseLabel(record.phase)}
       avatar={
         record.bridgeOut ? (
           <BridgeAvatar
@@ -253,9 +260,15 @@ function WithdrawalRow({ item }: { item: Of<"withdrawal"> }) {
           <EthereumAvatar />
         )
       }
-      avatarIcon="wallet"
+      avatarIcon={backup ? "key" : "wallet"}
       onClick={() => host.open({ kind: "withdrawal", id: record.localId })}
-      ariaLabel={copy.aria.withdrawal}
+      ariaLabel={
+        item.running
+          ? copy.aria.backupProgress
+          : backup
+          ? copy.aria.backupPasskey
+          : copy.aria.withdrawal
+      }
       actions={[
         ...(delayed && hash
           ? [{ title: copy.action.checkAgain, onClick: () => host.checkAgain(hash) }]
@@ -477,13 +490,14 @@ function EthereumAvatar() {
 }
 
 /**
- * A bridge-in from another chain: what lands while it bridges, the origin amount once it ends short.
+ * A bridge-in from another chain: what lands while it bridges, what it returns once it ends short.
  * One that pays someone else is a payment to them.
  */
 function BridgeInRow({ item }: { item: Of<"bridgeIn"> }) {
   const host = useActivityHost()
   const { record, pays } = item
   const back = record.status !== "pending" && record.status !== "filled"
+  const returned = bridgeInReturned(record)
   return (
     <ActivityListRow
       counterparty={
@@ -492,10 +506,7 @@ function BridgeInRow({ item }: { item: Of<"bridgeIn"> }) {
       timestamp={rowTimestamp(record.startTime)}
       amount={
         back
-          ? tokenFigure(
-              formatUnits(BigInt(record.inputAmount), record.inputDecimals),
-              record.symbol,
-            )
+          ? tokenFigure(formatUnits(returned.amount, returned.decimals), returned.symbol)
           : `${pays ? "-" : "+"}${usdFigure(
               formatUnits(BigInt(record.outputAmount), record.outputDecimals),
             )}`
@@ -541,13 +552,13 @@ export function ActivityRow({ item, compact = false }: { item: FeedItem; compact
       return <GroupRow item={item} />
     case "withdrawal":
       return <WithdrawalRow item={item} />
-    case "savingsMove":
+    case "move":
       return (
         <SavingsMoveRow
           move={item.move}
-          burn={item.burn}
+          state={item.state}
           perspective="main"
-          sharePrice={host.sharePrice}
+          sharePrice={host.moveSharePrice(item.move.holdingId)}
           eta={host.savingsEta(item.move, item.burn)}
           onOpen={() => host.open({ kind: "savings", id: item.id })}
         />
@@ -589,14 +600,14 @@ export function ActivityRow({ item, compact = false }: { item: FeedItem; compact
 }
 
 /** A Savings move as the Savings account's feed shows it. */
-export function SavingsActivityRow({ item }: { item: SavingsItem }) {
+export function SavingsActivityRow({ item }: { item: MoveItem }) {
   const host = useActivityHost()
   return (
     <SavingsMoveRow
       move={item.move}
-      burn={item.burn}
+      state={item.state}
       perspective="savings"
-      sharePrice={host.sharePrice}
+      sharePrice={host.moveSharePrice(item.move.holdingId)}
       eta={host.savingsEta(item.move, item.burn)}
       onOpen={() => host.open({ kind: "savings", id: item.id })}
     />

@@ -76,6 +76,8 @@ export interface DepositScreenState {
 export type DepositScreenEvent =
   /** Opens or closes the deposit modal; the router's start showing now counts as handled. */
   | { type: "entry"; entry?: DepositEntry; startKey?: string }
+  /** The open modal now sends from `saved`, or from an account no saved wallet names. */
+  | { type: "sender"; saved?: SavedL1Wallet }
   | { type: "picking"; step: DepositScreenState["picking"] }
   | { type: "open"; sheet: DepositSheet }
   /** Closes `kind` when it is the sheet showing. */
@@ -141,6 +143,8 @@ export function depositScreenTransition(
   switch (e.type) {
     case "entry":
       return { ...s, entry: e.entry, startHandled: e.startKey ?? s.startHandled }
+    case "sender":
+      return s.entry ? { ...s, entry: { ...s.entry, saved: e.saved } } : s
     case "picking":
       return { ...s, picking: e.step }
     case "open":

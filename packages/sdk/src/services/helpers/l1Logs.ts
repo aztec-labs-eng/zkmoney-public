@@ -18,7 +18,7 @@ export const L1_LOG_CHUNK_CONCURRENCY = 8
  * millions of blocks in one request, and one that refuses it is read in chunks.
  */
 export async function chunkedContractEvents(
-  publicClient: PublicClient,
+  publicClient: Pick<PublicClient, "getContractEvents">,
   request: { address: Address | Address[]; abi: unknown; eventName: string; args?: unknown },
   fromBlock: bigint,
   toBlock: bigint,

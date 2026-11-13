@@ -1,12 +1,15 @@
+import { WalletError } from "@obsidion/core/errors"
 import { createPublicClient, erc20Abi, type Address, type Hex } from "viem"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import {
   bridgeOfTuple,
+  pinnedHoldings,
   feeTokenBridge,
   isRetiredRollupSource,
   loadOxideDeployment,
   loadRetiredRollupSources,
+  type DeploymentHoldings,
   type OxideDeployment,
   type OxideDeploymentTable,
   type PinnedOxideDeployment,
@@ -20,17 +23,21 @@ import {
   type PortalDomain,
   type SipaPortalTerms,
   type WithdrawalExecutor,
+  readEthUsd,
 } from "@obsidion/sdk"
 import {
   DEFAULT_PORTAL_CAPACITY_POLICY,
   ensNames,
+  bestEffort,
   deploymentScans,
   fetchSignupResolverRecord,
   fleetSignerConnector,
+  HOLDING_PRICE_EVERY_MS,
+  holdingPrices,
   keyedService,
   loadOxideManifestTuple,
-  readSavingsVault,
   rpcOriginChain,
+  savingsHoldings,
   sipaIntentName,
   fixed,
   type BridgeInProvider,
@@ -43,7 +50,6 @@ import {
   type QueryEntry,
   type QueryFactory,
   type RegistryTagResolution,
-  type SkySavings,
   type SipaRecordRoute,
 } from "@obsidion/front-core"
 import { webBroadcasterArtifact, type WebClassArtifactResolver } from "../config/classArtifacts"
@@ -65,7 +71,7 @@ import {
   readTokenImmutables,
   readWithRetry,
 } from "../features/token/oxideToken"
-import type { PageChain, PageFacts } from "../session/pageChain"
+import type { PageChain, PageFacts, SavingsPrice, SavingsPriceRead } from "../session/pageChain"
 import {
   bridgeChainClients,
   bridgeInQueries,
@@ -91,7 +97,7 @@ import {
 import { swapQuotes } from "../features/withdraw/swapQuotes"
 import type { FasterWithdrawalQuote } from "../features/withdraw/useFasterWithdrawal"
 import type { AccountlessResolveResult } from "../features/requests/accountlessRequest"
-import { profileBridge } from "../session/walletChains"
+import { acrossBridge } from "../session/walletChains"
 import type { ArrivalGrid } from "../features/deposit/depositArrival"
 import type { DepositTokens } from "../features/sipa/loadDepositFacts"
 import { resolveTagViaRegistry } from "../features/contacts/registryResolution"
@@ -103,8 +109,6 @@ import { CHAIN_READS_PREFIX } from "../platform/storage/storageKeys"
 /** The bridge-out provider `id` names, with its routes and quotes; null where the profile has none. */
 export type BridgeOutBuilder = (provider: BridgeOutProviderId) => WebBridgeOut | null
 
-// eslint-disable-next-line no-restricted-syntax -- debt
-const savings = () => import("../features/savings/savingsGateway")
 const depositFacts = () => import("../features/sipa/loadDepositFacts")
 const paylinkSource = () => import("../features/paylink/paylinkSource")
 const withdrawalFee = () => import("../features/withdraw/withdrawalFee")
@@ -160,7 +164,7 @@ export const RESOLVER_OPERATOR_REUSE_MS = 5 * 60_000
  */
 export function createPageChain(
   config: WebWalletConfig,
-  { query, database }: { query: QueryFactory; database: Database },
+  { query, database, now }: { query: QueryFactory; database: Database; now: () => number },
   resolve?: WebClassArtifactResolver,
   primed?: PrimedReads,
 ): PageChain & { bridgeOut: BridgeOutBuilder } {
@@ -180,6 +184,27 @@ export function createPageChain(
             network,
             ...(revalidate ? { cache: "no-cache" as const } : {}),
           }),
+  })()
+  const holdings = query<[], DeploymentHoldings>("holdings", {
+    load: async (signal) => pinnedHoldings(await deployment.read(signal), config.portals?.savings),
+  })()
+  const holdingPrice = holdingPrices(query, client, now)
+  const savingsPrices = query<[], readonly SavingsPriceRead[]>("savingsPrices", {
+    load: async (signal) => {
+      const sky = savingsHoldings(await holdings.read(signal), config.holdings)
+      return Promise.all(
+        sky.map(async (holding): Promise<SavingsPriceRead> => {
+          const entry = holdingPrice(holding)
+          const read = await bestEffort("unknown", entry.read(signal))
+          signal.throwIfAborted()
+          const kept = entry.get()
+          const price = read ?? (kept.status === "ready" ? kept.value : undefined)
+          return price ? { ...price, holding } : { holding, failed: true }
+        }),
+      )
+    },
+    poll: HOLDING_PRICE_EVERY_MS,
+    stale: HOLDING_PRICE_EVERY_MS,
   })()
   const tuple = query<[], OxideEnvTuple>("oxideTuple", {
     load: async (signal) =>
@@ -318,7 +343,7 @@ export function createPageChain(
 
   let across: WebBridgeOut | undefined
   const bridgeOut: BridgeOutBuilder = (provider) => {
-    if (provider !== "across" || profileBridge(config)?.provider !== "across") return null
+    if (provider !== "across" || !acrossBridge(config)) return null
     const facts = { config, chain: reads }
     across ??= acrossBridgeOut(facts, {
       tupleOf: async (token) => (await paylinkSource()).paylinkTuple(facts, token),
@@ -453,16 +478,17 @@ export function createPageChain(
       { retry: "manual" },
       ([fleet, portal]: [string, Hex]) => connect(fleet, portal),
     ),
-    // Loaded on first read, so building the reads loads no Savings code.
-    skySavings: query<[], SkySavings | null>("skySavings", {
-      load: async () => (await (await savings()).readSkySavings({ config, chain: reads })) ?? null,
+    holdings,
+    holdingPrice,
+    savingsPrices,
+    savingsPrice: query<[], SavingsPrice | null>("savingsPrice", {
+      load: async (signal) => {
+        const [holding] = savingsHoldings(await holdings.read(signal), config.holdings)
+        return holding ? { ...(await holdingPrice(holding).read(signal)), holding } : null
+      },
+      poll: HOLDING_PRICE_EVERY_MS,
+      stale: HOLDING_PRICE_EVERY_MS,
     })(),
-    savingsTuple: query<[], OxideEnvTuple | null>("savingsTuple", {
-      load: async () => (await savings()).savingsTuple(reads),
-    })(),
-    savingsVault: query<[Address], Address>("savingsVault", {
-      load: (portal) => readSavingsVault(client(), portal),
-    }),
     tagResolution: (tag) => tagResolutions(tag.toLowerCase()),
     retiredRollupMajor: retiredMajors,
     broadcasterArtifact: webBroadcasterArtifact(resolve),
@@ -497,12 +523,17 @@ export interface PageLoaders {
   fasterOffer: (signal: AbortSignal) => Promise<FasterWithdrawalQuote>
   /** The rollup's slot grid, which the deposit arrival time follows. */
   slotGrid: () => Promise<ArrivalGrid>
+  /** ETH's price in USD, at the feed's decimals. */
+  ethUsd: () => Promise<bigint>
   /** A pay page's request, resolved to its payee's address. */
   accountlessRequest: (packet: RequestInlinePacket) => Promise<AccountlessResolveResult>
 }
 
 /** The page's bridge and L1-address Services and Queries, each built once. */
 export type PageReads = ReturnType<typeof createPageReads>
+
+/** How often a shown ETH price is read again; the feed itself updates at most hourly. */
+const ETH_USD_REFRESH_MS = 60_000
 
 /**
  * The page's bridge provider and the Queries over it, the bridge-out quotes and routes, and the L1
@@ -583,6 +614,17 @@ export function createPageReads(
     }),
     /** The active executor's fee and beneficiary, which the direct route prices. */
     activeExecutorTerms,
+    /** ETH's price in USD from the L1's pinned Chainlink feed, at its decimals; a stale feed fails. */
+    ethUsd: query<[], bigint>("ethUsd", {
+      load:
+        loaders.ethUsd ??
+        (() =>
+          readEthUsd(l1PublicClient(config), BigInt(config.l1ChainId)).catch((e: unknown) => {
+            throw new WalletError("price.unavailable", "ETH/USD feed read failed", { cause: e })
+          })),
+      poll: ETH_USD_REFRESH_MS,
+      stale: ETH_USD_REFRESH_MS,
+    })(),
     /** A demo page's stand-ins for the remote reads no Query holds; empty on any other page. */
     loaders,
   }

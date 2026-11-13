@@ -27,11 +27,15 @@ import {
   provingBusy,
   rebuildPaylinks,
   keyedService,
-  sameHolding,
+  moveQuotes,
+  openMoves,
+  boundRails,
+  recoverableRails,
+  runnableRails,
+  replayMoves,
+  savingsValue,
+  settleMoves,
   sponsoredAllowance,
-  sameSettleDue,
-  selectSavingsHolding,
-  selectSettleDue,
   reorg,
   savingsLookup,
   sipaBroadcasts,
@@ -39,6 +43,9 @@ import {
   type BalanceStore,
   type Contacts,
   type Loaded,
+  type MoveRail,
+  type AccountService,
+  type Milestones,
   type NotificationSources,
   type OldVersionWithdrawal,
   type OxideResumeDeps,
@@ -57,7 +64,6 @@ import {
   createTransferEventSource,
   createWalletSyncSource,
   encodePaylinkInline,
-  type ObsidionAccount,
   type ObsidionWallet,
   type TokenService,
 } from "@obsidion/sdk"
@@ -88,6 +94,8 @@ import { createSipaAddresses } from "../features/deposit/sipaAddresses"
 import { resolverDeployments, openSipaDiscovery, openSipaKeys } from "../features/deposit/sipaRail"
 import { sipaPipeline } from "../features/deposit/sipaTasks"
 import { historicImports } from "../features/migration/historicActivityImport"
+import { upgradeStatusStore } from "../features/migration/migrationDialog"
+import { upgradeLockReads } from "../features/migration/upgradeLock"
 import {
   bell,
   bellRows,
@@ -122,25 +130,15 @@ import {
 } from "../features/registration/registrationTasks"
 import type { RailQuery } from "../features/registration/sponsoredRailReadiness"
 import { buildWebDetectionDeps } from "../features/registration/webRegistration"
-import { openSavings, savingsRescanToken } from "../features/savings/savingsGateway"
-import {
-  NO_HOLDING,
-  NO_PRICE,
-  NO_REPLAY,
-  NO_SETTLE_DUE,
-  openSavingsSource,
-  priceOf,
-  readChainSavingsPrice,
-  savingsMovesReplay,
-  savingsPrices,
-  savingsSettle,
-  type SavingsPriceQuery,
-} from "../features/savings/savingsTasks"
+import { movesPorts, shareRescanTokens } from "../features/savings/movesSession"
+import { NO_SAVINGS, savingsLine } from "../features/savings/savingsLine"
+import { l2TokenService } from "../features/token/l2TokenService"
 import { upgradePricing } from "../features/migration/upgradeRunAccount"
 import { readSponsoredAllowance, sponsorDeps } from "../features/allowance/readAllowance"
 import { readAllowanceUsage } from "../features/allowance/readAllowanceUsage"
 import { loadDepositDisplayFacts, tokenMetadata } from "../features/sipa/loadDepositFacts"
 import { settleOldVersionWithdrawal } from "../features/withdraw/oldVersionWithdrawals"
+import { refundedMoves } from "../features/deposit/recovery/refundedMoves"
 import {
   rescanWithdrawals,
   withdrawalRescan,
@@ -149,7 +147,7 @@ import {
 import { isDesktopL1SubmitActive, submitViaDesktopBridge } from "../platform/desktopBridge"
 import { createContactsByL2 } from "../platform/xmtp/adapters"
 import { saveIdentity } from "../session/account"
-import { profileBridge } from "../session/walletChains"
+import { acrossBridge } from "../session/walletChains"
 import { getL1Clients } from "../session/l1Wallet"
 import { contractAddresses } from "../session/contractAddresses"
 import type { Page } from "./sessionDeps"
@@ -179,6 +177,22 @@ type Core = Parameters<SessionDeps["features"]>[0]
 const NO_HISTORY: ReadonlyStore<AccountHistory> = memoryStore<AccountHistory>({
   kind: "none",
 }).readonly
+
+const NO_RAILS: ReadonlyStore<ReadonlySet<MoveRail>> = memoryStore<ReadonlySet<MoveRail>>(
+  new Set(),
+).readonly
+
+/** Whether the boot sync's move replay is in, or its wait ran out. */
+const movesReplayed = (milestones: Milestones): ReadonlyStore<boolean> =>
+  liveStore(milestones.reached("movesReplayed"), {
+    whileSubscribed: (set) => {
+      const unsubscribed = new AbortController()
+      void milestones
+        .after({ movesReplayed: true }, unsubscribed.signal)
+        .then((over) => over && set(true))
+      return () => unsubscribed.abort()
+    },
+  })
 
 /** Settings → Account history: a visitor has no event. */
 function accountHistory(session: Core): ReadonlyStore<AccountHistory> {
@@ -220,7 +234,8 @@ function views(session: Core, pricing: ReadonlyStore<UpgradePricing>) {
     processing,
     paylinks,
     session.operations,
-    session.savingsMoves,
+    session.moves,
+    movesReplayed(milestones),
     {
       upgrades: session.rollup.upgrades,
       // A visitor's read would load the page-wide store under no account.
@@ -304,11 +319,7 @@ export function sessionTasks(session: Core) {
     }
   }
   const opened = memoryStore<ReturnType<typeof views> | undefined>(undefined)
-  // The vault's share price: what Savings' figures and the bell's upgrade runs are valued at.
-  const price = signIn
-    ? savingsPrices(page.query, milestones, (signal) => readChainSavingsPrice(page, signal))
-    : null
-  const runPricing = upgradePricing(page, price ?? NO_PRICE)
+  const runPricing = upgradePricing(page)
   const open = () => {
     const built = opened.get() ?? views(session, runPricing)
     opened.set(built)
@@ -361,11 +372,10 @@ export function sessionTasks(session: Core) {
   /** An account's chain sync, its Savings and the background work over them. */
   const accountWork = (
     signIn: SignInDeps,
-    account: Service<ObsidionAccount>,
+    account: AccountService,
     token: Service<TokenService>,
     contacts: Contacts,
     balanceStore: BalanceStore,
-    price: SavingsPriceQuery,
   ) => {
     const claim = ticketClaim(
       { wallet, account, tokenService: token, teeSigner: session.teeSigner, contractService },
@@ -418,30 +428,24 @@ export function sessionTasks(session: Core) {
           milestones,
         }),
     })
-    const savings = openSavingsSource([wallet, account, token, contractService], () =>
-      openSavings({
-        network: deps.page.config.network,
-        refreshBalance: () => scan.refreshBalance(),
-        price,
-        session,
-      }),
-    )
-    const settleDue = derived(
-      [session.savingsMoves.view, withdrawals.list],
-      (moves, burns) => selectSettleDue(moves.records, burns),
-      sameSettleDue,
-    )
-    const settle = savingsSettle(savings, settleDue)
-    const holding = derived(
-      [savings, balanceStore.view, price],
-      (source, balances, read) =>
-        selectSavingsHolding(
-          source.status === "ready" ? source.value : null,
-          balances,
-          priceOf(read),
-        ),
-      sameHolding,
-    )
+    const sighted = memoryStore(false)
+    const ports = movesPorts({
+      ...session,
+      auth: deps.auth,
+      account,
+      token,
+      balances: balanceStore.view,
+      sighted: sighted.readonly,
+    })
+    const movesDeps = { db, moves: session.moves, withdrawals, now: page.now, ports }
+    const moves = openMoves(movesDeps)
+    const settle = settleMoves({ ...movesDeps, refreshBalance: () => scan.refreshBalance() })
+    const holding = savingsLine(session, account, balanceStore)
+    const bound = boundRails(ports)
+    const rails = {
+      recoverable: derived([bound], recoverableRails),
+      runnable: derived([bound], runnableRails),
+    }
     const paylinks = paylinkSweep(
       { wallet, account, token, contractService },
       chainPass({
@@ -462,9 +466,9 @@ export function sessionTasks(session: Core) {
       readExecutor: session.page.chain.withdrawalExecutorAt,
       chain: session.page.chain,
       chainName: (chainId) =>
-        profileBridge(session.page.config)?.chains.find((c) => c.chainId === chainId)?.name,
+        acrossBridge(session.page.config)?.chains.find((c) => c.chainId === chainId)?.name,
     }
-    const rescan = rescanWithdrawals(rescanDeps)
+    const rescan = rescanWithdrawals({ ...rescanDeps, onSighted: () => sighted.set(true) })
     // Sky burns stay out: the Savings settle would try to claim their deposits for the session's
     // account, but they were paid to the previous one.
     const previousRescan = rescanWithdrawals({
@@ -472,23 +476,33 @@ export function sessionTasks(session: Core) {
       keep: (burn) => !burn.sky,
       strict: true,
     })
-    const replay = savingsMovesReplay(
-      { wallet, account, token, savings },
-      milestones,
-      { rescan, savingsToken: savingsRescanToken(session.page) },
-      settle,
-    )
+    const replay = replayMoves({ ...movesDeps, milestones, settle })
     const tasks = [
       scan.task,
-      withdrawalRescan({ wallet, account, token }, rescan),
-      savingsLookup({ wallet, account, scan, lookup: savingsRescanToken(session.page) }),
+      withdrawalRescan({ wallet, account, token }, rescan, (account) =>
+        shareRescanTokens(page, account),
+      ),
+      savingsLookup({
+        wallet,
+        account,
+        scan,
+        lookup: async (_wallet, account) => {
+          const { holdings } = await page.chain.holdings.read()
+          const tokens = new Map(holdings.map((h) => [h.held.l2Token.toLowerCase(), h.held]))
+          return Promise.all(
+            [...tokens.values()].map(async (held) => ({
+              tokenService: await l2TokenService(page, account, held.l2Token),
+            })),
+          )
+        },
+      }),
       settle,
-      replay.task,
+      replay,
       oldVersionWithdrawalTask({
         wallet,
         records: session.rollup.oldVersionWithdrawals(),
         settle: (id, wallet) =>
-          settleOldVersionWithdrawal(session.page.config, session.savingsMoves, id, (hash) =>
+          settleOldVersionWithdrawal(session.page.config, refundedMoves(session), id, (hash) =>
             broadcastState(wallet, hash),
           ),
       }),
@@ -576,11 +590,11 @@ export function sessionTasks(session: Core) {
         }),
       )
     }
-    return { scan, savings, settle, settleDue, replay, holding, paylinks, claim, tasks }
+    return { scan, ports, rails, moves, settle, holding, paylinks, claim, tasks }
   }
   const work =
-    signIn && account && token && contacts && balanceStore && price
-      ? accountWork(signIn, account, token, contacts, balanceStore, price)
+    signIn && account && token && contacts && balanceStore
+      ? accountWork(signIn, account, token, contacts, balanceStore)
       : null
   const sipaKeys = account
     ? openSipaKeys(deps.page, wallet, account, () => deps.auth.getSecretKey())
@@ -635,7 +649,10 @@ export function sessionTasks(session: Core) {
         session,
         saved: session.savedPreviousAccount,
         pipeline,
-        savings: work?.savings ?? null,
+        savingsValue: async (shares) => {
+          const price = await page.chain.savingsPrice.read()
+          return price ? savingsValue(shares, price.sharePrice) : undefined
+        },
       }),
     )
   }
@@ -821,13 +838,14 @@ export function sessionTasks(session: Core) {
       registrationDetection: detection,
       registrationIdentity: entering,
       registrationRefunds: refunds,
-      savingsSettle: work?.settle ?? null,
+      settleMoves: work?.settle ?? null,
     },
     /** Called once the session's runtime runs these tasks. */
     started() {
       stops.push(page.prover.state.subscribe(() => gate.busy() || void wake(broadcasts.task)))
-      // The ticket claim waits on this page's own state as well as the chain's: the signup's burn records, and the
-      // user's flows and the background proofs it yields to. It runs as soon as any changes, not on its next pass.
+      // The ticket claim waits on this page's own state as well as the chain's: the signup's registration and burn
+      // records, the upgrade check its verdict reads, and the user's flows and the background proofs it yields to.
+      // It runs as soon as any changes, not on its next pass.
       const claim = work?.claim
       if (claim) {
         const wakeClaim = () => void wake(claim)
@@ -835,6 +853,9 @@ export function sessionTasks(session: Core) {
           page.prover.state.subscribe(wakeClaim),
           withdrawals.list.subscribe(wakeClaim),
           page.claims.state.subscribe(wakeClaim),
+          session.registrations.view.subscribe(wakeClaim),
+          upgradeStatusStore.subscribe(wakeClaim),
+          ...upgradeLockReads.map((store) => store.subscribe(wakeClaim)),
         )
       }
     },
@@ -898,25 +919,28 @@ export function sessionTasks(session: Core) {
       fasterOffer,
       /** When a backup add's funding is released, by its landing. */
       backupAddRelease,
-      /** Null for a visitor; its value is null without a sUSDS deployment. */
-      savings: work?.savings ?? null,
-      /** The Savings shares at the vault's price; a visitor holds none. */
-      savingsHolding: work?.holding ?? NO_HOLDING,
+      /** The moves' commands; null for a visitor. */
+      moveCommands: work?.moves ?? null,
+      /** What a move costs and lands; null for a visitor. */
+      moveQuote: work ? moveQuotes(page.query, work.ports) : null,
+      /** The rails whose moves the account can recover itself. */
+      recoverableRails: work?.rails.recoverable ?? NO_RAILS,
+      /** The rails whose stalled moves the account can run itself. */
+      runnableRails: work?.rails.runnable ?? NO_RAILS,
+      /** The Savings line and its figures; a visitor holds none. */
+      savingsLine: work?.holding ?? NO_SAVINGS,
       /** What values an upgrade run: the tokens it credits and the Savings share price. */
       upgradePricing: runPricing,
       /** The account's sponsored-transaction allowance; null for a visitor. */
       sponsoredAllowance: allowance,
-      /** Whether this session rebuilt its Savings burns; a visitor's never does. */
-      savingsReplayed: work?.replay.replayed ?? NO_REPLAY,
-      /** What the settle pass has left; nothing for a visitor. */
-      savingsSettleDue: work?.settleDue ?? NO_SETTLE_DUE,
       /** The sent links' rescan and claim sweep. */
       paylinkSweep: work?.paylinks ?? NO_SWEEP,
     },
     close() {
       for (const stop of stops) stop()
       work?.scan.dispose()
-      work?.savings.close()
+      work?.ports.close()
+      work?.moves.close()
       sipaKeys?.close()
       registrationReads.close()
       sipaDiscovery.close()
@@ -955,10 +979,11 @@ declare module "../session/session" {
     fundDeposit: Services["fundDeposit"]
     fasterOffer: Services["fasterOffer"]
     backupAddRelease: Services["backupAddRelease"]
-    savings: Services["savings"]
-    savingsHolding: Services["savingsHolding"]
-    savingsReplayed: Services["savingsReplayed"]
-    savingsSettleDue: Services["savingsSettleDue"]
+    moveCommands: Services["moveCommands"]
+    moveQuote: Services["moveQuote"]
+    recoverableRails: Services["recoverableRails"]
+    runnableRails: Services["runnableRails"]
+    savingsLine: Services["savingsLine"]
     upgradePricing: Services["upgradePricing"]
     sponsoredAllowance: Services["sponsoredAllowance"]
     paylinkSweep: Services["paylinkSweep"]

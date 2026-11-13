@@ -26,10 +26,10 @@ export default {
   chip: "Copied",
   spotted: {
     title: "{amount} spotted",
-    arriving: "≈ {amount} is on its way to your private funds.",
-    sent: "{amount} is on its way to your private funds.",
+    arriving: "≈ {amount} is on its way to your private balance.",
+    sent: "{amount} is on its way to your private balance.",
     swapping:
-      "It's being swapped to {token} at the market rate, less the fee, on its way to your private funds.",
+      "It's being swapped to {token} at the market rate, less the fee, on its way to your private balance.",
     capacityChip: "Waiting for capacity",
     capacity:
       "This deposit is over what the network can take right now. It's credited once capacity frees up, which can take longer than {arrival}.",

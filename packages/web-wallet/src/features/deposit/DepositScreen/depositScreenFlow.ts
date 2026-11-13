@@ -35,6 +35,8 @@ export interface DepositScreenInputs {
 export interface DepositScreenFlow extends ScreenFlow {
   state: ReadonlyStore<DepositScreenState>
   entry(entry?: DepositEntry): void
+  /** The open modal's sender changed: to `saved`, or to an account no saved wallet names. */
+  sender(saved?: SavedL1Wallet): void
   pick(step: DepositScreenState["picking"]): void
   open(sheet: DepositSheet): void
   shut(kind: DepositSheet["kind"]): void
@@ -108,6 +110,7 @@ export function openDepositScreenFlow(
       })
     },
     entry: (entry) => dispatch({ type: "entry", entry, startKey: latest().startKey }),
+    sender: (saved) => dispatch({ type: "sender", saved }),
     pick: (step) => dispatch({ type: "picking", step }),
     open: (sheet) => dispatch({ type: "open", sheet }),
     shut: (kind) => {

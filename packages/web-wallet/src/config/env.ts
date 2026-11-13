@@ -7,7 +7,7 @@ import {
   type ConfigProfileErrorCode,
   type WalletSourceRollup,
   type WalletSourceRollupIssue,
-  type ConfigBridge,
+  type Features,
   type ConfigVersion,
   type WalletProfileBoot,
 } from "@obsidion/config-client"
@@ -27,8 +27,10 @@ import {
   PASSKEY_RP_NAME,
   ZKJWT_VKEY_HASH,
 } from "@obsidion/core/constants"
+import type { SavingsPortal } from "@obsidion/core/oxide"
 import type { ContractServiceOptions, OxideEnvProfile } from "@obsidion/core/types"
 import { assertHostProfileUrl, assertProfilePolicy, parseNetwork } from "./profilePolicy"
+import { loadWalletFeatures } from "./walletFeatures"
 import { WalletError, type PredicateScreeningConfig } from "@obsidion/front-core"
 import { http } from "viem"
 import { foundry, mainnet, sepolia, type Chain } from "viem/chains"
@@ -136,8 +138,15 @@ export type WebWalletConfig = {
   predicate?: PredicateScreeningConfig
   /** The version's assets, the wallet token among them. Empty where the profile lists none. */
   assets: ProfileAsset[]
-  /** The one bridge the profile offers; absent keeps deposits and withdrawals on L1. */
-  bridge?: ConfigBridge
+  /** The wallet features on top of the profile's deployment, from the features document. */
+  features: Features
+  /**
+   * The holding features the wallet shows, in order. Undefined where the profile carries no list:
+   * the pinned deployment's default then shows.
+   */
+  holdings: readonly string[] | undefined
+  /** What the profile says each portal is. Undefined: the manifest's features split the rows. */
+  portals: { main: readonly string[]; savings: readonly SavingsPortal[] } | undefined
 }
 
 /** Viem chain for an L1 chain id; unknown ids get a generic local-chain shape. */
@@ -303,8 +312,10 @@ export type BaseWebWalletConfig = Omit<
   | "nodeEndpointDigest"
   | "profileRollupVersion"
   | "assets"
-  | "bridge"
+  | "features"
   | "xmtpEnv"
+  | "holdings"
+  | "portals"
 >
 
 export function loadConfig(
@@ -349,6 +360,8 @@ export interface ResolveBootConfigInput {
   readEndpointOverrides?: () => EndpointOverrides
   /** The profile baked into this build; the app tree passes the virtual module's export. */
   bakedProfile?: unknown
+  /** The features document baked into this build. */
+  bakedFeatures?: unknown
   /** Demo mode: its own partition and an in-memory wallet database; nothing persistent is touched. */
   demoStorage?: boolean
 }
@@ -389,6 +402,7 @@ function mergeProfileConfig(
   env: Record<string, string | undefined>,
   base: BaseWebWalletConfig,
   boot: WalletProfileBoot,
+  features: Features,
   readOverrides: () => EndpointOverrides,
 ): WebWalletConfig {
   // The version's pointer, alone: nothing outside the document supplies or overrides it.
@@ -452,7 +466,9 @@ function mergeProfileConfig(
     sourceRollupIssues: boot.sourceRollupIssues,
     claimFpcAddress: boot.snapshot.contracts.claimFpc?.address,
     assets: boot.version.assets ?? [],
-    bridge: boot.version.bridge,
+    features,
+    holdings: boot.version.holdings,
+    portals: boot.version.portals,
   }
 }
 
@@ -519,6 +535,17 @@ export async function resolveBootConfig(
     network,
     expectedZkJwtVkeyHash: ZKJWT_VKEY_HASH,
   }
+  // Read beside the profile, so the two requests overlap.
+  const featuresRead = (expectedProfileId: string) =>
+    loadWalletFeatures({
+      profileUrl,
+      expected: { profileId: expectedProfileId, network },
+      baked: input.bakedFeatures,
+      forceBaked: runtime.bootFromBakedProfile,
+      fetchImpl: input.fetchImpl,
+      now: input.now,
+    })
+  const early = request.expectedProfileId ? featuresRead(request.expectedProfileId) : undefined
   const boot: WalletProfileBoot = await resolveWalletProfile({
     ...request,
     bakedProfile: input.bakedProfile,
@@ -571,11 +598,24 @@ export async function resolveBootConfig(
     )
   }
 
+  const features = await (early ?? featuresRead(boot.profile.profileId))
+  if (features.issue)
+    console.warn(
+      `[bootConfig] features document ${
+        features.bootedFromBaked
+          ? "unreachable; booting on the baked copy"
+          : "not read; every feature is off"
+      } ` + `(${features.issue.code}: ${features.issue.message})`,
+    )
+  for (const { id, reason } of features.rejected)
+    console.warn(`[bootConfig] feature "${id}" is off: ${reason}`)
+
   const base = loadConfig(env)
   const merged = mergeProfileConfig(
     env,
     base,
     boot,
+    features.features,
     input.readEndpointOverrides ?? readEndpointOverrides,
   )
   const artifacts = createArtifactCatalog({

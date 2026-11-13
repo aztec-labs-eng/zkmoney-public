@@ -1,0 +1,410 @@
+{
+  "schemaVersion": "5",
+  "deployments": [
+    {
+      "deploymentId": "dep-v6",
+      "deploymentType": "oxide-app",
+      "gitSha": "52d07e3fb2a067f3efdbde7b577faee6b86677b0",
+      "deployedAt": "2026-10-25T18:51:35.163Z",
+      "updatedAt": "2026-10-25T19:06:04.658Z",
+      "chainId": "11155111",
+      "rollupVersion": "679261766",
+      "teeRegistry": "0x173e5610348e4e8d71131510ee402118d1d290a4",
+      "portalFactory": "0xe43fde1e8167eaa291e55f671b7ef56208d88f48",
+      "certManager": "0x8ef8e214ef3af3cde4fe1385d6fa4192c913c678",
+      "nitroValidator": "0x218a788d1e45e82655927bf252f0e97a389c48d7",
+      "pcr0": "965fd289fa2fd3e3dfb72a93d5a4c83df64fe5de45e9dc02086f5151dfe3dd52187ab52e7aa69bbe12b7b63539f5b0e0",
+      "enclaveUrl": "https://flt-v6.v6-stg.staging.oxide.zk.money/rpc",
+      "bridges": [
+        {
+          "key": "susds",
+          "bridgeId": "brg-susds-v6",
+          "deployedAtBlock": "11992566",
+          "token": "0xa080c6e954dc90f64ba6bfeea9033e8bdf29e16e",
+          "underlying": "0xa080c6e954dc90f64ba6bfeea9033e8bdf29e16e",
+          "portal": "0xd4a284652f5bB2D3884cc3dE2fd2D328BcCbaEd0",
+          "l2Token": "0x19db3da645eb2516ba6a6248733796d9b254565473a286cd42b115fd06214189",
+          "l2TokenImmutables": {
+            "portal": "0xd4a284652f5bB2D3884cc3dE2fd2D328BcCbaEd0",
+            "teeRegistry": "0x173e5610348e4e8d71131510ee402118d1d290a4",
+            "name": "Oxide Staging sUSDS",
+            "symbol": "OXSUSDS",
+            "decimals": 18,
+            "maxNoteAmount": "5166000000000000000000"
+          },
+          "fpcFunder": "0x914abde0d27b0d4e25f3a4440d8b232301af7686",
+          "fpcBeneficiary": "0x2bdbd4b966c7fd99c4363437d7673a7fef10f0eacc383228ee950f7547d34d48",
+          "fpcBeneficiarySalt": "0x05ab09341549a3c224b43d411689ab5826e0e3caafcab5e342b6861224f13aa3",
+          "proverSubsidy": "0x2deb07354fd87da064ff7da23b5f5917ad761d9a",
+          "withdrawalSubsidy": "0x0016B20413Be3a48720073F8B51EA7Ae8351FcC8",
+          "plainWithdrawalExecutor": "0xae05b5daeeefa076a37ecbc7087d2617cf25d3f8",
+          "firstProverProofSubmitter": "0x60f8d7d0e981ad6a26a2c7bf3e6f2a03ad39a82b",
+          "frozenNotesRefundVerifier": "0x08c419d376e5d7deb3538e977d1716e1a89e6f6a",
+          "frozenDepositRefundVerifier": "0xf9af2f707ef29edf01ff52f2999356516a108d10",
+          "unprocessedDepositRefundVerifier": "0xd3f012f498c19f22437eb4d9b31a05387254f4ba",
+          "frozenNotesRefundVkSha256": "b6da7dde0f52cda6815b897d92ed97eb71019c9d67b39bba0901e27daee4af11",
+          "frozenDepositRefundVkSha256": "c6d8b193d480b78337e10b2bc3554ea80bbc0b9ed1b402867e586aa45fac1ca1",
+          "unprocessedDepositRefundVkSha256": "15ad2311cf674596c077d20cdabed5220483103558f8071546c07fd40b411b37",
+          "depositSubsidy": "0xf150987f85e6b8669602aab6ecde8c1748f48c4f"
+        },
+        {
+          "key": "tst",
+          "bridgeId": "brg-tst-v6",
+          "deployedAtBlock": "11992602",
+          "token": "0x6b9ef1a089feeff90695ac7cf19be39f4b8a0334",
+          "underlying": "0x6b9ef1a089feeff90695ac7cf19be39f4b8a0334",
+          "portal": "0x1e0CdF24D1a3668EB2e1d066D8a8C9d527d44Def",
+          "l2Token": "0x1d529e011054b9dbef74be052816372718b374965ac11e95be52440d36a43373",
+          "l2TokenImmutables": {
+            "portal": "0x1e0CdF24D1a3668EB2e1d066D8a8C9d527d44Def",
+            "teeRegistry": "0x173e5610348e4e8d71131510ee402118d1d290a4",
+            "name": "Oxide Staging TST",
+            "symbol": "OXTST",
+            "decimals": 18,
+            "maxNoteAmount": "5166000000000000000000"
+          },
+          "fpcFunder": "0x09a80ab9ba91dff07315d7b0b4b60bb45a25db8b",
+          "fpcBeneficiary": "0x0091b0fffe6cd827be3856cb239b1f948865163417a024ab1152ed4ca8f015fd",
+          "fpcBeneficiarySalt": "0x2370075fb98245716a26887825e54a503502f82d678014a6f6b0861f7c0ebb74",
+          "proverSubsidy": "0x11085a415a7e6a22cc21660045123edca6f6003f",
+          "withdrawalSubsidy": "0x76d875B1E104cfa40C060e243246958CE75F71c2",
+          "plainWithdrawalExecutor": "0x10d1affdecdc53f15a3a2d02f141ce8b509fa6f7",
+          "firstProverProofSubmitter": "0xaf7461289cbae4db2863d853a103b1a6c366ddbb",
+          "frozenNotesRefundVerifier": "0x08c419d376e5d7deb3538e977d1716e1a89e6f6a",
+          "frozenDepositRefundVerifier": "0xf9af2f707ef29edf01ff52f2999356516a108d10",
+          "unprocessedDepositRefundVerifier": "0xd3f012f498c19f22437eb4d9b31a05387254f4ba",
+          "frozenNotesRefundVkSha256": "b6da7dde0f52cda6815b897d92ed97eb71019c9d67b39bba0901e27daee4af11",
+          "frozenDepositRefundVkSha256": "c6d8b193d480b78337e10b2bc3554ea80bbc0b9ed1b402867e586aa45fac1ca1",
+          "unprocessedDepositRefundVkSha256": "15ad2311cf674596c077d20cdabed5220483103558f8071546c07fd40b411b37",
+          "depositSubsidy": "0x25dab91ef93190c7f8ac7a0e16d6a29b77a1744c"
+        }
+      ],
+      "features": {
+        "fea-migv12-v6": {
+          "project": "migration",
+          "bridges": {
+            "destination": "brg-tst-v6"
+          },
+          "contracts": {
+            "migrationExecutor": "0xce152bbd826f946f86e1977171fe6fae373a78f8",
+            "migrationExecutorSubsidy": "0xfec615445c1e7578f1d0f9f26dd89727b4682fe8"
+          },
+          "variables": {
+            "maxSubsidyPerOperation": "50000000000000000000",
+            "minMigratedAmount": "1000000000000000",
+            "operationExecutorCodeHash": "0x23c4ad752879b3280b11ccab3ddec004ade77eae41996a829101f3b678bb3ccc",
+            "payoutToken": "0x6b9ef1a089feeff90695ac7cf19be39f4b8a0334",
+            "payoutTokenCodeHash": "0x148066df4bd41cb10a776ef1bd0917e34485b2321fc71acc61dcdd59be74d4fa",
+            "priceFeed": "0x694aa1769357215de4fac081bf1f309adc325306",
+            "priceFeedCodeHash": "0x9190afba2a699a9627d64ed68c7cc60e4005a8830b33183c4413b4e1a93b9ccd",
+            "sourcePortal": "0x12e9bf217cf5566bb82253c54400798205e1be62",
+            "sourcePortalCodeHash": "0x5e51532e2aeabedc5fdc9dd87012d232386e6b725558d968ace1eb827dff1115",
+            "targetRelayerProfit": "50000000000000000"
+          }
+        },
+        "fea-migv12sky-v6": {
+          "project": "migration",
+          "bridges": {
+            "destination": "brg-susds-v6"
+          },
+          "contracts": {
+            "migrationExecutor": "0x58762cfb98124c0354f782762f43844667d3d7b9",
+            "migrationExecutorSubsidy": "0x3bbef5342b515e3bf3118e917062ca73508c0d55"
+          },
+          "variables": {
+            "maxSubsidyPerOperation": "50000000000000000000",
+            "minMigratedAmount": "1000000000000000",
+            "operationExecutorCodeHash": "0x23c4ad752879b3280b11ccab3ddec004ade77eae41996a829101f3b678bb3ccc",
+            "payoutToken": "0x6b9ef1a089feeff90695ac7cf19be39f4b8a0334",
+            "payoutTokenCodeHash": "0x148066df4bd41cb10a776ef1bd0917e34485b2321fc71acc61dcdd59be74d4fa",
+            "priceFeed": "0x694aa1769357215de4fac081bf1f309adc325306",
+            "priceFeedCodeHash": "0x9190afba2a699a9627d64ed68c7cc60e4005a8830b33183c4413b4e1a93b9ccd",
+            "sourcePortal": "0xe980bd03226ee772051f384bbe4570303bf7848b",
+            "sourcePortalCodeHash": "0xd406192a841a565dc2bf29059493732914ba14a9939594168dcd9543b59e69a5",
+            "targetRelayerProfit": "50000000000000000"
+          }
+        },
+        "fea-sky-v6": {
+          "project": "sky",
+          "bridges": {
+            "dai": "brg-tst-v6",
+            "sUsds": "brg-susds-v6"
+          },
+          "contracts": {
+            "skyEscrowFactory": "0x2ea5953b23cd10b90f478def418a805b94ec5577",
+            "skyEscrowFactoryImplementation": "0xa97e58266767594da63cb28b4eca6edef1ebcbd5",
+            "skyWithdrawalExecutor": "0x0cd7c278d808b27a13b9e1ffeddd75635aebcf6e",
+            "skyWithdrawalExecutorSubsidy": "0xd08c6b79329d6814eba21452fd8bd07932687530"
+          },
+          "variables": {
+            "skyDaiAddress": "0x6b9ef1a089feeff90695ac7cf19be39f4b8a0334",
+            "skyDaiCodeHash": "0x148066df4bd41cb10a776ef1bd0917e34485b2321fc71acc61dcdd59be74d4fa",
+            "skyDaiUsdsAddress": "0x1a6f46741d29e725ad0131e11372682aaebb55ed",
+            "skyDaiUsdsCodeHash": "0x9069574fc096715b1a33823165f1af69188432a2e0266c17599e4adeadaff204",
+            "skySUsdsCodeHash": "0xe6c9ad2b89920cad308e2cf49e9abe8e46e87f355731479e571b55800525fc05",
+            "skyUsdsAddress": "0x58d49f48c1bbf48392800b2d5072499e79fd7f8c",
+            "skyUsdsCodeHash": "0x28eaeaba2e307db6f78abf89f31aca86a28e50e1aa33c556331bbe2a88b18a8d",
+            "withdrawalPriceFeedAddress": "0x694aa1769357215de4fac081bf1f309adc325306",
+            "withdrawalPriceFeedCodeHash": "0x9190afba2a699a9627d64ed68c7cc60e4005a8830b33183c4413b4e1a93b9ccd"
+          }
+        }
+      },
+      "operationExecutor": "0x9236d4a72a4c872c1d1aafc3f5c07a255c472766",
+      "l2Broadcaster": "0x11152803daae26b3c531024212dd590342f1d6d9767cd16c35c6c981760c132b",
+      "withdrawalProtocol": "l1-operation",
+      "nameRegistry": "0xd27865e8b57d0c60d65ec86ba5fb9365a756b539",
+      "accountMetadataRegistry": "0x523bf3270084766b9ff136845d5ca0523c196fe4",
+      "registrationController": "0x3955df1227384069a127a11d2b282c70e78678b8",
+      "namePortal": "0x7937fc95ce18db2dfdffe7de228fbf95bff2cf2e",
+      "sipaFactory": "0xe25e5ecd4ebc00188ab63c3bc2d2deaba82e814c",
+      "sipaRecoveryProtocol": "account",
+      "depositSIPAImplementation": "0x2830a0b690506540bd8b496e965fbc75e6217dc5",
+      "registrationSIPAImplementation": "0x8d2b30d24b38a12a90e59108ad601d1478f10ebd",
+      "userOpSIPAImplementation": "0x2a4e739d3c97b86d6e58882538c8be7ff740b017",
+      "forwardingTable": "0xaa292e5868e5ba7cacda8e5e41ac4ff5b71e6643",
+      "feeToken": "0x6b9ef1a089feeff90695ac7cf19be39f4b8a0334",
+      "sipaResolver": "0xe4533542cae207cfa9fc19671574962183ebcaa9",
+      "resolverProofVerifier": "0x9c64a8dff0fb8458c84b36b842ce97dac1ab7981",
+      "zkTranscriptLib": "0x2a78dd847e7459b73aab46b1db846fc95cb4db00",
+      "accountFactory": "0x1698667862c51bb5c3d933c824dd3d16924ab20c",
+      "entryPoint": "0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108",
+      "paymaster": "0x0000000000000000000000000000000000000000",
+      "resolverGatewayUrl": "https://rop-v6.v6-stg.staging.oxide.zk.money/{sender}/{data}.json",
+      "resolverOperator": "0xe959f1c4f84c55c10114f3fa46a8dcfb51ab8d30",
+      "ensDomain": "oxidestaging.eth",
+      "ensNode": "0x4aec29f52549269bc337b036c4d119cec44031357e14fbd2720c64fcbf2c5c25",
+      "accountServiceUrl": "",
+      "label": "dep-v6"
+    },
+    {
+      "deploymentId": "dep-v6b",
+      "deploymentType": "oxide-app",
+      "gitSha": "27bed41ce6e475ad054bf75135d281aaafc1c490",
+      "deployedAt": "2026-11-06T11:40:06.695Z",
+      "updatedAt": "2026-11-06T16:02:41.826Z",
+      "chainId": "11155111",
+      "rollupVersion": "679261766",
+      "teeRegistry": "0x3622157cf45ee4fde027c3c6df8a864dd3df835f",
+      "portalFactory": "0x6e52ddab982474e338ab2b252188a08629c48fcd",
+      "certManager": "0xd6bc2d7acb401b19106ad095d539080716f6a354",
+      "nitroValidator": "0x015bef417e324880279d61d579677bfa4d47d4e5",
+      "pcr0": "4d28e5b10f51d67b1383f1cf738b567fe9e19efa6043d8470a5dad299d2e30c9e76e7493c0df7bb5e9c2cc2156348b73",
+      "enclaveUrl": "https://flt-v6b.v6-stg.staging.oxide.zk.money/rpc",
+      "bridges": [
+        {
+          "key": "susds",
+          "bridgeId": "brg-susds-v6b",
+          "deployedAtBlock": "12076137",
+          "token": "0xa080c6e954dc90f64ba6bfeea9033e8bdf29e16e",
+          "underlying": "0xa080c6e954dc90f64ba6bfeea9033e8bdf29e16e",
+          "portal": "0x0edc24A5fd47ACC1f5380fc6CcBe8f471bbFFa87",
+          "l2Token": "0x04377edbeece691cc24df8c8f4c51ae10d65b1edd4c5ea86c32343b69be8fafe",
+          "l2TokenImmutables": {
+            "portal": "0x0edc24A5fd47ACC1f5380fc6CcBe8f471bbFFa87",
+            "teeRegistry": "0x3622157cf45ee4fde027c3c6df8a864dd3df835f",
+            "name": "Oxide Staging sUSDS",
+            "symbol": "OXSUSDS",
+            "decimals": 18,
+            "maxNoteAmount": "5166000000000000000000"
+          },
+          "fpcFunder": "0xcc886bbb07db85c1aee0f73b073d03165478a0df",
+          "fpcBeneficiary": "0x1b495a5e6a9221c1013cc3b69d5acf6bf47667bf542a667fa5f3784a30634b13",
+          "fpcBeneficiarySalt": "0x0060a311c0929f2789576d4cd778ce31bee7e026b68db29ef4fd9616ba602605",
+          "proverSubsidy": "0x66618ebd819d85ccb60f895ce27084f55b7834d8",
+          "withdrawalSubsidy": "0xb4A0D1DB30eAdab9A81Aed812eaC816bAc4Fe92B",
+          "plainWithdrawalExecutor": "0x131d5cfb36a565ae4c5e1751bb75ab3352c8af04",
+          "firstProverProofSubmitter": "0x3e753d74d127177e1d012a47f61ed4e99f75d9d0",
+          "frozenNotesRefundVerifier": "0xd55475c57ca899a8d4709e55ac6b93948ba14d02",
+          "frozenDepositsRefundVerifier": "0xa28cf7679f73d8836814136243e344e578871559",
+          "unprocessedDepositRefundVerifier": "0xa6cf6ec987cd565321d7b89628689d837cb699e7",
+          "frozenNotesRefundVkSha256": "7eb20a895fc3a75ace09796385d84e05f75228de0e5b838e13f5ee44a1e43772",
+          "frozenDepositsRefundVkSha256": "071dc869b6946c05dae3402b7a7b62a37204c652fcb09507562186ace4ac2fcd",
+          "unprocessedDepositRefundVkSha256": "15ad2311cf674596c077d20cdabed5220483103558f8071546c07fd40b411b37",
+          "depositSubsidy": "0x5331905762ded3f6b5d90b5984b73730eda73fb2"
+        },
+        {
+          "key": "tst",
+          "bridgeId": "brg-tst-v6b",
+          "deployedAtBlock": "12076169",
+          "token": "0x6b9ef1a089feeff90695ac7cf19be39f4b8a0334",
+          "underlying": "0x6b9ef1a089feeff90695ac7cf19be39f4b8a0334",
+          "portal": "0x92b3BD276633a4D6f68663356Af80f91c28EFba5",
+          "l2Token": "0x2ad1e2a2332fec4b63f9e3414a1f408fb89b288e61612aa07dbcb08695119c82",
+          "l2TokenImmutables": {
+            "portal": "0x92b3BD276633a4D6f68663356Af80f91c28EFba5",
+            "teeRegistry": "0x3622157cf45ee4fde027c3c6df8a864dd3df835f",
+            "name": "Oxide Staging TST",
+            "symbol": "OXTST",
+            "decimals": 18,
+            "maxNoteAmount": "5166000000000000000000"
+          },
+          "fpcFunder": "0xee79a18fc65bcbefa37c4b8a0c6b328c5a5c6f82",
+          "fpcBeneficiary": "0x2f9aa4b331bfdbd0d10613d35e4bda0eac2802704ffd2de625155ee5c92a64f4",
+          "fpcBeneficiarySalt": "0x0064e3b7726421d7358a8a554afea5112600cc953be03755623aad9c385bf42f",
+          "proverSubsidy": "0x2dee18a862cce2badb6c70413ccedffb66ff6272",
+          "withdrawalSubsidy": "0x2fa6A4f6FBCD950fB9Ec6fda9FdD844c82860C5f",
+          "plainWithdrawalExecutor": "0x458ee29da26cc352fa0df6410eb624743132d2f4",
+          "firstProverProofSubmitter": "0x03d94af45c730c2ea63065da8d46f375f55d124b",
+          "frozenNotesRefundVerifier": "0xd55475c57ca899a8d4709e55ac6b93948ba14d02",
+          "frozenDepositsRefundVerifier": "0xa28cf7679f73d8836814136243e344e578871559",
+          "unprocessedDepositRefundVerifier": "0xa6cf6ec987cd565321d7b89628689d837cb699e7",
+          "frozenNotesRefundVkSha256": "7eb20a895fc3a75ace09796385d84e05f75228de0e5b838e13f5ee44a1e43772",
+          "frozenDepositsRefundVkSha256": "071dc869b6946c05dae3402b7a7b62a37204c652fcb09507562186ace4ac2fcd",
+          "unprocessedDepositRefundVkSha256": "15ad2311cf674596c077d20cdabed5220483103558f8071546c07fd40b411b37",
+          "depositSubsidy": "0x8440262bf8463c32ccf853f9ae940bc8622a3bb9"
+        }
+      ],
+      "features": {
+        "fea-migv12-v6b": {
+          "project": "migration",
+          "bridges": {
+            "destination": "brg-tst-v6b"
+          },
+          "contracts": {
+            "migrationExecutor": "0xa8df8b494cac0576cd901652e4973a6e62ccbe08",
+            "migrationExecutorSubsidy": "0x6b4f6a6346ccfc764ffa8e956eb6c0df35a17f04"
+          },
+          "variables": {
+            "maxSubsidyPerOperation": "50000000000000000000",
+            "minMigratedAmount": "1000000000000000",
+            "operationExecutorCodeHash": "0x23c4ad752879b3280b11ccab3ddec004ade77eae41996a829101f3b678bb3ccc",
+            "payoutToken": "0x6b9ef1a089feeff90695ac7cf19be39f4b8a0334",
+            "payoutTokenCodeHash": "0x148066df4bd41cb10a776ef1bd0917e34485b2321fc71acc61dcdd59be74d4fa",
+            "priceFeed": "0x694aa1769357215de4fac081bf1f309adc325306",
+            "priceFeedCodeHash": "0x9190afba2a699a9627d64ed68c7cc60e4005a8830b33183c4413b4e1a93b9ccd",
+            "sourcePortal": "0x12e9bf217cf5566bb82253c54400798205e1be62",
+            "sourcePortalCodeHash": "0x5e51532e2aeabedc5fdc9dd87012d232386e6b725558d968ace1eb827dff1115",
+            "targetRelayerProfit": "50000000000000000"
+          }
+        },
+        "fea-migv12sky-v6b": {
+          "project": "migration",
+          "bridges": {
+            "destination": "brg-susds-v6b"
+          },
+          "contracts": {
+            "migrationExecutor": "0xf291de785752aac3c97e96b28d067d4c10679f62",
+            "migrationExecutorSubsidy": "0x800ca509ecc793b3e3920a3e152f4939d838dc81"
+          },
+          "variables": {
+            "maxSubsidyPerOperation": "50000000000000000000",
+            "minMigratedAmount": "1000000000000000",
+            "operationExecutorCodeHash": "0x23c4ad752879b3280b11ccab3ddec004ade77eae41996a829101f3b678bb3ccc",
+            "payoutToken": "0x6b9ef1a089feeff90695ac7cf19be39f4b8a0334",
+            "payoutTokenCodeHash": "0x148066df4bd41cb10a776ef1bd0917e34485b2321fc71acc61dcdd59be74d4fa",
+            "priceFeed": "0x694aa1769357215de4fac081bf1f309adc325306",
+            "priceFeedCodeHash": "0x9190afba2a699a9627d64ed68c7cc60e4005a8830b33183c4413b4e1a93b9ccd",
+            "sourcePortal": "0xe980bd03226ee772051f384bbe4570303bf7848b",
+            "sourcePortalCodeHash": "0xd406192a841a565dc2bf29059493732914ba14a9939594168dcd9543b59e69a5",
+            "targetRelayerProfit": "50000000000000000"
+          }
+        },
+        "fea-multistep-v6c": {
+          "project": "multistep",
+          "bridges": {},
+          "contracts": {
+            "acrossAdapter": "0x8c6bb1dd7b29efc36e36564b6f8098d900da2777",
+            "cctpAdapter": "0xb5f08b51371b6a519d7e141a67d4c7315ba3a462",
+            "curveAdapter": "0x51a33401cba10bd790f78baf5e3cae60441f4905",
+            "erc4626Adapter": "0xffdd755f3ae86ee2f59d3bd84ddb06efcd538012",
+            "lifiIntentAdapter": "0x1eff671b503a0d0f3302eee2c78a1ed3c1b57fb9",
+            "makerPsmAdapter": "0x7d25bdc7ef5dbe5606affaeea5b7709fb0fc0e68",
+            "multiStepExecutor": "0xf397e3697cf07dcd8e7d8d116a0d60ba5eadc088",
+            "portalDepositAdapter": "0xc52976e4967ee58f20380d9e51cce86b9fcd640c",
+            "uniswapV3Adapter": "0xcdc5b7153190ad3f12d4348b4736a4cf6524f151",
+            "wethAdapter": "0x6af232a075a6ab718fd2ea100f5dba559949973d"
+          },
+          "variables": {
+            "acrossSpokePoolAddress": "0x5ef6c01e11889d86803e0b23e3cb3f9e9d97b662",
+            "acrossSpokePoolCodeHash": "0x932cddc50793da935ccf915651ad67f6b746e9936fcc5614f0ff492563782c75",
+            "cctpTokenMessengerAddress": "0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa",
+            "cctpTokenMessengerCodeHash": "0xd2c8d48075d832fb7d07f6db5545a1bee37fdf886325c441a8dd1cef4c9dae99",
+            "uniswapUniversalRouterAddress": "0x3a9d48ab9751398bbfa63ad67599bb04e4bdf98b",
+            "uniswapUniversalRouterCodeHash": "0x14f7c9253a5406bafa90cb512f4a2db2a10513886603e7a9b4a2e72329e944f4",
+            "usdcAddress": "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",
+            "usdcCodeHash": "0xcd3f29e2ea9c61dadd48bfeaf8b2884b6de9dfee7bf45329452c4c33d0868ceb",
+            "wethAddress": "0xfff9976782d46cc05630d1f6ebab18b2324d6b14",
+            "wethCodeHash": "0xc864e10689f2da18833652a3b075d43106e87f0f90d95ee64f6f0b33bc026083"
+          }
+        },
+        "fea-sky-v6b": {
+          "project": "sky",
+          "bridges": {
+            "dai": "brg-tst-v6b",
+            "sUsds": "brg-susds-v6b"
+          },
+          "contracts": {
+            "skyEscrowFactory": "0x339accbbd2fa27f50a3429a5dac6f914279792fb",
+            "skyEscrowFactoryImplementation": "0x237e3cc99e7733fc60fd6d9fcb90a28e10de7e08",
+            "skyWithdrawalExecutor": "0x150ce5313e4aa90cb2c50720dc2a74725173a5ec",
+            "skyWithdrawalExecutorSubsidy": "0xd9b1cb88ce1a96f16c3c05b75af9cb9989e771b1"
+          },
+          "variables": {
+            "skyDaiAddress": "0x6b9ef1a089feeff90695ac7cf19be39f4b8a0334",
+            "skyDaiCodeHash": "0x148066df4bd41cb10a776ef1bd0917e34485b2321fc71acc61dcdd59be74d4fa",
+            "skyDaiUsdsAddress": "0x1a6f46741d29e725ad0131e11372682aaebb55ed",
+            "skyDaiUsdsCodeHash": "0x9069574fc096715b1a33823165f1af69188432a2e0266c17599e4adeadaff204",
+            "skySUsdsCodeHash": "0xe6c9ad2b89920cad308e2cf49e9abe8e46e87f355731479e571b55800525fc05",
+            "skyUsdsAddress": "0x58d49f48c1bbf48392800b2d5072499e79fd7f8c",
+            "skyUsdsCodeHash": "0x28eaeaba2e307db6f78abf89f31aca86a28e50e1aa33c556331bbe2a88b18a8d",
+            "withdrawalPriceFeedAddress": "0x694aa1769357215de4fac081bf1f309adc325306",
+            "withdrawalPriceFeedCodeHash": "0x9190afba2a699a9627d64ed68c7cc60e4005a8830b33183c4413b4e1a93b9ccd"
+          }
+        }
+      },
+      "operationExecutor": "0x999dfd18351145df444b5b687b725552a5c8c21c",
+      "l2Broadcaster": "0x21fc6b8f69186a16faff61a1321eabfd3d189b8af5a6ebde97d3c8f9f499a834",
+      "withdrawalProtocol": "l1-operation",
+      "nameRegistry": "0xd27865e8b57d0c60d65ec86ba5fb9365a756b539",
+      "accountMetadataRegistry": "0x523bf3270084766b9ff136845d5ca0523c196fe4",
+      "registrationController": "0x8c724d125eee1b9d3eaf316d5d6580afba684997",
+      "namePortal": "0x45010b6b172c0f3682dbed6ee5e99331dd3ecbf4",
+      "sipaFactory": "0x2fbd825a5ab2148d2353e3aa39b312ed21dfce36",
+      "sipaRecoveryProtocol": "account",
+      "depositSIPAImplementation": "0x9042daff047f1559f694e828a2b046286225b79a",
+      "registrationSIPAImplementation": "0x6a2b288dfc265b43b56f18712a6dca5437b1efd2",
+      "addPasskeySIPAImplementation": "0x627abac2b6dbe7cd83bd4667b0e5a7f34cd644e9",
+      "forwardingTable": "0xd047c71ab10cf03b43b47d5f63943433ba82bb4e",
+      "feeToken": "0x6b9ef1a089feeff90695ac7cf19be39f4b8a0334",
+      "sipaResolver": "0x567e8fcb5e044a4c82318d3d54fb65d88cb13faf",
+      "resolverProofVerifier": "0x9c50268aec5e83d55b5917029ac7c5fe13dd377c",
+      "zkTranscriptLib": "0x0d87478bd92faee8500250854de2d46f337a161f",
+      "accountFactory": "0x1698667862c51bb5c3d933c824dd3d16924ab20c",
+      "entryPoint": "0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108",
+      "paymaster": "0x0000000000000000000000000000000000000000",
+      "resolverGatewayUrl": "https://rop-v6b.v6-stg.staging.oxide.zk.money/{sender}/{data}.json",
+      "resolverOperator": "0xe959f1c4f84c55c10114f3fa46a8dcfb51ab8d30",
+      "ensDomain": "oxidestaging.eth",
+      "ensNode": "0x4aec29f52549269bc337b036c4d119cec44031357e14fbd2720c64fcbf2c5c25",
+      "accountServiceUrl": "",
+      "label": "dep-v6b",
+      "revisions": [
+        {
+          "updatedAt": "2026-11-06T11:40:06.695Z",
+          "gitSha": "774ff3f66a8eb63796daadc7b4bdab36cb3df810",
+          "registrationController": "0x998d20288da62fcdd63e13feb3bcbcd7abc3d33d",
+          "sipaFactory": "0xd5a1af4ece094649f0e2133f4f5c1a57691c1ebd",
+          "depositSIPAImplementation": "0xf6507582ce7e6c5e8df15897bd7cfdd497595e31",
+          "registrationSIPAImplementation": "0x6ff00264a9ad401c7036b41ef16300efb483bfff",
+          "userOpSIPAImplementation": "0xff495f7604feed2c16df1794bcf4fcfb3f19677a",
+          "forwardingTable": "0x2a66ddd47422ee056fc98ce7c98660b8944ab8ca",
+          "sipaResolver": "0x58d64c34e894b2b1d7e0bed08e272b7a9240ce7a",
+          "resolverProofVerifier": "0xe6ec24682266c434886445de0044c2d84bad1db4",
+          "zkTranscriptLib": "0x6fce9c6a285adda14043ff7dd36f6334cc256aa2",
+          "bridges": [
+            {
+              "bridgeId": "brg-susds-v6b",
+              "key": "susds",
+              "depositSubsidy": "0x5dd87476b91e4aa89d4e70b89586c6b425bb18b8"
+            },
+            {
+              "bridgeId": "brg-tst-v6b",
+              "key": "tst",
+              "depositSubsidy": "0x955a7b17e200484e939281b3c83b734ba4bacad8"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

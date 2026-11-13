@@ -6,9 +6,10 @@ import { describe, expect, it } from "vitest"
 import { PaylinkActionEnum } from "@obsidion/core/constants"
 import type { SipaDeposit } from "../../src/engine/sipaDeposits"
 import type { WithdrawalPhase, WithdrawalRecord } from "../../src/core/services/bridge/types"
-import type { SavingsMoveRecord } from "../../src/core/services/savings/types"
+import type { MoveQuote, MoveRecord } from "../../src/engine/moveTransition"
 import type { Transaction } from "../../src/types/transactions"
 import { arrivingFunds } from "../../src/engine/activityFeed"
+import type { HoldingPrice } from "../../src/core/services/holdings/holdingFigures"
 
 const E18 = 10n ** 18n
 const SIPA = `0x${"5a".repeat(20)}` as const
@@ -33,15 +34,40 @@ const migration = (phase: WithdrawalPhase): WithdrawalRecord =>
     startTime: 1_000,
   } as WithdrawalRecord)
 
-const move = (patch: Partial<SavingsMoveRecord>): SavingsMoveRecord =>
+const quote = (out: bigint): MoveQuote => ({
+  routed: out,
+  relayerTip: 0n,
+  conversionOut: out,
+  conversionMinOut: out,
+  expectedOut: out,
+  minOut: out,
+  withdrawalFee: 0n,
+})
+
+const move = (patch: Partial<MoveRecord>): MoveRecord =>
   ({
+    id: "w1",
+    holdingId: "fea-sky",
+    rail: "executor",
     direction: "in",
     withdrawalLocalId: "w1",
-    amount: (800n * E18).toString(),
-    net: ((79_937n * E18) / 100n).toString(),
+    amount: 800n * E18,
+    quote: quote((79_937n * E18) / 100n),
+    phase: "burned",
     startTime: 1_000,
     ...patch,
-  } as SavingsMoveRecord)
+  } as MoveRecord)
+
+/** Each holding's price by its id, for 18-decimal shares of an asset of `assetDecimals`. */
+const pricedAt = (prices: Record<string, bigint>, assetDecimals = 18) =>
+  new Map<string, HoldingPrice>(
+    Object.entries(prices).map(([id, sharePrice]) => [
+      id,
+      { sharePrice, shareDecimals: 18, assetDecimals, readAt: 0 },
+    ]),
+  )
+
+const deposited = (amount: bigint) => ({ inboxIndex: 1n, amount, at: 1_000 })
 
 /** A move's burn: 800 DAI, its release tip, and the escrow's tip. */
 const moveBurn = (phase: WithdrawalPhase = "l2_mined"): WithdrawalRecord =>
@@ -121,32 +147,50 @@ describe("arrivingFunds", () => {
     expect(at(migration("failed"))).toBe(0n)
   })
 
-  it("counts a move into Savings at its quote, then at the shares it landed, priced", () => {
+  it("counts a move into Savings at its quote, then at the shares it landed, at its holding's price", () => {
     const quoted = (79_937n * E18) / 100n
-    expect(arrivingFunds({ ...none, burns: mined, moves: [move({})] })).toEqual({
+    const holdingPrices = pricedAt({ "fea-sky": (105n * E18) / 100n })
+    expect(arrivingFunds({ ...none, burns: mined, moves: [move({})], holdingPrices })).toEqual({
       main: 0n,
       savings: quoted,
     })
-    const landed = move({
-      deposit: { inboxIndex: "1", amount: (760n * E18).toString(), claimed: false },
+    const landed = move({ phase: "depositSeen", deposit: deposited(760n * E18) })
+    expect(arrivingFunds({ ...none, burns: mined, moves: [landed], holdingPrices }).savings).toBe(
+      798n * E18,
+    )
+    // Unknown until its own holding is priced: another holding's price never stands in.
+    const elsewhere = pricedAt({ "fea-other": E18 })
+    for (const moves of [[move({})], [landed]])
+      expect(
+        arrivingFunds({ ...none, burns: mined, moves, holdingPrices: elsewhere, sharePrice: E18 })
+          .savings,
+      ).toBe(0n)
+  })
+
+  it("counts a move into a vault of a 6-decimal asset at dollars, at DEFAULT_DECIMALS", () => {
+    // 800 DAI in, a Psm's 799.37 USDC quoted, 760 shares landed at 1.05 USDC each.
+    const usdc = (79_937n * 10n ** 6n) / 100n
+    const into = move({
+      holdingId: "fea-vault",
+      quote: { ...quote(760n * E18), conversionOut: usdc },
     })
-    const price = (105n * E18) / 100n
-    expect(
-      arrivingFunds({ ...none, burns: mined, moves: [landed], sharePrice: price }).savings,
-    ).toBe(798n * E18)
-    expect(arrivingFunds({ ...none, burns: mined, moves: [landed] }).savings).toBe(quoted)
+    const holdingPrices = pricedAt({ "fea-vault": 1_050_000n }, 6)
+    expect(arrivingFunds({ ...none, burns: mined, moves: [into], holdingPrices }).savings).toBe(
+      (79_937n * E18) / 100n,
+    )
+    const landed = { ...into, phase: "depositSeen" as const, deposit: deposited(760n * E18) }
+    expect(arrivingFunds({ ...none, burns: mined, moves: [landed], holdingPrices }).savings).toBe(
+      798n * E18,
+    )
   })
 
   it("counts a move back to Main at its quote, then at what it deposited", () => {
-    const out = move({ direction: "out", net: (500n * E18).toString() })
+    const out = move({ direction: "out", quote: quote(500n * E18) })
     expect(arrivingFunds({ ...none, burns: mined, moves: [out] })).toEqual({
       main: 500n * E18,
       savings: 0n,
     })
-    const landed = {
-      ...out,
-      deposit: { inboxIndex: "2", amount: (499n * E18).toString(), claimed: false },
-    }
+    const landed = { ...out, phase: "depositSeen" as const, deposit: deposited(499n * E18) }
     expect(arrivingFunds({ ...none, burns: mined, moves: [landed] }).main).toBe(499n * E18)
   })
 
@@ -157,26 +201,29 @@ describe("arrivingFunds", () => {
     expect(arrivingFunds({ ...none, burns: [migration("submitting")] }).main).toBe(0n)
   })
 
-  it("counts a move rebuilt without a quote only from its deposit, which may already be spent", () => {
-    const out = move({ direction: "out", amount: (100n * E18).toString(), net: undefined })
-    expect(arrivingFunds({ ...none, burns: mined, moves: [out] }).main).toBe(0n)
-    const found = {
-      ...out,
-      deposit: { inboxIndex: "1", amount: (103n * E18).toString(), claimed: false },
-    }
-    expect(arrivingFunds({ ...none, burns: mined, moves: [found] }).main).toBe(103n * E18)
+  it("never counts a replayed move, whose deposit another device may have claimed already", () => {
+    const out = move({
+      direction: "out",
+      amount: 100n * E18,
+      quote: undefined,
+      withdrawalLocalId: undefined,
+      replayedFrom: "0xburn",
+    })
+    const found = { ...out, phase: "depositSeen" as const, deposit: deposited(103n * E18) }
+    const claimed = { ...found, phase: "claimed" as const, endTime: 2_000 }
+    const read = { main: 1_000 }
+    for (const moves of [[out], [found], [claimed]])
+      expect(arrivingFunds({ ...none, moves, balanceReadAt: read }).main).toBe(0n)
   })
 
-  it("keeps a claim this device stored on its way until its balance is read after it", () => {
-    const stored = move({
-      deposit: { inboxIndex: "1", amount: (10n * E18).toString(), claimed: true, storedAt: 500 },
-    })
+  it("keeps a claim on its way until its balance is read after it", () => {
+    const stored = move({ phase: "claimed", deposit: deposited(10n * E18), endTime: 500 })
     const at = (savings?: number) =>
       arrivingFunds({
         ...none,
         burns: mined,
         moves: [stored],
-        sharePrice: E18,
+        holdingPrices: pricedAt({ "fea-sky": E18 }),
         balanceReadAt: { savings },
       }).savings
     expect(at()).toBe(10n * E18)
@@ -185,8 +232,8 @@ describe("arrivingFunds", () => {
   })
 
   it("stops counting a move once it is claimed, recovered, or its burn failed", () => {
-    const claimed = move({ deposit: { inboxIndex: "1", amount: "1", claimed: true } })
-    const recovered = move({ recovered: { to: `0x${"ab".repeat(20)}`, txHashes: [] } })
+    const claimed = move({ phase: "claimed", deposit: deposited(1n) })
+    const recovered = move({ phase: "recovered" })
     expect(arrivingFunds({ ...none, burns: mined, moves: [claimed] }).savings).toBe(0n)
     expect(arrivingFunds({ ...none, burns: mined, moves: [recovered] }).savings).toBe(0n)
     expect(arrivingFunds({ ...none, burns: [moveBurn("failed")], moves: [move({})] }).savings).toBe(

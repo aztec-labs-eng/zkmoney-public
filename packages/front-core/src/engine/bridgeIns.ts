@@ -69,6 +69,7 @@ export function bridgeInTransition(
     case "started": {
       if (current) return undefined
       const { quote, pays, feeUsd } = event.start
+      const bridged = quote.bridged?.symbol === event.start.symbol ? undefined : quote.bridged
       const call = quote.txs.at(-1)
       if (!call) throw new WalletError("invariant", "bridgeIns: a quote with no bridge call")
       return {
@@ -84,6 +85,7 @@ export function bridgeInTransition(
         inputDecimals: event.start.inputDecimals,
         outputSymbol: event.start.outputSymbol,
         outputDecimals: event.start.outputDecimals,
+        ...(bridged && { bridged: { ...bridged, amount: bridged.amount.toString() } }),
         status: "signing",
         startTime: event.start.startTime,
         call: { to: call.to, data: call.data },

@@ -9,6 +9,7 @@ import {
 import { Modal } from "../../../ui/Modal"
 import { usePickerDismiss } from "../../../ui/usePickerDismiss"
 import { CoinIcon } from "../../../ui/CoinIcon/CoinIcon"
+import { useSession } from "../../../session/session"
 import type { DepositTokenOption } from "../../sipa/loadDepositFacts"
 import copy from "./DepositCoinModal.copy"
 import styles from "./DepositCoinModal.module.css"
@@ -46,6 +47,7 @@ export function DepositCoinModal({
   onContinue?: () => void
   onClose: () => void
 }) {
+  const { l1Chain } = useSession().page.config
   const [open, setOpen] = useState(false)
   const listboxId = useId()
   const labelId = useId()
@@ -89,7 +91,7 @@ export function DepositCoinModal({
                   aria-labelledby={labelId}
                   onClick={() => setOpen((current) => !current)}
                 >
-                  <CoinIcon token={token} />
+                  <CoinIcon token={token} badge={l1Chain} />
                   <span className="ww-deposit__coin-name">
                     {token.symbol}
                     <small>{coinName(token)}</small>
@@ -117,7 +119,7 @@ export function DepositCoinModal({
                           triggerRef.current?.focus()
                         }}
                       >
-                        <CoinIcon token={coin} size={30} />
+                        <CoinIcon token={coin} size={30} badge={l1Chain} />
                         <span>
                           <b>{coin.symbol}</b>
                           <small>{coinName(coin)}</small>

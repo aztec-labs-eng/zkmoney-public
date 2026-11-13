@@ -177,7 +177,7 @@ beforeEach(async () => {
   h.sendTransaction.mockReset().mockResolvedValue(HASH)
   session = switchSession(
     activeNamespace(testCore().device),
-    pageSessionDeps(testPage(fakeAuth(), { l1ChainId: 11155111 } as never, PRIMED)),
+    pageSessionDeps(testPage(fakeAuth(), { l1ChainId: 11155111, features: {} } as never, PRIMED)),
   )
   await session.withdrawals.create({ ...record(), networkId: "0xnet" })
   h.bridgeActive.current = false
@@ -266,7 +266,10 @@ describe("recoverSwapWithdrawal", () => {
       })
       expect(h.sessionSwapRecoverer).not.toHaveBeenCalled()
       expect(h.oxideAccountPasskey).not.toHaveBeenCalled()
-      expect(h.sendTransaction).toHaveBeenCalledWith(planFor(RECIPIENT).escrow, expect.stringMatching(/^0x/))
+      expect(h.sendTransaction).toHaveBeenCalledWith(
+        planFor(RECIPIENT).escrow,
+        expect.stringMatching(/^0x/),
+      )
       expect(await session.withdrawals.get(L2_TX)).toMatchObject({
         phase: "recovered",
         recoveryTarget: RECIPIENT,

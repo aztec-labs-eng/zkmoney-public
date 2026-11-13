@@ -66,7 +66,7 @@ type RawLog = {
 
 /** Every `Deposit` of `portals` to one of `commitments` in `[fromBlock, toBlock]`, in chain order. */
 export async function readPortalDeposits(
-  publicClient: PublicClient,
+  publicClient: Pick<PublicClient, "getContractEvents">,
   portals: readonly Address[],
   commitments: readonly Hex[],
   fromBlock: bigint,

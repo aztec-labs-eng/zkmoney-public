@@ -225,9 +225,12 @@ describe("backupAddEta", () => {
 })
 
 describe("backupAddCharged", () => {
-  it("is the plan's funding less its credit, once a funding went out", () => {
-    expect(backupAddCharged({ plan: PLAN, fundings: [funding()] })).toBe(600n)
-    expect(backupAddCharged({ plan: PLAN, fundings: [funding({ outcome: "swept" })] })).toBe(600n)
+  it("is the plan's funding and its credit, once a funding went out", () => {
+    const split = { sent: 2000n, credited: 1400n }
+    expect(backupAddCharged({ plan: PLAN, fundings: [funding()] })).toEqual(split)
+    expect(backupAddCharged({ plan: PLAN, fundings: [funding({ outcome: "swept" })] })).toEqual(
+      split,
+    )
   })
 
   it("is nothing while no funding went out or every one was lost", () => {

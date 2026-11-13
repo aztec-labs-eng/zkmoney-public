@@ -21,8 +21,8 @@ import { appVersion } from "../../lib/analytics"
 import { BugReportModal, FeedbackModal } from "../FeedbackModals"
 import { ContractAddressesModal } from "../ContractAddressesModal"
 import { PasskeysSheet } from "../PasskeysSheet/PasskeysSheet"
-import { useBackupRotation } from "../../features/backupPasskey/backupRotations"
 import {
+  BackupAddBadge,
   BackupNudgeBadge,
   SettingsBackupNudge,
 } from "../../features/backupPasskey/BackupNudge/BackupNudge"
@@ -34,7 +34,11 @@ import { StrandedRecoveryModal } from "../../features/deposit/recovery/StrandedR
 import { NON_CONTACT_REQUESTS_PATH } from "../../features/requests/nonContactView"
 import { useNonContactRequests } from "../../features/requests/useNonContactRequests"
 import { RESET_PATH } from "../ResetScreen"
-import { ConfigProfileModal } from "../../dev/ConfigProfileModal"
+import {
+  ConfigProfileModal,
+  FeaturesModal,
+  featuresEditorLabel,
+} from "../../dev/ConfigProfileModal"
 import { useRegistrationTagChangeable } from "../../features/registration/openRegistration"
 import { ChooseNameSheet } from "../../features/deposit/ChooseNameSheet/ChooseNameSheet"
 import { claimChosenName } from "../../features/onboarding/oxideOnboarding"
@@ -95,13 +99,13 @@ export function SettingsScreen() {
     | "endpoints"
     | "recover"
     | "config"
+    | "features"
     | "name"
     | "passkeys"
     | "history"
   >()
   const tagChangeable = useRegistrationTagChangeable()
   const allowance = useSponsoredAllowance()
-  const backupRotation = useBackupRotation()
   const historyRow = useStore(useSession().accountHistory, selectHistoryRow)
 
   return (
@@ -200,9 +204,7 @@ export function SettingsScreen() {
             onClick={() => setModal("passkeys")}
             trailing={
               <>
-                {backupRotation && typeof backupRotation === "object" && (
-                  <StatusBadge label="Pending" badgeStyle="pending" />
-                )}
+                <BackupAddBadge />
                 <BackupNudgeBadge />
                 <RowChevron />
               </>
@@ -307,6 +309,14 @@ export function SettingsScreen() {
               trailing={<RowChevron />}
             />
           )}
+          {import.meta.env.VITE_CONFIG_EDITOR === "true" && (
+            <SettingsRow
+              icon="pencil"
+              label={featuresEditorLabel}
+              onClick={() => setModal("features")}
+              trailing={<RowChevron />}
+            />
+          )}
           <SettingsRow
             icon="file-copy"
             label="Contract addresses"
@@ -373,6 +383,9 @@ export function SettingsScreen() {
       )}
       {import.meta.env.VITE_CONFIG_EDITOR === "true" && modal === "config" && (
         <ConfigProfileModal onClose={() => setModal(undefined)} />
+      )}
+      {import.meta.env.VITE_CONFIG_EDITOR === "true" && modal === "features" && (
+        <FeaturesModal onClose={() => setModal(undefined)} />
       )}
       {modal === "recover" && <StrandedRecoveryModal onClose={() => setModal(undefined)} />}
       {modal === "name" && identity?.handle && (

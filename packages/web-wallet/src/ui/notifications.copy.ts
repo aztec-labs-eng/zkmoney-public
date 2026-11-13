@@ -32,9 +32,14 @@ export default {
     filledDescription: "Your {amount} reached Ethereum and is on its way to your private balance.",
     refunded: "Funds back in your wallet",
     refundedDescription: "Your {amount} is back in your wallet on {network}.",
+    /** The bridge carried another token than the one sent, and refunds that one. */
+    refundedAsDescription:
+      "Your {amount} is refunded as {returned} and is back in your wallet on {network}.",
     expired: "Returning your funds",
     expiredDescription:
       "The bridge didn't deliver your {amount} in time. It's being returned to your wallet on {network}.",
+    expiredAsDescription:
+      "The bridge didn't deliver your {amount} in time. It's being returned as {returned} to your wallet on {network}.",
     failed: "Bridge didn't go through",
     failedDescription: "Your {amount} stayed in your wallet on {network}.",
     otherChain: "the other network",

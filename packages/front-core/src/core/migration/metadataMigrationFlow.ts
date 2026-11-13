@@ -181,7 +181,8 @@ function needsApproval(error: unknown): boolean {
  * `start` is the user's own action: before anything is published it first rebuilds the saved plan,
  * so `signal` can still stop it. A cancel leaves the record as last saved. `onPrepared` fires once
  * that pass has nothing left to approve or prove. `observeOnly` reconciles what was sent and saves
- * what it sees, but never prepares, signs or sends. A `promptless` pass carries a published plan on:
+ * what it sees. It never prepares or signs, and it sends only what the run sent before: a batch
+ * again, or a subscription the network dropped. A `promptless` pass carries a published plan on:
  * it sends, but never prepares, signs a consent or broadcasts a bootstrap, and stops for the user
  * where one of those is next. `exclusive` runs each step that sends one transaction, as the
  * operation it names to the step: the bootstrap, the subscription, and each send of the remaining
@@ -294,6 +295,22 @@ export async function advanceMetadataMigration(
       observed.bootstrapStatus === "dropped" &&
       (!observed.bootstrapSpent || observed.recurringSponsorship)
 
+    const subscribe = () => {
+      signal?.throwIfAborted()
+      return send((operationId, sent) =>
+        steps.subscribe(
+          plan,
+          async (txHash) => {
+            signal?.throwIfAborted()
+            await save({ subscriptionTx: txHash, subscriptionStatus: "unknown" })
+            // The record holds the hash, so the step's operation is safe to reload over.
+            await sent?.(txHash)
+          },
+          operationId,
+        ),
+      )
+    }
+
     const complete = observed.complete && observed.recurringSponsorship && observed.metadataSettled
     if (complete) {
       await save({ phase: "done", error: undefined })
@@ -314,6 +331,10 @@ export async function advanceMetadataMigration(
       else await steps.recoverRemaining(plan, signal, sendFunds)
       if (held) await save({ phase, error: undefined, waitReason: undefined })
     } else if (observeOnly) {
+      // A subscription the network dropped is sent again: it asks nothing, and the run cannot
+      // finish without it. The run keeps its phase.
+      const dropped = !!record.subscriptionTx && observed.subscriptionStatus === "dropped"
+      if (dropped && observed.messagesReady) await subscribe()
       return record
     } else if (steps.waitsForRegistration) {
       // It sends nothing until the registration run sets up the destination; a later pass observes again.
@@ -330,19 +351,7 @@ export async function advanceMetadataMigration(
         return record
       }
       await save({ phase: "subscribing", error: undefined })
-      signal?.throwIfAborted()
-      await send((operationId, sent) =>
-        steps.subscribe(
-          plan,
-          async (txHash) => {
-            signal?.throwIfAborted()
-            await save({ subscriptionTx: txHash, subscriptionStatus: "unknown" })
-            // The record holds the hash, so the step's operation is safe to reload over.
-            await sent?.(txHash)
-          },
-          operationId,
-        ),
-      )
+      await subscribe()
     } else if (record.bootstrapTx && !resend) {
       if (observed.bootstrapStatus === "reverted") {
         throw new MigrationHaltedError(

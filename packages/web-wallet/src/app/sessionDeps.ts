@@ -61,7 +61,7 @@ import { registrationFunnel } from "../features/registration/registrationFunnel"
 import { fireOnboardingEvent } from "../lib/analytics"
 import { reportBackupRotationUnreadable } from "../lib/backupPasskeyTelemetry"
 import { bindPasskeyEnvironment } from "../lib/passkeyTelemetry"
-import { liveSavingsApy, type LandingRate } from "../features/savings/savingsGateway"
+import { landingRate, type LandingRate } from "../features/savings/landingRate"
 import { createWalletPrompt, type WalletPrompt } from "../session/walletPrompt"
 import { pageSponsors, type PageSponsors } from "../features/registration/sponsorAccounts"
 import { createPreBoot, type PreBoot } from "../session/preBoot"
@@ -277,7 +277,7 @@ export function openPage(
   const query = queries({ pace, visible: documentVisible, now })
   const chain = createPageChain(
     config,
-    { query, database },
+    { query, database, now },
     contractServiceOptions.resolveClassArtifact,
     primed,
   )
@@ -330,7 +330,7 @@ export function openPage(
     walletPrompt: createWalletPrompt(),
     registrationTurn: createTurn(),
     sponsors: pageSponsors(auth),
-    landingRate: liveSavingsApy(query, { config, chain }),
+    landingRate: landingRate(query, { config, chain }),
     preBoot: createPreBoot(),
     noirWasm,
     preparedTicket: createPreparedTicket(noirWasm),

@@ -1,10 +1,11 @@
 // What a holding line's shares are worth and earn: the vault's share price and rate, read on L1,
 // the shares the wallet's sync keeps in the balance store, and the cost of those shares from the
 // moves.
+import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import { bestEffort } from "@obsidion/core/errors"
 import type { Holding } from "@obsidion/core/oxide"
-import { erc20Abi, erc4626Abi } from "viem"
-import type { Address, PublicClient } from "viem"
+import { ContractFunctionZeroDataError, erc20Abi, erc4626Abi } from "viem"
+import type { Address, BaseError, PublicClient } from "viem"
 import type { BalanceEntry } from "../../../engine/balances"
 import { holdingEarned, holdingEarnedPending, holdingLedger } from "../../../engine/holdingLedger"
 import type { LedgerBurn, LedgerMove } from "../../../engine/holdingLedger"
@@ -13,6 +14,7 @@ import type { HoldingLine } from "../../../engine/holdings"
 import type { RecordSet } from "../../../engine/persistentStore"
 import type { QueryEntry, QueryFactory, QueryState } from "../../../engine/query"
 import { makeLimiter } from "../../../utils/makeLimiter"
+import { rescale } from "../../../utils/rescale"
 
 export type HoldingsL1 = Pick<PublicClient, "readContract" | "getBlockNumber">
 
@@ -24,7 +26,8 @@ export interface HoldingPrice {
   /** What one whole share redeems for, in the vault asset's base units. */
   sharePrice: bigint
   shareDecimals: number
-  /** The yearly yield in `RATE_SCALE`; absent before the chain is a window old, or when unread. */
+  assetDecimals: number
+  /** The yearly yield in `RATE_SCALE`; absent before the vault is a window old, or when unread. */
   rate?: bigint
   readAt: number
 }
@@ -49,38 +52,58 @@ export function yearlyRate(now: bigint, then: bigint): bigint {
 export const holdingValue = (shares: bigint, price: HoldingPrice): bigint =>
   (shares * price.sharePrice) / 10n ** BigInt(price.shareDecimals)
 
+/** What `shares` redeem for, at `DEFAULT_DECIMALS`: the scale the wallet's dollar figures share. */
+export const holdingUsd = (shares: bigint, price: HoldingPrice): bigint =>
+  assetUsd(holdingValue(shares, price), price)
+
+/** An amount of the vault's asset, at `DEFAULT_DECIMALS`. */
+export const assetUsd = (assets: bigint, price: Pick<HoldingPrice, "assetDecimals">): bigint =>
+  rescale(assets, price.assetDecimals, DEFAULT_DECIMALS)
+
+/** A vault with no code at the block read: it is younger than the window. */
+const unborn = (err: unknown) =>
+  !!(err as Partial<BaseError>).walk?.((e) => e instanceof ContractFunctionZeroDataError)
+
 /**
  * Each holding's price, keyed by its vault: read when a view subscribes, every minute while it
  * does, and by a task's `read()` once a minute old. A pass reads the L1 head once, and per holding
  * the latest share price and the price a window before that head, three holdings at a time; the
- * share's decimals are read once. Only the earlier read is pinned, so a node a block behind still
- * prices the holding.
+ * share's and the asset's decimals are read once. Only the earlier read is pinned, so a node a
+ * block behind still prices the holding.
  */
 export function holdingPrices(
   query: QueryFactory,
-  l1: HoldingsL1,
+  /** Opened on the first read, so building the reads opens no client. */
+  l1: () => HoldingsL1,
   now: () => number,
 ): (holding: Pick<Holding, "held">) => QueryEntry<HoldingPrice> {
   const limit = makeLimiter(HOLDINGS_AT_ONCE)
   // Half the price's period, so every price of one pass shares a head and the next pass reads anew.
   const head = query<[], bigint>("holdingsHead", {
-    load: () => l1.getBlockNumber({ cacheTime: 0 }),
+    load: () => l1().getBlockNumber({ cacheTime: 0 }),
     stale: HOLDING_PRICE_EVERY_MS / 2,
   })()
-  const decimals = query<[vault: string], number>("holdingShareDecimals", {
+  const decimalsOf = (token: Address) =>
+    l1().readContract({ address: token, abi: erc20Abi, functionName: "decimals" })
+  const decimals = query<[vault: string], [share: number, asset: number]>("holdingDecimals", {
     load: (vault) =>
-      l1.readContract({ address: vault as Address, abi: erc20Abi, functionName: "decimals" }),
+      Promise.all([
+        decimalsOf(vault as Address),
+        l1()
+          .readContract({ address: vault as Address, abi: erc4626Abi, functionName: "asset" })
+          .then(decimalsOf),
+      ]),
   })
   const price = query<[vault: string], HoldingPrice>("holdingPrice", {
     load: (vault, signal) =>
       limit(async () => {
-        const [at, shareDecimals] = await Promise.all([
+        const [at, [shareDecimals, assetDecimals]] = await Promise.all([
           head.read(signal),
           decimals(vault).read(signal),
         ])
         const unit = 10n ** BigInt(shareDecimals)
         const priceAt = (blockNumber?: bigint) =>
-          l1.readContract({
+          l1().readContract({
             address: vault as Address,
             abi: erc4626Abi,
             functionName: "convertToAssets",
@@ -90,12 +113,19 @@ export function holdingPrices(
         const [sharePrice, then] = await Promise.all([
           priceAt(),
           at > RATE_WINDOW_BLOCKS
-            ? bestEffort("holding.rateUnread", priceAt(at - RATE_WINDOW_BLOCKS))
+            ? bestEffort(
+                "holding.rateUnread",
+                priceAt(at - RATE_WINDOW_BLOCKS).catch((err: unknown) => {
+                  if (unborn(err)) return undefined
+                  throw err
+                }),
+              )
             : undefined,
         ])
         return {
           sharePrice,
           shareDecimals,
+          assetDecimals,
           ...(then !== undefined && then > 0n ? { rate: yearlyRate(sharePrice, then) } : {}),
           readAt: now(),
         }

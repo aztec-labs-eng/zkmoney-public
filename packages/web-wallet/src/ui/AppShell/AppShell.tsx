@@ -30,8 +30,7 @@ import { NotificationsBell } from "../NotificationsBell/NotificationsBell"
 import { NO_SERVICE, serviceStatus, useStore, WalletError } from "@obsidion/front-core"
 import { isDemoMode } from "../../dev/demoFlag"
 import { REQUESTS_PATH } from "../../features/requests/nonContactView"
-import { useSavingsAvailable } from "../../features/savings/savingsGateway"
-import { UpgradeKeepOpenBanner } from "../../features/migration/UpgradeIntro"
+import { useSavingsAvailable } from "../../features/savings/useSavings"
 import { BackupNudgeBadge } from "../../features/backupPasskey/BackupNudge/BackupNudge"
 import { createContext, useContext, useMemo } from "react"
 import "../shell.css"
@@ -155,7 +154,6 @@ export function SidebarLayout({
   // above the locked pane.
   const unlocked =
     useStore(session.account ?? NO_SERVICE, serviceStatus) === "ready" || isDemoMode()
-  // eslint-disable-next-line local/page-singleton -- debt
   const savings = useSavingsAvailable()
   const pageHeader = phone && unlocked && mobilePageHeaderPaths.includes(location.pathname)
   const scannerAvailable =
@@ -496,7 +494,6 @@ export function SidebarLayout({
                 </div>
               </div>
             )}
-            <UpgradeKeepOpenBanner />
             <Outlet />
           </div>
         </main>

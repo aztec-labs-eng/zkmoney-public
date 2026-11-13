@@ -11,6 +11,7 @@ import {
   canRecoverSwap,
   canSelfExecuteSwap,
   canSelfFinalizeWithdrawal,
+  SWAP_STUCK_THRESHOLD_MS,
 } from "../core/services/bridge/withdrawalPhases"
 import {
   isAwaitingSweep,
@@ -28,13 +29,14 @@ import {
 import { sipaPaymentIndex } from "../core/services/deposits/sipaCredits"
 import type { PendingRegistrationRecord } from "./registrationRecord"
 import { recoveryState, type RecoveryState } from "../core/rotation/backupRotationFlow"
+import type { BackupFundingSplit } from "./backupAddQuote"
 import type {
   BackupRotationPhase,
   BackupRotationPlan,
   BackupRotationRecord,
 } from "./backupRotations"
-import type { SavingsMoveRecord } from "../core/services/savings/types"
-import { canSelfRunSkyEscrow } from "../oxide/skyEscrowExit"
+import type { MoveState } from "./moveState"
+import type { MoveRecord } from "./moveTransition"
 import type { TokenTransaction, Transaction } from "../types/transactions"
 
 /**
@@ -326,11 +328,14 @@ export function withdrawalExit(record: WithdrawalRecord, now: number): Withdrawa
   return reason ? { kind: "swap", reason } : undefined
 }
 
+/** Phases before the sweep runs the change: a funding's hold comes back once it does. */
+const BEFORE_SWEEP: readonly BackupRotationPhase[] = ["created", "signed", "published", "funded"]
+
 /**
- * Phases past the account change: the backup was added. Money parked over them is extra, which the
- * Passkeys card reports on its own, so the funding keeps the tracker's status.
+ * Phases past the account change, with the key on Ethereum. Money parked over them is extra, which
+ * the Passkeys card reports on its own, so the funding keeps the tracker's status.
  */
-const BACKUP_ADDED: readonly BackupRotationPhase[] = [
+const PAST_ACCOUNT_CHANGE: readonly BackupRotationPhase[] = [
   "swept",
   "installed",
   "rerooted",
@@ -370,9 +375,10 @@ const attemptOf = (
     : rotations.find((r) => r.fundings.some((f) => f.localId === record.localId))
 
 /**
- * Whether a backup passkey funding's add ran: the burn landed and its attempt passed the account
- * change, or, with no attempt here, its deposit address was swept. Until then the funding may still
- * be releasing, have failed, or wait on the sweep, so the row does not say added.
+ * Whether a backup passkey funding's add finished: the burn landed and its attempt is done, or, with
+ * the attempts read and none here, its deposit address was swept. The key is on Ethereum from the
+ * sweep, but the user still has the final approval to give, so the row says added only once that
+ * is done. Unread attempts may hold one still waiting on it.
  */
 export function backupAdded(
   record: WithdrawalRecord,
@@ -380,10 +386,11 @@ export function backupAdded(
   deposit: SipaDeposit | undefined,
 ): boolean {
   if (withdrawalIntent(record, deposit) !== "backup" || record.phase !== "done") return false
+  if (rotations === "unread") return false
   const rotation = attemptOf(record, rotations)
   if (!rotation) return !!deposit && swept(deposit)
   const phase = rotation.phase === "attention" ? rotation.suspended : rotation.phase
-  return !!phase && BACKUP_ADDED.includes(phase)
+  return phase === "done"
 }
 
 /**
@@ -400,7 +407,7 @@ export function fundingRecovery(
   const rotation = attemptOf(record, rotations)
   if (rotation) {
     const { suspended, plan, recovery, recovered } = rotation
-    if (suspended && BACKUP_ADDED.includes(suspended)) return undefined
+    if (suspended && PAST_ACCOUNT_CHANGE.includes(suspended)) return undefined
     // An attempt ends at `recovered` only once none of its fundings can still land, so money parked
     // over it later is not this funding's: its recovery is the one that ended the attempt.
     if (suspended === "recovered") {
@@ -421,8 +428,9 @@ export function fundingRecovery(
     }
   }
   // The deposit address outlives the attempt's record, which the Recovered card's Done removes. A
-  // swept address ran the change, so the backup was added.
-  if (deposit && swept(deposit)) return undefined
+  // swept address ran the change, so nothing waits on a recovery; an unread attempt may still wait
+  // on its final approval.
+  if (deposit && swept(deposit)) return rotations === "unread" ? { state: "unread" } : undefined
   if (deposit?.recoveryTxHash) {
     // With the attempts read and none holding the funding, its attempt ended at `recovered`.
     const final = deposit.phase === "recovered" || rotations !== "unread"
@@ -474,54 +482,75 @@ export function withdrawalIntent(
   return record.intent ?? (deposit && isAccountMoveSipa(deposit) ? "backup" : undefined)
 }
 
-export interface BackupAddCost {
-  /** Taken before the funding reached the deposit address. */
-  withdrawalFeeDisplay: string
-  /** The deposit address's fee for running the account change. */
-  accountChangeFeeDisplay: string
-  returnedDisplay: string
-  /** Sent less returned. */
-  costDisplay: string
+/** A backup passkey funding split into what the add costs and the hold sent on top; base units. */
+export interface BackupFee {
+  amount: bigint
+  hold: bigint
+  /** The hold is back in the balance. */
+  returned: boolean
 }
 
 /**
- * What adding a backup passkey cost. The funding sends more than the change needs, and the deposit
- * address credits the rest to the new account on a deposit the feed hides as the account's own
- * move, so the funding's gross overstates the cost. Undefined for a burn that did not land, until
- * that credit is claimed, and unless the sweep took exactly what this funding released, since a
- * shared credit cannot be split by payment.
+ * What a backup passkey funding costs, apart from its hold. The deposit address credits the hold to
+ * the new account once the add runs, on a deposit the feed hides as the account's own move, so the
+ * funding's gross overstates the cost. The hold is the attempt's planned credit until the claimed
+ * sweep says what came back. Undefined for a funding that failed or stopped, while neither figure
+ * is known, and when the sweep took other money with this funding's, since a shared credit cannot
+ * be split by payment.
  */
-export function backupAddCost(
+export function backupFee(
   record: WithdrawalRecord,
+  rotations: readonly BackupRotationRecord[] | "unread",
   deposit: SipaDeposit | undefined,
-): BackupAddCost | undefined {
-  if (record.phase !== "done" || withdrawalIntent(record, deposit) !== "backup") return undefined
-  if (!deposit || !isAccountMoveSipa(deposit)) return undefined
+): BackupFee | undefined {
+  if (withdrawalIntent(record, deposit) !== "backup" || record.phase === "failed") return undefined
+  if (fundingRecovery(record, rotations, deposit)) return undefined
+  const released = withdrawalAmounts(record)
+  const sent = released.grossAtomic
   // The claimed sweep keeps the credit's figures: money paid to the address later rewrites the
   // record's own.
-  const sweep = deposit.sweeps?.[0]
-  if (!sweep || sweep.fee == null) return undefined
-  const released = withdrawalAmounts(record)
-  const fee = BigInt(sweep.fee)
-  const returned = BigInt(sweep.netAmount)
-  // Other money paid to the address before the sweep would read as returned.
-  if (!released.feeKnown || returned + fee !== released.netAtomic) return undefined
-  const sent = released.grossAtomic
-  const display = (atomic: bigint) => formatUnits(atomic, record.tokenDecimals)
-  return {
-    withdrawalFeeDisplay: released.feeDisplay,
-    accountChangeFeeDisplay: display(fee),
-    returnedDisplay: display(returned),
-    costDisplay: display(sent - returned),
+  const sweep =
+    record.phase === "done" && deposit && isAccountMoveSipa(deposit)
+      ? deposit.sweeps?.[0]
+      : undefined
+  if (sweep?.fee != null) {
+    const returned = BigInt(sweep.netAmount)
+    // Other money paid to the address before the sweep would read as returned.
+    if (!released.feeKnown || returned + BigInt(sweep.fee) !== released.netAtomic) return undefined
+    return { amount: sent - returned, hold: returned, returned: true }
   }
+  const attempt = attemptOf(record, rotations)
+  if (!attempt?.plan) return undefined
+  const phase = attempt.phase === "attention" ? attempt.suspended : attempt.phase
+  const awaiting = !!phase && BEFORE_SWEEP.includes(phase) && attempt.attention !== "stranded"
+  // A change that ran without this funding, or one parked off its sweep, leaves its money at the
+  // address to recover.
+  if (!attempt.sweep && !awaiting) return undefined
+  // The sweep's credit can include other money paid to the address, which only the claim splits.
+  const hold = BigInt(attempt.plan.credited)
+  return sent > hold ? { amount: sent - hold, hold, returned: false } : undefined
+}
+
+/**
+ * Whether the attempt a backup passkey funding paid is still running, so the Passkeys sheet shows
+ * its progress. A stopped one's funding reads its recovery instead.
+ */
+export function backupAddRunning(
+  record: WithdrawalRecord,
+  rotations: readonly BackupRotationRecord[] | "unread",
+  deposit: SipaDeposit | undefined,
+): boolean {
+  if (withdrawalIntent(record, deposit) !== "backup" || record.phase === "failed") return false
+  const rotation = attemptOf(record, rotations)
+  if (!rotation || fundingRecovery(record, rotations, deposit)) return false
+  const phase = rotation.phase === "attention" ? rotation.suspended : rotation.phase
+  return phase !== "done" && phase !== "recovered"
 }
 
 /** The Fund step's figures, priced from the plan before anything is sent; base units. */
-export interface BackupFundingQuote {
-  sent: bigint
+export interface BackupFundingQuote extends BackupFundingSplit {
   /** One figure for a plan saved without what reaches the deposit address. */
   fees: bigint | { withdrawal: bigint; accountChange: bigint }
-  credited: bigint
 }
 
 export function backupFundingQuote(
@@ -538,28 +567,33 @@ export function backupFundingQuote(
   }
 }
 
-/** A move an old version's record shows unfinished when that version closed. It can't finish here. */
-export const isStrandedSavingsMove = (move: SavingsMoveRecord, burn?: WithdrawalRecord) =>
-  !!move.retired && burn?.phase !== "failed" && !move.recovered && !move.deposit?.claimed
-
-/** Whether the move has its outcome: claimed, recovered, a burn that failed, or stranded on an old version. */
-export const isSavingsMoveSettled = (move: SavingsMoveRecord, burn?: WithdrawalRecord) =>
-  !!move.deposit?.claimed ||
-  !!move.recovered ||
-  burn?.phase === "failed" ||
-  isStrandedSavingsMove(move, burn)
-
 /**
- * The exit a stalled move offers: `finalize` when no relayer has sent its release, `run` when the
- * release paid its escrow and nobody has run it since.
+ * The exit a stalled move offers: `finalize` when no relayer has sent its release, `run` once its
+ * release funded the route and nobody ran it within a swap's wait, `recover` once the relayer
+ * dropped it. The run's sheet offers recovery too.
  */
-export function savingsMoveExitOffer(
-  move: SavingsMoveRecord,
-  burn: WithdrawalRecord,
+export function moveExitOffer(
+  item: {
+    state: MoveState
+    move: Pick<MoveRecord, "phase" | "releasedAt">
+    burn?: WithdrawalRecord
+  },
+  rail: { recoverable: boolean; runnable: boolean },
   now: number,
-): "finalize" | "run" | null {
-  if (canSelfFinalizeWithdrawal(burn, now)) return "finalize"
-  return canSelfRunSkyEscrow(move, burn, now) ? "run" : null
+): "finalize" | "run" | "recover" | null {
+  const { burn } = item
+  if (burn && canSelfFinalizeWithdrawal(burn, now)) return "finalize"
+  const doneAt = burn?.phase === "done" ? burn.endTime ?? burn.startTime : undefined
+  const released = burn ? doneAt : item.move.releasedAt
+  if (
+    rail.runnable &&
+    rail.recoverable &&
+    item.move.phase === "burned" &&
+    released !== undefined &&
+    now - released >= SWAP_STUCK_THRESHOLD_MS
+  )
+    return "run"
+  return item.state.kind === "delayed" && item.state.dropped && rail.recoverable ? "recover" : null
 }
 
 /** What a registration's signed fee charged for the tag itself: the part above the sweep fee. */
@@ -631,7 +665,7 @@ export function depositDetailItem(
 }
 
 /**
- * The detail a routed bridge row opens: a Savings move's burn its Savings detail, a leg of a fresh
+ * The detail a routed bridge row opens: a Savings move's burn its Savings detail, by the burn's id, a leg of a fresh
  * withdrawal its group, a deposit its address, and a past payment at it that payment.
  */
 export function bridgeDetailTarget(
@@ -639,6 +673,6 @@ export function bridgeDetailTarget(
 ): { kind: "savings" | "withdrawal"; id: string } | { kind: "deposit"; address: string } {
   if (hit.kind === "bridge.sipaDeposit")
     return { kind: "deposit", address: hit.payment ? depositDetailId(hit) : hit.record.sipaAddress }
-  if (hit.record.skyMove) return { kind: "savings", id: hit.record.localId }
+  if (hit.record.skyMove || hit.record.vaultMove) return { kind: "savings", id: hit.record.localId }
   return { kind: "withdrawal", id: hit.record.groupId ?? hit.record.localId }
 }

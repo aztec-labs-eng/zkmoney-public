@@ -1,14 +1,14 @@
 import { useState } from "react"
 import { reloadPage } from "../platform/storage/walletStorage"
-import { clearProfileDraft, hasProfileDraft } from "./configDraft"
+import { clearConfigDraft, hasConfigDraft } from "./configDraft"
 
 export function PreviewDraftRecovery() {
   const [error, setError] = useState<string>()
-  if (!hasProfileDraft() && !error) return null
+  if (!hasConfigDraft("profile") && !error) return null
 
   const clear = async () => {
     try {
-      clearProfileDraft()
+      clearConfigDraft("profile")
       await reloadPage()
     } catch (cause) {
       // eslint-disable-next-line local/message-in-state -- debt

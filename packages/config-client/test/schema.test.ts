@@ -292,59 +292,6 @@ describe("versions", () => {
     })
   })
 
-  describe("bridge", () => {
-    const USDC = { symbol: "USDC", address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" }
-    const USDT = { symbol: "USDT", address: "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2" }
-    const ETH = { symbol: "ETH", native: true, comingSoon: true }
-    const base = { chainId: 8453, name: "Base", etaMinutes: 7, rpcUrl: "https://base.example", in: [USDC, ETH] }
-    const across = (chains: object[]) => ({ provider: "across", apiUrl: "https://across.example/api", chains })
-    const withBridge = (bridge: object) => {
-      const doc = stagingDoc()
-      doc.network = "testnet"
-      doc.shared.l1ChainId = 11155111
-      doc.versions["0.0.1"].oxide.expectedGitSha = "c".repeat(40)
-      doc.versions["0.0.2"].bridge = bridge
-      return doc
-    }
-
-    it("carries one provider with its chains and tokens each way", () => {
-      const bridge = across([{ ...base, out: [USDC, USDT] }])
-      expect(parseConfigProfile(withBridge(bridge)).versions["0.0.2"]).toMatchObject({ bridge })
-    })
-
-    it("may name the Across escrow factory", () => {
-      const bridge = { ...across([]), escrowFactory: `0x${"ac".repeat(20)}` }
-      expect(parseConfigProfile(withBridge(bridge)).versions["0.0.2"]).toMatchObject({ bridge })
-      const short = withBridge({ ...bridge, escrowFactory: "0xac" })
-      expect(() => parseConfigProfile(short)).toThrow(/L1 address/)
-    })
-
-    it("may name Across's contracts per chain, never none, and its L1 multicall handler", () => {
-      const contracts = [`0x${"5b".repeat(20)}`]
-      const bridge = { ...across([{ ...base, out: [], contracts }]), multicallHandler: `0x${"4a".repeat(20)}` }
-      expect(parseConfigProfile(withBridge(bridge)).versions["0.0.2"]).toMatchObject({ bridge })
-      const none = across([{ ...base, out: [], contracts: [] }])
-      expect(() => parseConfigProfile(withBridge(none))).toThrow(/contracts/)
-    })
-
-    it("lets a provider without an oxide escrow bridge in only", () => {
-      const lifi = { provider: "lifi", apiUrl: "https://lifi.example", integrator: "zkmoney", chains: [base] }
-      expect(() => parseConfigProfile(withBridge(lifi))).not.toThrow()
-      expect(() => parseConfigProfile(withBridge({ ...lifi, chains: [{ ...base, out: [USDC] }] }))).toThrow(/bridge/)
-    })
-
-    it.each([
-      ["lands a token oxide's escrows cannot deliver", [{ ...base, out: [{ ...USDC, symbol: "DAI" }] }], /out/],
-      ["sends native ETH out", [{ ...base, out: [ETH] }], /out/],
-      ["names the L1 chain", [{ ...base, chainId: 11155111, out: [] }], /L1 chain 11155111/],
-      ["lists a chain twice", [{ ...base, out: [] }, { ...base, out: [] }], /chain 8453 twice/],
-      ["lists a token twice one way", [{ ...base, in: [USDC, USDC], out: [] }], /USDC twice on chain 8453/],
-      ["serves an rpc over http", [{ ...base, rpcUrl: "http://base.example", out: [] }], /rpcUrl must be https/],
-    ])("refuses a bridge that %s", (_, chains, error) => {
-      expect(() => parseConfigProfile(withBridge(across(chains)))).toThrow(error)
-    })
-  })
-
   it("lists holdings by oxide feature id, in order, and refuses anything but a list of ids", () => {
     const withHoldings = (holdings: unknown) => {
       const doc = stagingDoc()
@@ -359,6 +306,75 @@ describe("versions", () => {
     for (const ids of bad) {
       expect(() => parseConfigProfile(withHoldings(ids))).toThrow(/holdings/)
     }
+  })
+
+  describe("portals", () => {
+    const main = stagingDoc().versions["0.0.2"].oxide.portal as string
+    const steak = {
+      id: "steakusdc",
+      portal: "0x3E6142c98D83c8D14b09668d90583E940A646458",
+      base: main,
+      conversion: "Psm",
+    }
+    const withPortals = (portals: unknown, holdings?: string[]) => {
+      const doc = stagingDoc()
+      doc.versions["0.0.2"].portals = portals
+      if (holdings) doc.versions["0.0.2"].holdings = holdings
+      return doc
+    }
+
+    it("names each portal Main or savings by address, under a conversion a later build may add", () => {
+      const portals = { main: [main], savings: [{ ...steak, conversion: "Curve" }] }
+      expect(parseConfigProfile(withPortals(portals)).versions["0.0.2"]).toMatchObject({ portals })
+      expect(() =>
+        parseConfigProfile(withPortals({ main: [main], savings: [steak] }, [steak.id])),
+      ).not.toThrow()
+    })
+
+    it.each([
+      ["no savings list", { main: [main] }, undefined, /portals/],
+      [
+        "a savings portal that is no address",
+        { main: [main], savings: [{ ...steak, portal: "brg-x" }] },
+        undefined,
+        /portals/,
+      ],
+      [
+        "a main without oxide.portal",
+        { main: [steak.portal], savings: [] },
+        undefined,
+        /leaves oxide\.portal out/,
+      ],
+      [
+        "a savings id twice",
+        {
+          main: [main],
+          savings: [steak, { ...steak, portal: "0x4E6142c98D83c8D14b09668d90583E940A646458" }],
+        },
+        undefined,
+        /two savings portals/,
+      ],
+      [
+        "a savings portal over itself",
+        { main: [main], savings: [{ ...steak, base: steak.portal }] },
+        undefined,
+        /over itself/,
+      ],
+      [
+        "a portal in both lists",
+        { main: [main], savings: [{ ...steak, portal: main.toLowerCase() }] },
+        undefined,
+        /as Main and as savings/,
+      ],
+      [
+        "a holding that savings does not name",
+        { main: [main], savings: [steak] },
+        ["fea-sky-v6"],
+        /does not name/,
+      ],
+    ])("refuses %s", (_, portals, holdings, message) => {
+      expect(() => parseConfigProfile(withPortals(portals, holdings))).toThrow(message)
+    })
   })
 
   it("validates a vkey hash when present, and a version may omit the block entirely", () => {

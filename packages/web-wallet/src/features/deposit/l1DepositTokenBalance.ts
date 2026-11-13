@@ -2,6 +2,7 @@ import { erc20Abi, formatUnits, parseUnits, type Address } from "viem"
 import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import type { PageFacts } from "../../session/pageChain"
 import { tokenMetadata } from "../sipa/loadDepositFacts"
+import { isNativeToken } from "./bridgeChains"
 
 export type L1TokenBalance = {
   /** Raw ERC-20 units. */
@@ -33,15 +34,23 @@ export function amountExceedsBalance(amountDisplay: string, balance: L1TokenBala
   }
 }
 
-/** Balance of `token` (default: the manifest token) for `account` on the active network's L1. */
+/**
+ * Balance of `token` (default: the manifest token; the zero address is the L1's gas coin) for
+ * `account` on the active network's L1.
+ */
 export async function readL1DepositTokenBalance(
   account: Address,
   token: Address | undefined,
   { config, chain }: PageFacts,
 ): Promise<L1TokenBalance> {
+  const client = l1PublicClient(config)
+  if (token && isNativeToken(token)) {
+    const { symbol, decimals } = config.l1Chain.nativeCurrency
+    return l1TokenBalance(await client.getBalance({ address: account }), decimals, symbol)
+  }
   token ??= requireTupleField(await chain.oxideTuple.read(), "token") as Address
   const [raw, { decimals, symbol }] = await Promise.all([
-    l1PublicClient(config).readContract({
+    client.readContract({
       address: token,
       abi: erc20Abi,
       functionName: "balanceOf",
@@ -49,6 +58,10 @@ export async function readL1DepositTokenBalance(
     }),
     tokenMetadata({ chain }, token),
   ])
+  return l1TokenBalance(raw, decimals, symbol)
+}
+
+function l1TokenBalance(raw: bigint, decimals: number, symbol: string): L1TokenBalance {
   const formatted = formatUnits(raw, decimals)
   return {
     raw,

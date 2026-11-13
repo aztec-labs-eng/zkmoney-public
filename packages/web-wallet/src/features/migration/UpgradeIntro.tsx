@@ -54,13 +54,3 @@ export function UpgradeBanner() {
     </button>
   )
 }
-
-/** The caution on every screen, so it stays once the dialog closes. */
-export function UpgradeKeepOpenBanner() {
-  if (!useUpgradeStatus().keepOpen) return null
-  return (
-    <div className="ww-upgrade__keep-open-bar">
-      <UpgradeKeepOpen />
-    </div>
-  )
-}

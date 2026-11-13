@@ -436,12 +436,9 @@ export const SIGN_UP_SHEET_COPY = {
   },
 } as const
 
-/** The managers a phone's backup is admitted in over QR; any other is refused by name. */
-const QR_BACKUP_MANAGERS = "iCloud Keychain, Google Password Manager or 1Password"
-
 /** The settings sheet's backup picker; `backupAddOptionsFor` picks among these and the sign-up's. */
 export const BACKUP_ADD_SHEET_COPY = {
-  pickerLabel: "Where should your backup live?",
+  pickerLabel: "Where to save your backup passkey",
   /** A backup on the device that holds the other passkey is lost with it. */
   pickerLead: {
     mac: "Pick something other than this Mac. That way, losing one device won't lock you out.",
@@ -449,7 +446,8 @@ export const BACKUP_ADD_SHEET_COPY = {
       "Pick something other than this computer. That way, losing one device won't lock you out.",
   },
   recommended: "Recommended",
-  /** To the help page's list of the passkeys that work; each front supplies the URL. */
+  notRecommended: "Not recommended",
+  /** In an option's card, to the help page's list of managers; each front supplies the URL. */
   managersLink: {
     label: "Which passkey managers work?",
     anchor: PHONE_STEPS_COPY.local.docs.anchor,
@@ -461,10 +459,9 @@ export const BACKUP_ADD_SHEET_COPY = {
     macDescription: "Only works if this Mac syncs passkeys to your other devices.",
     description: "Only works if this computer syncs passkeys to your other devices.",
   },
-  phone: { description: `Scan a QR code and save it to ${QR_BACKUP_MANAGERS}.` },
-  phoneOrKey: {
-    description: `Scan a QR code and save it to ${QR_BACKUP_MANAGERS}, or use a security key.`,
-  },
+  // Proposed copy, pending review: the phone's helpers.
+  phone: { description: "Scan a QR code and save it on your phone." },
+  phoneOrKey: { description: "Scan a QR code and save it on your phone, or use a security key." },
   key: { description: "A YubiKey 5 or newer. Some older keys can't hold a backup." },
   /** A key keeps the only copy of the backup; the wallet's other passkey still opens it. */
   keyWarning: {

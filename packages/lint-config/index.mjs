@@ -141,13 +141,6 @@ const PAGE_READS = {
     "getPortalTuple",
     "oxideEnvFor",
   ],
-  [relative("savingsGateway")]: [
-    "getSkySavings",
-    "getSavingsTuple",
-    "prefetchLiveSavingsApy",
-    "useLiveSavingsApy",
-    "useSavingsAvailable",
-  ],
   [relative("oxideToken")]: ["currentTxAmountCap"],
 }
 // The page's static instance, through any import of the class.
@@ -190,7 +183,7 @@ const DEBT_SYNTAX = [
   // `globalThis.x`, `globalThis.a.b` or `(globalThis as T).x`.
   moduleState("AssignmentExpression > MemberExpression.left:has(Identifier[name='globalThis'])"),
   {
-    selector: `ImportExpression[source.value=/\\/(${["env", "oxideTuple", "savingsGateway", "rollupStorage", "wallet", "activeTabSince", "oxideToken"].join("|")})(\\.[jt]sx?)?$/]`,
+    selector: `ImportExpression[source.value=/\\/(${["env", "oxideTuple", "rollupStorage", "wallet", "activeTabSince", "oxideToken"].join("|")})(\\.[jt]sx?)?$/]`,
     message: SINGLETON,
   },
 ]

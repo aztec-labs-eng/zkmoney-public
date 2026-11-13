@@ -7,6 +7,7 @@ import { failureCode, fireEvent } from "../../lib/analytics"
 import { shortL1Addr, usdAtomicFloor } from "../../ui/format"
 import { ManualExitSheet } from "./ManualExitSheet"
 import { selfRefundOldVersion } from "./oldVersionSelfRefund"
+import { refundedMoves } from "../deposit/recovery/refundedMoves"
 import { useSession } from "../../session/session"
 
 const EXPLAINER =
@@ -21,7 +22,8 @@ export function OldVersionRefundExitModal({
   refund: OldVersionRefund
   onClose: () => void
 }) {
-  const { savingsMoves, page } = useSession()
+  const session = useSession()
+  const { page } = session
   const { config } = page
   const amount = usdAtomicFloor(BigInt(refund.usd))
   const recipient = shortL1Addr(record.to)
@@ -39,7 +41,7 @@ export function OldVersionRefundExitModal({
         </>
       }
       buttonTitle="Process manually"
-      run={(opts) => selfRefundOldVersion(config, savingsMoves, record, refund, opts)}
+      run={(opts) => selfRefundOldVersion(config, refundedMoves(session), record, refund, opts)}
       onError={(e) => {
         fireEvent("action_failed", {
           action: "withdraw:old-version-self-refund",

@@ -1,7 +1,15 @@
-import { useState, type ReactNode } from "react"
-import { backupFundingQuote, untippedFunding, type BackupFundingQuote } from "@obsidion/front-core"
-import { FactBox, InfoBox, SheetShell, type SheetAction } from "@obsidion/web-ds"
+import { useRef, useState, type Ref } from "react"
+import {
+  backupFundingQuote,
+  untippedFunding,
+  useStore,
+  type BackupFundingQuote,
+} from "@obsidion/front-core"
+import { FactBox, KeyStatusRow, SheetCard, SheetShell, type SheetAction } from "@obsidion/web-ds"
 import { fmt } from "../../../../lib/fmt"
+import { useSession } from "../../../../session/session"
+import { HIDDEN_BALANCE, usdAtomicFloor, usdFromCents } from "../../../../ui/format"
+import { useDomLayoutEffect } from "../../../../ui/useDomEffect"
 import { BroadcastStatusRow } from "../../../broadcasts/BroadcastStatusRow/BroadcastStatusRow"
 import {
   BALANCE_TIP_BLOCKED_COPY,
@@ -11,26 +19,23 @@ import {
   type SpeedOutcome,
 } from "../../../withdraw/speedChoice"
 import { SpeedCheckingPill, SpeedChoicePill } from "../../../withdraw/WithdrawalSpeedPicker"
-import { costCopy } from "../../backupPasskeyCopy"
+import { addCost, feeSplit } from "../../backupCost"
+import { costCopy, holdCopy } from "../../backupPasskeyCopy"
 import type { BackupPayFacts, BackupScreenProps } from "../../backupScreen"
-import {
-  AddTracker,
-  approveLabel,
-  approverOf,
-  dollars,
-  minutes,
-  retryAction,
-} from "../AddTracker/AddTracker"
+import { mainBalance } from "../../useBackupNudge"
+import { AddTracker, approverOf, minutes, retryAction } from "../AddTracker/AddTracker"
 import copy from "./ApproveScreen.copy"
 
-/** The fees the cost is made of, as the funding's Activity sheet names them. */
-const feeRows = ({ fees }: BackupFundingQuote) =>
-  typeof fees === "bigint"
-    ? [{ label: costCopy.fees, value: dollars(fees) }]
-    : [
-        { label: costCopy.withdrawalFee, value: dollars(fees.withdrawal) },
-        { label: costCopy.accountChangeFee, value: dollars(fees.accountChange) },
-      ]
+/** The charges the fee, in cents, is made of, as the funding's Activity sheet names them. */
+function feeRows({ fees }: BackupFundingQuote, fee: bigint) {
+  if (typeof fees === "bigint") return [{ label: costCopy.fees, value: usdFromCents(fee) }]
+  // The tip rides in the withdrawal.
+  const [withdrawal, accountChange] = feeSplit(fee, fees.accountChange)
+  return [
+    { label: costCopy.withdrawalFee, value: usdFromCents(withdrawal) },
+    { label: costCopy.accountChangeFee, value: usdFromCents(accountChange) },
+  ]
+}
 
 /** How long the first quote may take before the step goes on without it. */
 const QUOTE_ANSWER_WITHIN_MS = 15_000
@@ -41,39 +46,50 @@ const QUOTE_ANSWER_WITHIN_MS = 15_000
  */
 export function ApproveScreen({ screen, actions }: BackupScreenProps<"approve">) {
   const approver = approverOf(screen)
-  const approve = approveLabel(screen)
   const { failure, busy, pay } = screen
+  const shown = screen.progress.stage === "sign" ? "sign" : pay ? "pay" : "ready"
+  const sheet = useRef<HTMLDivElement>(null)
+  // The card keeps its scroll when one of these sheets replaces another; each opens at its top.
+  useDomLayoutEffect(() => {
+    const card = sheet.current?.closest<HTMLElement>(".ww-modal")
+    if (card) card.scrollTop = 0
+  }, [shown])
   const hero = failure ? "warning" : "key"
   const cancel: SheetAction | undefined = screen.canCancel
-    ? { label: copy.cancel, onClick: actions.cancel, disabled: busy, testId: "backup-cancel" }
+    ? { label: copy.cancel, onClick: actions.askCancel, disabled: busy, testId: "backup-cancel" }
     : undefined
-  const stays = screen.canCancel && <InfoBox title={copy.stays.title}>{copy.stays.body}</InfoBox>
-  if (screen.progress.stage === "sign")
+  if (shown === "sign")
     return (
       <SheetShell
+        ref={sheet}
         hero={hero}
-        title={approve}
+        title={copy.title}
         lead={failure?.kind === "declined" ? copy.closed : copy.lead}
         primary={{
-          label: approve,
+          label: copy.confirm,
           onClick: actions.approve,
           loading: busy,
           testId: "backup-approve",
         }}
         secondary={cancel}
+        note={copy.pick}
       >
-        <AddTracker screen={screen} line={{ detail: copy.pick }} />
+        <SheetCard>
+          <KeyStatusRow
+            name={copy.passkey}
+            detail={screen.approver ?? copy.unnamed}
+            status="added"
+          />
+        </SheetCard>
+        <AddTracker screen={screen} />
       </SheetShell>
     )
   if (pay)
-    return (
-      <PaySheet screen={screen} actions={actions} pay={pay} cancel={cancel}>
-        {stays}
-      </PaySheet>
-    )
+    return <PaySheet ref={sheet} screen={screen} actions={actions} pay={pay} cancel={cancel} />
   // The driver publishes the deposit address, then reads what the payment needs.
   return (
     <SheetShell
+      ref={sheet}
       hero={hero}
       title={copy.ready.title}
       lead={fmt(copy.ready.lead, { approver })}
@@ -86,30 +102,33 @@ export function ApproveScreen({ screen, actions }: BackupScreenProps<"approve">)
     >
       <AddTracker screen={screen} line={{ detail: copy.ready.detail }} />
       {screen.sipa && <BroadcastStatusRow address={screen.sipa.toLowerCase()} />}
-      {stays}
     </SheetShell>
   )
 }
 
 /**
- * The payment, with a Standard/Faster choice that opens on Faster: the tip is small next to the
- * wait it saves, and the funding has to settle before the key is installed. The tip rides inside
- * the funding, so Faster is refused when the one-key account cannot fund both in one transfer; a
- * fit read that fails lets the tip through unchecked. While the funding goes out the figures keep
- * the choice it was priced with, so what they show is what the burn carries.
+ * The payment from Main Account, as its fee, the hold that comes back and their total. Its
+ * Standard/Faster choice opens on Faster: the tip is small next to the wait it saves, and the
+ * funding has to settle before the key is installed. The tip rides inside the funding, so Faster is
+ * refused when the one-key account cannot fund both in one transfer; a fit read that fails lets the
+ * tip through unchecked. While the funding goes out the figures keep the choice it was priced
+ * with, so what they show is what the burn carries.
  */
 function PaySheet({
   screen,
   actions,
   pay,
   cancel,
-  children,
+  ref,
 }: BackupScreenProps<"approve"> & {
   pay: BackupPayFacts
   cancel?: SheetAction
-  children: ReactNode
+  ref: Ref<HTMLDivElement>
 }) {
   const busy = screen.busy || screen.sending === true
+  const session = useSession()
+  const balance = useStore(session.balances.view, mainBalance)
+  const hidden = useStore(session.device, (s) => s.hideBalances)
   const base = untippedFunding(pay.plan)
   const live = useSpeedChoice({
     active: !busy,
@@ -123,14 +142,18 @@ function PaySheet({
   const [sent, setSent] = useState<{ choice: SpeedChoice; outcome: SpeedOutcome }>()
   const { choice, outcome } = busy && sent ? sent : { choice: live, outcome: liveOutcome }
   const { offer } = choice
-  const { proverTip } = outcome
+  // A sheet opened while a send is out has no choice of its own: the plan holds that send's tip.
+  const proverTip = screen.sending && !sent ? BigInt(pay.plan.proverTip ?? 0) : outcome.proverTip
   const waiting = choice.loading || (proverTip > 0n && !pay.fit?.done)
-  // The chosen speed's tip rides in the withdrawal, so the figures are priced with it.
-  const quote: BackupFundingQuote =
-    proverTip > 0n
-      ? backupFundingQuote({ ...pay.plan, fundingAmount: (base + proverTip).toString() })
-      : pay
-  const amount = dollars(quote.sent - quote.credited)
+  // The tip rides in the withdrawal. A plan saved by a send that never went out carries that send's
+  // tip, so the price starts from the untipped funding.
+  const quote = backupFundingQuote({ ...pay.plan, fundingAmount: (base + proverTip).toString() })
+  const cost = addCost(quote)
+  const amount = usdFromCents(cost.total)
+  const account =
+    balance === undefined
+      ? copy.pay.account
+      : fmt(copy.pay.accountBalance, { balance: hidden ? HIDDEN_BALANCE : usdAtomicFloor(balance) })
   // The whole wait, from paying to the backup installed, at the speed the tip buys.
   const etaSeconds = pay.eta && (proverTip > 0n ? pay.eta.tipped : pay.eta.standard)
   const time =
@@ -152,8 +175,9 @@ function PaySheet({
   ) : undefined
   return (
     <SheetShell
+      ref={ref}
       hero={screen.failure ? "warning" : "key"}
-      title={fmt(copy.pay.title, { approver: approverOf(screen) })}
+      title={copy.pay.title}
       lead={copy.pay.lead}
       primary={{
         label: fmt(copy.pay.pay, { amount }),
@@ -170,24 +194,25 @@ function PaySheet({
       <AddTracker screen={screen} line={{ detail: fmt(copy.pay.detail, { amount }) }} />
       <FactBox
         facts={[
+          { label: copy.pay.from, value: account },
           {
-            label: copy.pay.cost,
-            value: amount,
+            label: copy.pay.fee,
+            value: usdFromCents(cost.fee),
             hint: {
               label: copy.pay.breakdown,
               title: copy.pay.breakdown,
-              rows: feeRows(quote),
-              note: fmt(copy.pay.note, {
-                sent: dollars(quote.sent),
-                back: dollars(quote.credited),
-              }),
+              rows: feeRows(quote, cost.fee),
             },
           },
+          {
+            label: holdCopy.label,
+            value: fmt(holdCopy.value, { amount: usdFromCents(cost.hold) }),
+          },
+          { label: copy.pay.total, value: amount },
           ...(speed ? [{ label: copy.pay.speed, value: speed }] : []),
           ...(time ? [{ label: copy.pay.time, value: time }] : []),
         ]}
       />
-      {children}
     </SheetShell>
   )
 }

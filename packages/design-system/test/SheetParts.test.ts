@@ -176,6 +176,28 @@ describe("ChoiceCard", () => {
     )
     expect(seen).toEqual(picked)
   })
+
+  it("leaves the choice alone when its help is used", () => {
+    const seen: string[] = []
+    render(
+      createElement(
+        ChoiceCard,
+        {
+          name: "place",
+          value: "key",
+          checked: false,
+          onChange: (value: string) => seen.push(value),
+          label: "Security key",
+        },
+        createElement("button", { type: "button" }, "About security keys"),
+      ),
+    )
+    fire(
+      host.querySelector("button") as HTMLButtonElement,
+      new MouseEvent("click", { bubbles: true }),
+    )
+    expect(seen).toEqual([])
+  })
 })
 
 describe("StepTracker", () => {

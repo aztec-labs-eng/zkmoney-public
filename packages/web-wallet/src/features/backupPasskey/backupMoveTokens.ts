@@ -12,15 +12,16 @@ import { requireTupleField } from "../../config/oxideTuple"
 import type { PageChain } from "../../session/pageChain"
 
 /**
- * The tokens a backup add moves to the new account: Main Account's first, then Savings' shares
- * where the deployment has Savings.
+ * The tokens a backup add moves to the new account: Main Account's first, then each holding's
+ * shares.
  */
 export async function backupMoveTokens(reads: PageChain): Promise<string[]> {
-  const [main, savings] = await Promise.all([
+  const [main, { holdings }] = await Promise.all([
     reads.feeTokenBridgeTuple.read(),
-    reads.savingsTuple.read(),
+    reads.holdings.read(),
   ])
-  return (savings ? [main, savings] : [main]).map((tuple) => requireTupleField(tuple, "l2Token"))
+  const tokens = [requireTupleField(main, "l2Token"), ...holdings.map((h) => h.held.l2Token)]
+  return tokens.filter((t, i) => tokens.findIndex((o) => o.toLowerCase() === t.toLowerCase()) === i)
 }
 
 /** The most one transfer of `token` moves: its own portal's cap. */

@@ -14,11 +14,13 @@ import {
   type BackupAddOptions,
   type UserAgentInfo,
 } from "@obsidion/passkey-web"
+import { GPM_AAGUID } from "@obsidion/core/constants"
 import { EcdsaK256AlphaAuthProvider, pubkeyHexOf, RotationRouteNotLiveError } from "@obsidion/sdk"
 import type { Address, Hex } from "viem"
 import { isDemoMode } from "../../../src/dev/demoFlag"
 import { DEMO_SIGNING_KEY_HEX } from "../../../src/dev/demoFixtures"
 import type { EntryFacts } from "../../../src/features/backupPasskey/backupPasskeyFacts"
+import { CAPTURE_OFFER } from "./faster-offer"
 import type {
   BackupScreenId,
   BackupScreenInput,
@@ -54,6 +56,8 @@ export interface FixtureKey {
   role: "sign-up" | "backup"
   session: boolean
   name?: string
+  /** The manager id this browser recorded at the key's creation. */
+  aaguid?: string
 }
 
 /** What the sheet's key read answers. */
@@ -65,9 +69,13 @@ interface BackupFixture {
   keys: FixtureKeys
   /** What overrides the host's own input. */
   input: Partial<BackupScreenInput>
+  /** The session passkey lives on one device: Settings shows its card and badge. */
+  oneDevice?: true
 }
 
 const SIGN_UP: FixtureKey = { role: "sign-up", session: true, name: "This Mac" }
+/** Unnamed, so the key list names its manager. */
+const SIGN_UP_GPM: FixtureKey = { role: "sign-up", session: true, aaguid: GPM_AAGUID }
 const BOTH: readonly FixtureKey[] = [SIGN_UP, { role: "backup", session: false, name: "iPhone" }]
 /** A session signed in with a key the account doesn't list as installed here. */
 const ELSEWHERE: readonly FixtureKey[] = [{ ...SIGN_UP, session: false }]
@@ -87,11 +95,16 @@ const ALLOWANCE: AllowanceSnapshot = {
   state: { kind: "available", available: 10, renews: false },
   refreshing: false,
 }
+/** A funding and credit with fractions of a cent, so figures rounded apart would disagree. */
+const FUNDING = (20551n * DAI) / 10000n
+const CREDITED = (15004n * DAI) / 10000n
 const FACTS: EntryFacts = {
   routeLive: true,
   balance: 120n * DAI,
-  fundingAmount: 2n * DAI,
+  fundingAmount: FUNDING,
+  credited: CREDITED,
   chunk: { kind: "fits" },
+  fits: () => true,
   plan: true,
   moves: 2,
   savingsMoving: false,
@@ -99,9 +112,9 @@ const FACTS: EntryFacts = {
   links: 0,
   historicBalance: false,
   quote: {
-    total: (6n * DAI) / 10n,
+    total: FUNDING - CREDITED,
     fixed: (35n * DAI) / 100n,
-    network: (25n * DAI) / 100n,
+    network: FUNDING - CREDITED - (35n * DAI) / 100n,
   },
 }
 /** A funding's release read: a minute to land, a 20 minute release, 3 minutes with a tip. */
@@ -134,6 +147,13 @@ const entry = (over: Partial<EntryInput> = {}): EntryInput => ({
   ...over,
 })
 const WITHDRAWING = entry({ facts: { ...FACTS, withdrawalInFlight: true } })
+const SHORT = entry({ facts: { ...FACTS, balance: (8n * DAI) / 10n } })
+const SHORT_WITHDRAWING = entry({
+  facts: { ...FACTS, balance: (8n * DAI) / 10n, withdrawalInFlight: true },
+})
+/** Enough for the add, not for Faster's tip on top. */
+const fitsUntipped = (amount: bigint) => amount <= FUNDING
+const TIP_SHORT = entry({ facts: { ...FACTS, fits: fitsUntipped } })
 const NO_ROUTE = entry({ facts: { ...FACTS, routeLive: false } })
 /** A one-key account that may start an add. */
 const start = (over: Partial<BackupScreenInput> = {}): Partial<BackupScreenInput> => ({
@@ -147,9 +167,9 @@ const start = (over: Partial<BackupScreenInput> = {}): Partial<BackupScreenInput
 const ATTEMPT = "capture-attempt"
 const PLAN = {
   address: TWO_KEY,
-  fundingAmount: (2n * DAI).toString(),
-  deposited: ((18n * DAI) / 10n).toString(),
-  credited: ((14n * DAI) / 10n).toString(),
+  fundingAmount: FUNDING.toString(),
+  deposited: ((185n * DAI) / 100n).toString(),
+  credited: CREDITED.toString(),
   approvals: 1,
   moves: 2,
 }
@@ -304,16 +324,21 @@ export const BACKUP_FIXTURES = {
     keys: [SIGN_UP],
     input: { saved: signed(), deps: "building" },
   },
-  // A1. `keys` leaves the tier to the host: the demo passkey's record carries no flag, so it syncs.
-  "keys": { screen: "keys", keys: [SIGN_UP], input: start() },
-  "keys-one-device": { screen: "keys", keys: [SIGN_UP], input: start({ oneDevice: true }) },
+  // A1. Only Settings reads the one-device flag; `keys` names the sign-up key's manager.
+  "keys": { screen: "keys", keys: [SIGN_UP_GPM], input: start() },
+  "keys-one-device": { screen: "keys", keys: [SIGN_UP], input: start(), oneDevice: true },
   "keys-two": { screen: "keys", keys: BOTH, input: { saved: null } },
   "keys-unregistered": { screen: "keys", keys: "unverified", input: start() },
   // A2, A3
   "intro": {
     screen: "intro",
     keys: [SIGN_UP],
-    input: start({ start: "intro", release: RELEASE }),
+    input: start({ start: "intro", release: RELEASE, offer: CAPTURE_OFFER }),
+  },
+  "intro-tip-short": {
+    screen: "intro",
+    keys: [SIGN_UP],
+    input: start({ start: "intro", release: RELEASE, offer: CAPTURE_OFFER, entry: TIP_SHORT }),
   },
   "place": { screen: "place", keys: [SIGN_UP], input: start({ start: "place" }) },
   // B1-B4
@@ -321,6 +346,16 @@ export const BACKUP_FIXTURES = {
     screen: "blocked",
     keys: [SIGN_UP],
     input: start({ start: "intro", entry: WITHDRAWING }),
+  },
+  "blocked-balance": {
+    screen: "blocked",
+    keys: [SIGN_UP],
+    input: start({ start: "intro", entry: SHORT_WITHDRAWING }),
+  },
+  "low-balance": {
+    screen: "lowBalance",
+    keys: [SIGN_UP],
+    input: start({ start: "intro", entry: SHORT }),
   },
   "unavailable": {
     screen: "unavailable",
@@ -356,6 +391,15 @@ export const BACKUP_FIXTURES = {
     screen: "approve",
     keys: [SIGN_UP],
     input: saved(signed({ phase: "published" }), { wait: "funding" }, { release: RELEASE }),
+  },
+  "approve-pay-tip-short": {
+    screen: "approve",
+    keys: [SIGN_UP],
+    input: saved(
+      signed({ phase: "published" }),
+      { wait: "funding" },
+      { release: RELEASE, fit: { fits: fitsUntipped, done: true } },
+    ),
   },
   "approve-declined": {
     screen: "approve",

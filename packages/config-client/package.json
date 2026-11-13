@@ -9,6 +9,12 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.js"
+    },
+    "./features-url": {
+      "source": "./src/features/url.ts",
+      "types": "./dist/features/url.d.ts",
+      "import": "./dist/features/url.js",
+      "require": "./dist/features/url.js"
     }
   },
   "scripts": {

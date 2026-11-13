@@ -11,7 +11,7 @@ import {
   type SipaIntentName,
 } from "@obsidion/core/oxide"
 import type { Address } from "viem"
-import { SKY_PROJECT, SKY_ROLES } from "../core/services/savings/savingsDeployment"
+import { SKY_PROJECT, SKY_ROLES, VAULT_PROJECT, VAULT_ROLES } from "@obsidion/core/oxide"
 
 /** A token a SIPA of the pinned table accepts, and the row its sweep settles on. */
 export interface DepositTokenRoute {
@@ -72,7 +72,10 @@ export interface DepositRows {
 }
 
 /** The role a known feature binds Main's bridge in. */
-const MAIN_ROLES: Readonly<Record<string, string>> = { [SKY_PROJECT]: SKY_ROLES.main }
+const MAIN_ROLES: Readonly<Record<string, string>> = {
+  [SKY_PROJECT]: SKY_ROLES.base,
+  [VAULT_PROJECT]: VAULT_ROLES.base,
+}
 
 /** The first feature that binds `bridge` in a role other than Main's. */
 function productBinding(
@@ -90,12 +93,24 @@ function productBinding(
 }
 
 /**
- * Splits the table's rows into Main's and products'. A row is a product's when a feature binds its bridge in a role
- * other than Main's (Sky binds DAI as `dai`), unless it is the fee token's row, which is Main's whatever binds it. So a
- * new plain row is offered with no release, and a new feature-bound row stays hidden until its product surfaces it.
+ * Splits the table's rows into Main's and products'. With `mainPortals`, the profile's list, Main's rows are those
+ * of its portals and the fee token's, and no row is a product's, so a new row is offered nowhere until the profile
+ * names it.
+ * Without it, a row is a product's when a feature binds its bridge in a role other than Main's (Sky binds DAI as
+ * `dai`), unless it is the fee token's row, and every other row is Main's.
  */
-export function depositRows(table: OxideDeploymentTable): DepositRows {
+export function depositRows(
+  table: OxideDeploymentTable,
+  mainPortals?: readonly string[],
+): DepositRows {
   const fee = feeTokenRow(table)
+  if (mainPortals) {
+    const listed = new Set(mainPortals.map((portal) => portal.toLowerCase()))
+    const main = table.rows.filter(
+      (row) => row === fee || listed.has(row.bridge.portal.toLowerCase()),
+    )
+    return { main, product: [] }
+  }
   const rows: DepositRows = { main: [], product: [] }
   for (const row of table.rows) {
     const binding = row === fee ? undefined : productBinding(table.deployment, row.bridge)

@@ -452,8 +452,11 @@ export function selectWithdrawQuote(
       ? offer.tippedEtaSeconds
       : offer.standardEtaSeconds
     : quotes.eta?.standardSeconds
-  const arrivesIn =
-    onL1 && etaSeconds !== undefined ? Math.max(1, Math.round(etaSeconds / 60)) : undefined
+  const etaMinutes =
+    etaSeconds === undefined
+      ? undefined
+      : Math.max(1, Math.round(etaSeconds / 60)) + (onL1 ? 0 : route?.chain.etaMinutes ?? 0)
+  const arrivesIn = onL1 ? etaMinutes : undefined
 
   // The fee on screen was priced with the tip the burn will carry.
   const priced = onL1
@@ -462,6 +465,8 @@ export function selectWithdrawQuote(
       (gasAtomic === 0n || gasTopUp !== undefined)
     : !!bridgeQuote && !bridgeQuoting && bridgeQuote.proverTip === proverTip
   const ethOnContract = quotes.contract && coin === "ETH"
+  // A contract may not take the token, or exist on a bridge chain: the user is warned, not stopped.
+  const onContract = quotes.contract
   // Every check trusts only this session's balance read.
   const valid =
     wallet.readThisSession &&
@@ -497,10 +502,7 @@ export function selectWithdrawQuote(
       receivedDecimals: toDecimals,
       speed: fast ? ("faster" as const) : ("standard" as const),
       proverTip,
-      etaMinutes:
-        etaSeconds === undefined
-          ? undefined
-          : Math.max(1, Math.round(etaSeconds / 60)) + (onL1 ? 0 : route?.chain.etaMinutes ?? 0),
+      etaMinutes,
     }
     if (onL1 && committed)
       return {
@@ -557,9 +559,11 @@ export function selectWithdrawQuote(
     proverTip,
     fast,
     etaSeconds,
+    etaMinutes,
     arrivesIn,
     priced,
     ethOnContract,
+    onContract,
     valid,
     bridgeChoice,
     plan,

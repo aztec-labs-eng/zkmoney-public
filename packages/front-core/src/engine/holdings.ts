@@ -1,4 +1,12 @@
-import type { DeploymentHoldings, Holding, HoldingCatalog } from "@obsidion/core/oxide"
+import {
+  holdingCatalog,
+  type DeploymentHoldings,
+  type Holding,
+  type HoldingCatalog,
+  type SkyEscrowHolding,
+} from "@obsidion/core/oxide"
+import type { Address } from "viem"
+import type { SkyHoldingRef } from "../storageMigrations/savingsMoves"
 import type { BalanceEntry } from "./balances"
 import type { RecordSet } from "./persistentStore"
 
@@ -46,4 +54,36 @@ export function selectHoldings(
     if ((heldShares(balances, scope, holding.l2Token) ?? 0n) > 0n) add(holding, true)
   }
   return [...lines.values()]
+}
+
+/** The Sky holdings Savings prices, one per share token: the listed ones, then the deployment's. */
+export function savingsHoldings(
+  deployment: DeploymentHoldings,
+  listed: readonly string[] | undefined,
+): SkyEscrowHolding[] {
+  const { holdings } = holdingCatalog(deployment, listed)
+  const sky = [...holdings, ...deployment.holdings].filter(
+    (h): h is SkyEscrowHolding => h.rail === "skyEscrow",
+  )
+  return sky.filter(
+    (h, i) => sky.findIndex((o) => tokenKey(o.l2Token) === tokenKey(h.l2Token)) === i,
+  )
+}
+
+/** The holding Savings prices: the listed Sky holding, else the deployment's first. */
+export const savingsHolding = (
+  deployment: DeploymentHoldings,
+  listed: readonly string[] | undefined,
+): SkyEscrowHolding | undefined => savingsHoldings(deployment, listed)[0]
+
+/** The Sky holding an older build's Savings moves count in. */
+export function savingsHoldingRef(
+  deployment: DeploymentHoldings,
+  listed: readonly string[] | undefined,
+): SkyHoldingRef | undefined {
+  const sky = savingsHolding(deployment, listed)
+  if (!sky) return undefined
+  const blocks = [sky.base, sky.held].map((bridge) => BigInt(bridge.tuple.deployedAtBlock ?? 0))
+  const fromBlock = blocks.reduce((first, block) => (block < first ? block : first))
+  return { id: sky.id, factory: sky.escrow.factory as Address, fromBlock }
 }

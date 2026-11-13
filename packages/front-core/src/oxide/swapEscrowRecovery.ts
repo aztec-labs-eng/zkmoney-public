@@ -131,7 +131,7 @@ export type EscrowRecoverySigning = Omit<SwapEscrowRecoveryDeps, "record" | "sto
  * not open `recoveryCommitment` (a guaranteed revert) or the escrow holds none of `token`.
  */
 export async function signEscrowRecovery(
-  deps: EscrowRecoverySigning,
+  deps: Omit<EscrowRecoverySigning, "channel" | "dai">,
   escrow: Address,
   recoveryCommitment: Hex,
   token: Address,

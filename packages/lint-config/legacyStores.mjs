@@ -40,6 +40,7 @@ const TAB = {
     "pxeBoot.downloadReloads",
     "webwallet.demo",
     "webwallet.preview-config-draft",
+    "webwallet.preview-features-draft",
   ],
   type: "TabKey",
 }

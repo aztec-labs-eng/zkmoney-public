@@ -1,6 +1,7 @@
 import { EthAddress } from "@aztec-labs/aztec.js/addresses"
 import { TxHash } from "@aztec-labs/stdlib/tx"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
+import { bridgeUnderlying } from "@obsidion/core/oxide"
 import {
   backupLinks,
   deriveBootstrapKey,
@@ -70,6 +71,7 @@ import { generationFactories, loadOxideGenerations } from "../registration/oxide
 import { RAIL_REGISTERED } from "../registration/rails"
 import { unlockedSessionKeys } from "../registration/registrationResume"
 import { runOperation } from "../operations/operations"
+import { tokenMetadata } from "../sipa/loadDepositFacts"
 import {
   creatorLinkFor,
   linkRefundable,
@@ -702,8 +704,9 @@ export async function buildBackupFlowDeps(input: {
       const amount = BigInt(plan.fundingAmount)
       const proverTip = BigInt(plan.proverTip ?? 0)
       const tokenService = await sponsoredTokenService(session.page, keys.account, l2Token)
-      const [token, sponsor, deployment, withdrawalFee] = await Promise.all([
+      const [token, unit, sponsor, deployment, withdrawalFee] = await Promise.all([
         tokenService.fetchTokenInformation(),
+        tokenMetadata({ chain }, bridgeUnderlying(envTuple) as Address),
         claimSponsorContext(sponsorDeps, RAIL_REGISTERED),
         currentDeployment(envTuple),
         withdrawalExecutorFee(chain, envTuple),
@@ -730,7 +733,7 @@ export async function buildBackupFlowDeps(input: {
               // What the add's cost is checked against: the release is the gross less these.
               withdrawalFee: withdrawalFee.toString(),
               ...(proverTip ? { proverTip: proverTip.toString() } : {}),
-              tokenSymbol: token.symbol,
+              tokenSymbol: unit.symbol,
               tokenDecimals: token.decimals,
               phase: "submitting",
               startTime: Date.now(),

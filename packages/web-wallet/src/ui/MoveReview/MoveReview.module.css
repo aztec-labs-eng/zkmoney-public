@@ -1,12 +1,15 @@
 /* The network value: the route and the arrival time each stay whole; the time drops to its own
-   line when the row is narrow. The time reads like the To row's address. */
-.route {
+   line when the row is narrow. The time reads like the To row's address. Scoped under the sheet's
+   fact row, whose own value rule would otherwise set the gap. */
+:global(.ww-sheet__fact) .route {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   align-items: center;
-  gap: 2px 4px;
+  gap: 0 4px;
   font-size: 14px;
+  /* Tight lines, so a wrapped time sits close under the route. */
+  line-height: 1.2;
 }
 .route > * {
   white-space: nowrap;

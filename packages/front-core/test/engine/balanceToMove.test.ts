@@ -106,8 +106,19 @@ describe("balanceToMove", () => {
     expect(owedOne([chunk()], { phase, reroot })).toBe(counts ? 100n : 0n)
   })
 
-  it("counts nothing before the first run is planned", () => {
+  it("counts what the one-key account held at the switch until the first run is planned", () => {
+    const reroot = {
+      switched: true,
+      oneKeyBalances: [
+        { token: MAIN, amount: "500" },
+        { token: SHARES, amount: "9" },
+      ],
+    }
     expect(owed([record()])).toBe(0n)
+    expect(owed([record({ reroot })])).toBe(500n)
+    expect(owed([record({ reroot })], SHARES)).toBe(9n)
+    // The run's chunks are cut from a later read and replace the switch's.
+    expect(owedOne([chunk()], { reroot })).toBe(100n)
   })
 
   it("keeps counting a run the user declined, and a move paused for their retry", () => {

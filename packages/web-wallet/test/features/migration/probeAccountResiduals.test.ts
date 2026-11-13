@@ -1,6 +1,7 @@
 import type { Session } from "../../../src/session/session"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { assignReads } from "../../support/fakeReads"
+import { holdingsOf } from "../../support/holdings"
 import { testPage } from "../../support/page"
 
 const h = vi.hoisted(() => ({
@@ -166,7 +167,11 @@ beforeEach(() => {
     otherManifestSources: h.otherSources,
     oxideDeployment: h.deployment,
     invalidateDeployment: h.invalidate,
-    savingsTuple: h.savingsTuple,
+    // The deployment's Sky holding, held on `h.savingsTuple`'s bridge where it answers one.
+    holdings: async () => {
+      const tuple = await h.savingsTuple()
+      return tuple ? holdingsOf({ portal: tuple.portal, tuple }) : holdingsOf()
+    },
   })
   const deps = pageSessionDeps(page as never)
   session = switchSession({ id: "acct", prefix: "obsidion.acct." }, (namespace) => ({
@@ -357,6 +362,14 @@ describe("probeAccountResiduals — another Aztec generation", () => {
 
   it("fails, rather than reads no history, when another generation's manifest can't be read", async () => {
     h.otherSources.mockRejectedValue(new Error("timed out"))
+    await expect(probeAccountResiduals(session, wallet, account, undefined)).rejects.toBeInstanceOf(
+      ManifestUnavailableError,
+    )
+    expect(h.detect).not.toHaveBeenCalled()
+  })
+
+  it("fails, rather than reads no Savings shares, when the deployment's holdings can't be read", async () => {
+    h.savingsTuple.mockRejectedValue(new Error("timed out"))
     await expect(probeAccountResiduals(session, wallet, account, undefined)).rejects.toBeInstanceOf(
       ManifestUnavailableError,
     )

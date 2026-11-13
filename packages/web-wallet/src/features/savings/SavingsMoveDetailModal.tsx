@@ -1,19 +1,20 @@
 import { formatUnits } from "viem"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
-  claimCheckCopy,
   REORGED_ERROR,
   savingsMoveLabel,
   shortHex,
+  type MoveRecord,
+  type MoveState,
   type SavingsDirection,
   type SavingsMoveEta,
-  type SavingsMoveRecord,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
 import { GradientText, Icon, PrimaryGradientButton, type StatusBadgeStyle } from "@obsidion/web-ds"
 import { l2TxUrl } from "../../lib/explorer"
+import copy from "./SavingsMoveDetailModal.copy"
 import { l1Links, whenLabel } from "../../ui/detailRows"
-import { rowTimestamp, tokenAmount, usdAtomic, usdAtomicFloor } from "../../ui/format"
+import { tokenAmount, usdAtomic, usdAtomicFloor } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
 import { DepositFact } from "../../ui/screens/DepositFact"
 import { DepositHashFact } from "../../ui/screens/DepositHashFact"
@@ -21,6 +22,8 @@ import { DepositStatusValue } from "../../ui/screens/DepositStatusValue"
 import { TabLine } from "../operations/TabLine"
 import { useWithdrawableSources } from "../migration/oldVersionWithdraw"
 import {
+  isStrandedMove,
+  moveValue,
   recoveredTo,
   savingsMoveDestination,
   savingsMoveFigure,
@@ -32,10 +35,10 @@ import { withdrawalFailureText } from "../withdraw/withdrawalFailure"
 
 /** The sheet's status: the row's one state, or the done state once the deposit is claimed. */
 function moveStatus(
-  move: SavingsMoveRecord,
-  burn?: WithdrawalRecord,
+  move: MoveRecord,
+  state: MoveState,
 ): { label: string; badge: StatusBadgeStyle } {
-  const status = savingsMoveStatus(move, burn)
+  const status = savingsMoveStatus(move, state)
   if (status === "Failed") return { label: "Failed", badge: "failed" }
   if (status === "Recovered") return { label: "Recovered", badge: "cancelled" }
   if (status === "Needs recovery") return { label: "Didn't finish", badge: "failed" }
@@ -76,6 +79,7 @@ function burnFailureReason(
 /** A move between Main and Savings: its legs, figures and status, with its burn and escrow as links. */
 export function SavingsMoveDetailModal({
   move,
+  state,
   burn,
   sharePrice,
   eta,
@@ -84,7 +88,8 @@ export function SavingsMoveDetailModal({
   onWithdraw,
   onClose,
 }: {
-  move: SavingsMoveRecord
+  move: MoveRecord
+  state: MoveState
   /** The burn's withdrawal record, for its leg and its transactions. */
   burn?: WithdrawalRecord
   /** The vault's share price; prices the shares a move into Savings lands. */
@@ -103,25 +108,29 @@ export function SavingsMoveDetailModal({
   const into = move.direction === "in"
   const from = into ? "Main Account" : "Savings"
   const to = into ? "Savings" : "Main Account"
-  const status = moveStatus(move, burn)
-  const value = move.value ? usdAtomicFloor(BigInt(move.value)) : undefined
-  const net = move.net ? usdAtomicFloor(BigInt(move.net)) : undefined
-  const fee = move.value && move.net ? usdAtomic(BigInt(move.value) - BigInt(move.net)) : undefined
+  const status = moveStatus(move, state)
+  const quoted = move.quote && moveValue(move)
+  const value = quoted === undefined ? undefined : usdAtomicFloor(quoted)
+  const routed = move.quote?.conversionOut
+  const net = routed === undefined ? undefined : usdAtomicFloor(routed)
+  const fee = quoted !== undefined && routed !== undefined ? usdAtomic(quoted - routed) : undefined
   // What the source gave up, in dollars: the quote's value, else the shares at the vault's price.
-  const moved = savingsMoveFigure(move, into ? "main" : "savings", sharePrice, burn)
+  const moved = savingsMoveFigure(move, into ? "main" : "savings", sharePrice)
   // What the destination got, in dollars, once the deposit is found: what the row credits.
   const landed = move.deposit
-    ? savingsMoveFigure(move, into ? "savings" : "main", sharePrice, burn)
+    ? savingsMoveFigure(move, into ? "savings" : "main", sharePrice)
     : undefined
   const received = landed === undefined ? undefined : usdAtomicFloor(landed)
   const shares =
     into && move.deposit
-      ? `${tokenAmount(formatUnits(BigInt(move.deposit.amount), DEFAULT_DECIMALS))} sUSDS`
+      ? `${tokenAmount(formatUnits(move.deposit.amount, DEFAULT_DECIMALS))} sUSDS`
       : undefined
-  const escrowUrl = l1AddressUrl(move.escrow)
-  // Once the burn is out, what remains is the settle pass: its last check and a way to run it now.
+  const escrow = move.rail === "skyEscrow" ? move.escrow.address : undefined
+  const claimed = move.phase === "claimed"
+  const recoveryTx = move.l1?.recoveryTx
+  // Once the burn is out, what remains is the settle pass, and a way to run it now.
   const crediting = status.badge === "pending" && burn?.phase === "done"
-  const stranded = savingsMoveStatus(move, burn) === "Needs recovery"
+  const stranded = isStrandedMove(move)
   // Withdraw refunds a deposit on an old portal this version reads, not an escrow that never ran.
   const destinationWithdrawable = useWithdrawableSources().some(
     (source) => source.savings === (savingsMoveDestination(move) === "savings"),
@@ -162,7 +171,7 @@ export function SavingsMoveDetailModal({
             <b>{savingsEtaCopy(eta)}</b>
           </DepositFact>
         )}
-        {move.deposit?.claimed && move.endTime !== undefined && (
+        {claimed && move.endTime !== undefined && (
           <DepositFact label="Completed">
             <b>{whenLabel(move.endTime)}</b>
           </DepositFact>
@@ -184,7 +193,7 @@ export function SavingsMoveDetailModal({
           </DepositFact>
         )}
         <hr className="ww-divider" />
-        <DepositFact label={move.deposit?.claimed ? `${to} received` : `${to} receives`}>
+        <DepositFact label={claimed ? `${to} received` : `${to} receives`}>
           <b>{received ?? (net ? `≈ ${net}` : "--")}</b>
         </DepositFact>
         {shares && (
@@ -206,16 +215,12 @@ export function SavingsMoveDetailModal({
             url={l1TxUrl(burn.finalizeTxHash)}
           />
         )}
-        <DepositHashFact label="Escrow" hash={move.escrow} url={escrowUrl} />
-        {move.recovered?.txHashes[0] && (
-          <DepositHashFact
-            label="Recovery tx"
-            hash={move.recovered.txHashes[0]}
-            url={l1TxUrl(move.recovered.txHashes[0])}
-          />
+        {escrow && <DepositHashFact label={copy.escrow} hash={escrow} url={l1AddressUrl(escrow)} />}
+        {recoveryTx && (
+          <DepositHashFact label={copy.recoveryTx} hash={recoveryTx} url={l1TxUrl(recoveryTx)} />
         )}
       </div>
-      {move.recovered && <p className="ww-sheet__note">{recoveredTo(move)}.</p>}
+      {move.recoveredTo && <p className="ww-sheet__note">{recoveredTo(move)}.</p>}
       {stranded && (
         <p className="ww-sheet__note ww-sheet__note--check">
           The old version closed before this move finished, so it can&apos;t finish here. The funds
@@ -226,11 +231,6 @@ export function SavingsMoveDetailModal({
         </p>
       )}
 
-      {crediting && move.lastCheck && (
-        <p className="ww-sheet__note ww-sheet__note--check">
-          Last check {rowTimestamp(move.lastCheck.at)}: {claimCheckCopy(move.lastCheck.message)}
-        </p>
-      )}
       <TabLine operationId={burn?.operationId} />
       {crediting && onCheckAgain && (
         <PrimaryGradientButton title="Check again" onClick={onCheckAgain} />

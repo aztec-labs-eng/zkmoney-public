@@ -4,12 +4,15 @@
  */
 import {
   isOtherRollupLink,
-  isStrandedSavingsMove,
   paylinkStatusIsUnspent,
   type FeedItem,
-  type SavingsItem,
+  type MoveRecord,
 } from "@obsidion/front-core"
-import { savingsMoveDestination, savingsMoveFigure } from "../savings/SavingsMoveRow"
+import {
+  isStrandedMove,
+  savingsMoveDestination,
+  savingsMoveFigure,
+} from "../savings/SavingsMoveRow"
 import type { SavingsAccount } from "../savings/AccountSwitcher"
 
 export interface OldVersionLeftovers {
@@ -24,22 +27,22 @@ export interface OldVersionLeftovers {
 
 const CENT = 10n ** 16n
 
-/** `moves`: every Savings move with its burn; `items`: the feed's; `network`: the wallet's. */
+/** `moves`: every Savings move; `items`: the feed's; `network`: the wallet's. */
 export function oldVersionLeftovers(o: {
-  moves: readonly Pick<SavingsItem, "move" | "burn">[]
+  moves: readonly MoveRecord[]
   items: readonly FeedItem[]
   sharePrice?: bigint
   network: string | undefined
 }): OldVersionLeftovers {
   let savings = 0n
   const deposited = { main: false, savings: false }
-  for (const { move, burn } of o.moves) {
-    if (!isStrandedSavingsMove(move, burn)) continue
+  for (const move of o.moves) {
+    if (!isStrandedMove(move)) continue
     // What the destination holds, not what left the source with its fees.
     const destination = savingsMoveDestination(move)
     savings +=
-      savingsMoveFigure(move, destination, o.sharePrice, burn) ??
-      savingsMoveFigure(move, "main", o.sharePrice, burn) ??
+      savingsMoveFigure(move, destination, o.sharePrice) ??
+      savingsMoveFigure(move, "main", o.sharePrice) ??
       0n
     deposited[destination] ||= !!move.deposit
   }

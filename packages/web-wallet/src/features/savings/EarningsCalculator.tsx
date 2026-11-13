@@ -1,6 +1,6 @@
 import { useRef, useState } from "react"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
-import { projectSavings, projectSavingsMonthly } from "@obsidion/front-core"
+import { RATE_SCALE, projectSavings, projectSavingsMonthly } from "@obsidion/front-core"
 import { GradientText, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import { decimalInput, floorToCents } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
@@ -9,13 +9,25 @@ import { useDomLayoutEffect } from "../../ui/useDomEffect"
 export const CALCULATOR_HORIZONS = [1, 5, 10] as const
 export type CalculatorHorizon = (typeof CALCULATOR_HORIZONS)[number]
 
-/** `5.5%` from a yearly fraction. */
-export const apyPercent = (apy: number) => `${(apy * 100).toFixed(1)}%`
+/** A tenth of a percent at `RATE_SCALE`. */
+const TENTH_PERCENT = RATE_SCALE / 1000n
 
-/** A yearly fraction from what a user typed as a percent: `3.8`, `3.8%`, `3,8`; clamped 0–100. */
-export function parseApyPercent(text: string): number {
-  const percent = Number.parseFloat(text.replace(",", ".").replace(/[^\d.-]/g, ""))
-  return Math.min(100, Math.max(0, percent || 0)) / 100
+/** `5.5%` from a yearly rate at `RATE_SCALE`, to the nearest tenth. */
+export function apyPercent(rate: bigint): string {
+  const tenths = (rate + TENTH_PERCENT / 2n) / TENTH_PERCENT
+  return `${tenths / 10n}.${tenths % 10n}%`
+}
+
+/** A yearly rate at `RATE_SCALE` from what a user typed as a percent: `3.8`, `3.8%`, `3,8`; clamped 0–100. */
+export function parseApyPercent(text: string): bigint {
+  if (text.includes("-")) return 0n
+  const [whole = "", fraction = ""] = text
+    .replace(",", ".")
+    .replace(/[^\d.]/g, "")
+    .split(".")
+  const digits = `${whole || "0"}${fraction.padEnd(16, "0").slice(0, 16)}`
+  const rate = BigInt(digits)
+  return rate > RATE_SCALE ? RATE_SCALE : rate
 }
 
 /** Under a dollar is dust: the calculator starts from a balance only above it. */
@@ -58,7 +70,7 @@ export function calculatorSteps(
   start: number,
   monthly: number,
   horizon: CalculatorHorizon,
-  apy: number,
+  apy: bigint,
   now = Date.now(),
 ): CalculatorStep[] {
   if (horizon === 1) {
@@ -160,7 +172,7 @@ export function EarningsCalculator({
   balances,
   onMove,
 }: {
-  apy: number | undefined
+  apy: bigint | undefined
   balances?: CalculatorBalances
   onMove: (amount: number) => void
 }) {
@@ -169,13 +181,13 @@ export function EarningsCalculator({
   const start = typedStart ?? calculatorStart(balances)
   const [monthly, setMonthly] = useState(50)
   // The assumed rate follows the live APY until the user types one; Reset hands it back.
-  const [typedRate, setRate] = useState<number>()
+  const [typedRate, setRate] = useState<bigint>()
   const [rateTouched, setRateTouched] = useState(false)
   const rate = rateTouched ? typedRate : apy
   // What the user is typing, shown as typed until the field blurs.
   const [rateDraft, setRateDraft] = useState<string>()
   const [horizon, setHorizon] = useState<CalculatorHorizon>(5)
-  const rows = calculatorSteps(start, monthly, horizon, rate ?? 0)
+  const rows = calculatorSteps(start, monthly, horizon, rate ?? 0n)
   // Funds already in Savings are the start, so the next move is a top-up.
   const saved = balances?.savings !== undefined && balances.savings >= CALCULATOR_DUST
   const toAdd = saved ? monthly : start
@@ -320,7 +332,7 @@ export function EarningsCalculator({
           </>
         ) : (
           <>
-            Projection assumes {apyPercent(rate ?? 0)} APY holds and rewards compound every block.{" "}
+            Projection assumes {apyPercent(rate ?? 0n)} APY holds and rewards compound every block.{" "}
             {current === undefined ? "The rate" : `The current rate is ${current}; it`} is variable,
             so real earnings will differ.
           </>
@@ -344,7 +356,7 @@ export function EarningsCalculatorSheet({
   onMove,
   onClose,
 }: {
-  apy: number | undefined
+  apy: bigint | undefined
   balances?: CalculatorBalances
   onMove: (amount: number) => void
   onClose: () => void

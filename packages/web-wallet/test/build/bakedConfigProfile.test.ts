@@ -4,10 +4,14 @@
  * refuses. Every scenario runs the plugin's own functions against a fetch double — no build.
  */
 import { createHash } from "node:crypto"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
+import { mkdtempSync, writeFileSync } from "node:fs"
 import { describe, expect, it, vi } from "vitest"
 import {
   BAKED_PROFILE_MODULE_ID,
   bakeConfigProfile,
+  bakeFeatures,
   bakedConfigProfile,
   renderBakedProfileModule,
 } from "../../bakedConfigProfile"
@@ -166,6 +170,44 @@ describe("renderBakedProfileModule", () => {
     expect(value).toEqual(JSON.parse(payload))
     expect(Object.hasOwn(value.meta, "__proto__")).toBe(true)
     expect(Object.getPrototypeOf(value.meta)).toBe(Object.prototype)
+  })
+})
+
+describe("bakeFeatures", () => {
+  const FEATURES_ENV = { VITE_CONFIG_EXPECTED_PROFILE_ID: "mock-v1", VITE_NETWORK: "sandbox" }
+  const document = (overrides: object = {}) => ({
+    schemaVersion: "1",
+    profileId: "mock-v1",
+    network: "sandbox",
+    features: {},
+    ...overrides,
+  })
+  const committed = (body: unknown, name = "mock-v1.json") => {
+    const dir = mkdtempSync(join(tmpdir(), "baked-features-"))
+    writeFileSync(join(dir, name), typeof body === "string" ? body : JSON.stringify(body, null, 2))
+    return dir
+  }
+
+  it("bakes the committed document byte for byte", () => {
+    const baked = bakeFeatures(FEATURES_ENV, committed(document()))
+    expect(baked!.payload).toBe(JSON.stringify(document(), null, 2))
+    expect(baked!.stamp).toMatchObject({ profileId: "mock-v1", publishedAt: null })
+  })
+
+  it("bakes nothing for a profile with no committed document", () => {
+    expect(bakeFeatures(FEATURES_ENV, committed(document(), "mock-other-v1.json"))).toBeUndefined()
+  })
+
+  it.each<[string, unknown, RegExp]>([
+    [
+      "is for another profile",
+      document({ profileId: "mock-other-v1" }),
+      /mock-v1\.json: .*mock-other-v1/,
+    ],
+    ["is not JSON", "{", /mock-v1\.json: /],
+    ["fails the wallet's checks", document({ schemaVersion: "2" }), /mock-v1\.json: .*schema/],
+  ])("fails the build on a committed document that %s", (_, body, message) => {
+    expect(() => bakeFeatures(FEATURES_ENV, committed(body))).toThrow(message)
   })
 })
 

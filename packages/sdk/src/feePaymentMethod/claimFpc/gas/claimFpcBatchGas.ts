@@ -45,12 +45,22 @@ import {
   type ClaimFpcPolicy,
 } from "../claimSponsoredCall.js"
 import { deriveClaimFpcGasBudgets } from "./claimFpcGasBudgets.js"
-import { privateSideEffectGas, registrationGateEffects } from "./claimFpcGasModel.js"
+import {
+  MAX_WITHDRAWAL_RECOVERY_CHUNKS,
+  privateSideEffectGas,
+  registrationGateEffects,
+  WITHDRAWAL_RECOVERY_CHUNKS,
+  worstWithdrawMarginal,
+} from "./claimFpcGasModel.js"
 import type { ClaimFpcMeasuredTx } from "./claimFpcGasTable.js"
 
 /** A batched call as the gas inventory sees it: the policy-matched name plus the flattened
  * args, which disambiguate the flavors that share a name. */
-export type SponsorableCall = Pick<FunctionCall, "name"> & { args?: readonly unknown[] }
+export type SponsorableCall = Pick<FunctionCall, "name"> & {
+  args?: readonly unknown[]
+  /** The recovery chunks a `withdraw` emits; without it, an escrow burn's. */
+  recoveryChunks?: number
+}
 
 /** The shared flat per-batch caps, as a batch of gas. */
 export const CLAIM_FPC_BATCH_CAPS: ClaimFpcMeasuredTx = {
@@ -125,6 +135,7 @@ const budgets = () => (cached ??= deriveClaimFpcGasBudgets())
  * declares the caps, and any call it dispatches is by definition outside the inventory.
  */
 export function claimFpcCallGas(call: SponsorableCall): ClaimFpcMeasuredTx {
+  if (call.name === "withdraw") return withdrawCallGas(call.recoveryChunks)
   if (call.name === "claim_to_l1" && carriesZkJwt(call)) {
     return budgets().mPaylinkEmailClaimToL1
   }
@@ -137,6 +148,20 @@ export function claimFpcCallGas(call: SponsorableCall): ClaimFpcMeasuredTx {
     )
   }
   return budgets()[key]
+}
+
+/**
+ * A burn declares the chunks it emits, within the budget priced at the most any burn may emit. One
+ * that declares none, or fewer than an escrow burn emits, is priced as an escrow burn.
+ */
+function withdrawCallGas(recoveryChunks = WITHDRAWAL_RECOVERY_CHUNKS): ClaimFpcMeasuredTx {
+  if (recoveryChunks > MAX_WITHDRAWAL_RECOVERY_CHUNKS) {
+    throw new Error(
+      `ClaimFPC budgets a withdraw at ${MAX_WITHDRAWAL_RECOVERY_CHUNKS} recovery chunks, ` +
+        `not ${recoveryChunks}`,
+    )
+  }
+  return worstWithdrawMarginal(Math.max(recoveryChunks, WITHDRAWAL_RECOVERY_CHUNKS))
 }
 
 /**

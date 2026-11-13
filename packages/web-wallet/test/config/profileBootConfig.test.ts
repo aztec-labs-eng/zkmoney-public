@@ -53,13 +53,20 @@ const MAINNET_ENV = {
   VITE_PREDICATE_CHAIN: "ethereum",
 }
 
+/** Answers the profile URL with `document`, and its features URL with none. */
 function serve(document: unknown, status = 200) {
-  return vi.fn(async () => ({
-    ok: status < 400,
-    status,
-    json: async () => document,
-  })) as unknown as typeof fetch
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const features = String(input).includes("/features/")
+    return {
+      ok: !features && status < 400,
+      status: features ? 404 : status,
+      json: async () => document,
+    }
+  }) as unknown as typeof fetch
 }
+
+const profileRequests = (fetchImpl: typeof fetch) =>
+  vi.mocked(fetchImpl).mock.calls.filter(([input]) => !String(input).includes("/features/")).length
 
 function boot(env: Record<string, string | undefined>, fetchImpl: typeof fetch) {
   return resolveBootConfig({ env, fetchImpl })
@@ -109,11 +116,11 @@ describe("profile mode", () => {
       classId: F32(106),
     })
     expect(result.contractServiceOptions.resolveClassArtifact).toBeTypeOf("function")
-    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(profileRequests(fetchImpl)).toBe(1)
     await expect(result.contractServiceOptions.resolveClassArtifact!(F32(999))).rejects.toThrow(
       /has no artifact manifest pin/,
     )
-    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(profileRequests(fetchImpl)).toBe(1)
   })
 
   it("warns and boots when a historical migration profile is unavailable", async () => {
@@ -143,6 +150,17 @@ describe("profile mode", () => {
     expect(result.config.sourceRollupIssues).toEqual([
       expect.objectContaining({ profileUrl: historicalUrl, code: "NOT_FOUND" }),
     ])
+  })
+
+  it("keeps a document with no holdings list apart from one whose list is empty", async () => {
+    expect((await boot(PROFILE_ENV, serve(sandboxProfile()))).config.holdings).toBeUndefined()
+    const listing = (holdings: string[]) => {
+      const profile = sandboxProfile() as Record<string, any>
+      profile.versions["0.0.1"].holdings = holdings
+      return boot(PROFILE_ENV, serve(profile))
+    }
+    expect((await listing([])).config.holdings).toEqual([])
+    expect((await listing(["fea-sky-v6"])).config.holdings).toEqual(["fea-sky-v6"])
   })
 
   it("exposes the version's assets, and none where the document lists none", async () => {

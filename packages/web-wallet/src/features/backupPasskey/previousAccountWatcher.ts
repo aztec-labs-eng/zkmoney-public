@@ -17,7 +17,6 @@ import {
   resolveOxideIdentity,
   txOutcome,
   unreadDeposits,
-  valueOf,
   type PreviousMoveDeps,
   type PreviousMoveResult,
   type TxOutcome,
@@ -450,7 +449,7 @@ export class PreviousAccountWatcher {
           dustOf(previous, account, token),
         ])
         const value =
-          token.kind === "savings" ? await savingsValue(life.parts.savings, amount) : undefined
+          token.kind === "savings" ? await savingsValue(life.parts, amount) : undefined
         return { kind: token.kind, amount, dust, ...(value === undefined ? {} : { value }) }
       }),
     )
@@ -638,15 +637,13 @@ function dustOf(previous: Previous, account: ObsidionAccount, token: HeldToken):
   return dust
 }
 
-/** Savings' `shares` priced through the session's Savings; undefined where it has no price. */
+/** Savings' `shares` at the vault's price; undefined where the price is unread. */
 async function savingsValue(
-  source: PreviousAccountParts["savings"],
+  parts: Pick<PreviousAccountParts, "savingsValue">,
   shares: bigint,
 ): Promise<bigint | undefined> {
   if (shares === 0n) return 0n
-  const savings = source && valueOf(source)
-  if (!savings) return undefined
-  return (await bestEffort("balance.unread", savings.quote("out", shares)))?.value
+  return bestEffort("balance.unread", parts.savingsValue(shares))
 }
 
 /**

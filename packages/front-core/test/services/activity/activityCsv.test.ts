@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest"
 import { parseUnits, type Address } from "viem"
 import type { WithdrawalRecord } from "../../../src/core/services/bridge/types"
 import type { SipaDeposit, SIPASweep } from "../../../src/engine/sipaDeposits"
-import type { SavingsMoveRecord } from "../../../src/core/services/savings/types"
+import type { MoveRecord } from "../../../src/engine/moveTransition"
 import type { ActivityItem } from "../../../src/engine/feedRules"
 import {
   ACTIVITY_CSV_COLUMNS,
@@ -522,15 +522,19 @@ describe("a 6-decimal token", () => {
   })
 
   it("exports Savings moves in the wallet token's decimals and symbol", () => {
-    const move: SavingsMoveRecord = {
+    const move: MoveRecord = {
+      id: "burn-6",
+      holdingId: "fea-sky",
+      rail: "executor",
       direction: "out",
       withdrawalLocalId: "burn-6",
-      escrow: "0x00000000000000000000000000000000000000ee",
       nonce: "0x01",
       recipientCommitment: "0x02",
-      amount: parseUnits("9.5", 6).toString(),
+      scanFrom: 0n,
+      amount: parseUnits("9.5", 6),
+      phase: "claimed",
       startTime: T0,
-      deposit: { inboxIndex: "3", amount: parseUnits("9.5", 6).toString(), claimed: true },
+      deposit: { inboxIndex: 3n, amount: parseUnits("9.5", 6), at: T0 },
     }
     expect(
       buildSavingsCsvRows({ walletToken: USDC, moves: [move], burns: new Map() }),

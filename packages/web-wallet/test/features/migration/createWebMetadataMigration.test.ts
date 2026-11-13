@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { fakeReads } from "../../support/fakeReads"
+import { holdingsOf } from "../../support/holdings"
 
 const h = vi.hoisted(() => ({
   session: vi.fn(),
@@ -11,8 +12,7 @@ const h = vi.hoisted(() => ({
   sweptDeposits: vi.fn(),
   savingsDeposits: vi.fn(async () => [] as unknown[]),
   writeBalance: vi.fn(),
-  readSavingsPrice: vi.fn(),
-  readSavingsVault: vi.fn(),
+  holdingPrice: vi.fn(),
   savingsValue: vi.fn(),
   escrows: vi.fn(),
   linkRows: vi.fn(async () => ["row"]),
@@ -28,8 +28,6 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   createMetadataMigrationSession: h.session,
   pubkeyToR1KeyArg: () => "r1",
   UpgradeActivity: { get: () => ({}) },
-  readSavingsPrice: h.readSavingsPrice,
-  readSavingsVault: h.readSavingsVault,
   savingsValue: h.savingsValue,
   WalletSyncCoordinator: {},
 }))
@@ -89,6 +87,8 @@ const pageChain = fakeReads({
   feeTokenBridgeTuple: h.feeBridge,
   oxideDeployment: h.deployment,
   retiredRollupSources: async () => [historic],
+  holdings: async () => holdingsOf({ portal: "0xsavings" }),
+  holdingPrice: h.holdingPrice,
 })
 const own = {
   page: { config, chain: pageChain },
@@ -205,17 +205,14 @@ describe("createWebMetadataMigration — retired holdings", () => {
     await sourceFor()
     await h.session.mock.calls[0]![0].holdings(10n, 9n)
     expect(h.writeBalance).toHaveBeenCalledWith(expect.any(String), "0xsource-token", 10n, 9n)
-    expect(h.readSavingsPrice).not.toHaveBeenCalled()
+    expect(h.holdingPrice).not.toHaveBeenCalled()
   })
 
   it("records a savings destination's holdings at its share price", async () => {
-    h.readSavingsVault.mockResolvedValue("0xvault")
-    h.readSavingsPrice.mockResolvedValue({ sharePrice: 120n })
+    h.holdingPrice.mockResolvedValue({ sharePrice: 120n })
     h.savingsValue.mockReturnValue(12n)
     await sourceFor({ portal: "0xsavings" } as never)
     await h.session.mock.calls[0]![0].holdings(10n, 9n)
-    expect(h.readSavingsVault).toHaveBeenCalledWith(expect.anything(), "0xsavings")
-    expect(h.readSavingsPrice).toHaveBeenCalledWith(expect.anything(), "0xvault")
     expect(h.savingsValue).toHaveBeenCalledWith(10n, 120n)
     expect(h.writeBalance).toHaveBeenCalledWith(expect.any(String), "0xsource-token", 12n, 9n)
   })

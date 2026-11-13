@@ -1,15 +1,12 @@
 // @vitest-environment node
 /**
- * The boot catch-up: a session opened from its cached key adopts the two-key account a backup add on
- * another device moved the wallet to, and nothing else moves it.
+ * The catch-up: a session, from boot on and while it stays open, adopts the two-key account a backup
+ * add on another device moved the wallet to, and nothing else moves it.
  */
 import { Fr } from "@aztec-labs/aztec.js/fields"
-import { createPace } from "@obsidion/core/cadence"
 import {
   deriveBootstrapKey,
-  memoryBackend,
   memoryStore,
-  openDatabase,
   startRuntime,
   type BackupRotationRecord,
   type OxideIdentityDeps,
@@ -19,7 +16,7 @@ import { AUTH_TYPE, type AlphaAuthProvider } from "@obsidion/sdk"
 import { predictAccountAddressLocally } from "@oxide/l1-contracts"
 import { getContractAddress, type Address } from "viem"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { later } from "../../../front-core/test/engine/taskTable"
+import { flush, later, sessions, table } from "../../../front-core/test/engine/taskTable"
 import {
   catchUpMovedAccount,
   movedAccountCatchUp,
@@ -523,44 +520,79 @@ describe("catchUpMovedAccount", () => {
 })
 
 describe("movedAccountCatchUp", () => {
-  it("runs once the wallet, the account and the contracts are ready", async () => {
+  let end = () => {}
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => {
+    end()
+    vi.useRealTimers()
+  })
+
+  /**
+   * A runtime per session over the catch-up, the wallet and the account ready and the contracts
+   * pending until `contracts`; `checks` counts its reads of the tag's record.
+   */
+  const harness = () => {
+    const rt = sessions(startRuntime)
+    end = rt.end
     const needs = {
       wallet: later("wallet"),
       account: later("account"),
       contractService: later("cs"),
     }
-    const reloaded = new Promise<void>((resolve) => h.reload.mockImplementation(() => resolve()))
-    const runtime = startRuntime(
-      [
-        movedAccountCatchUp(
-          {
-            session,
-            wallet: needs.wallet.service as never,
-            account: needs.account.service as never,
-            contractService: needs.contractService.service as never,
-          },
-          deps,
-        ),
-      ],
-      {
-        db: openDatabase(memoryBackend()),
-        milestones: { after: async () => true, reached: () => false },
-        visible: memoryStore(true).readonly,
-        pace: createPace(),
-        now: () => Date.now(),
-        sinceLoad: () => performance.now(),
-      },
+    rt.tasks.push(
+      movedAccountCatchUp(
+        {
+          session,
+          wallet: needs.wallet.service as never,
+          account: needs.account.service as never,
+          contractService: needs.contractService.service as never,
+        },
+        deps,
+      ),
     )
-    try {
-      needs.wallet.ready(wallet)
-      needs.account.ready(accountAt(OLD))
-      await new Promise((resolve) => setTimeout(resolve, 0))
-      expect(h.generations).not.toHaveBeenCalled()
-      needs.contractService.ready({})
-      await reloaded
-      expect(stash.get(MARK)).toBe(NEW)
-    } finally {
-      runtime.stop()
-    }
+    needs.wallet.ready(wallet)
+    needs.account.ready(accountAt(OLD))
+    let checks = 0
+    h.onRecordRead = async () => void checks++
+    return { ...rt, contracts: () => needs.contractService.ready({}), checks: () => checks }
+  }
+
+  it("checks once its needs are ready, then every minute while shown, every five while hidden, at once on show, and stops with the session", async () => {
+    h.chainRecord = OLD
+    const rt = harness()
+    await table(
+      [
+        ["start, the contracts pending", rt.start, 60_000, 0],
+        ["the contracts are ready", rt.contracts, 0, 1],
+        ["shown", () => {}, 60_000, 2],
+        ["hidden", rt.hide, 6 * 60_000, 4],
+        ["show", rt.show, 0, 5],
+        ["stop", rt.stop, 10 * 60_000, 5],
+        ["restart", rt.start, 0, 6],
+      ],
+      rt.checks,
+    )
+    await nothingWritten()
   })
+
+  it.each([
+    ["at its first check", NEW, false, 1],
+    ["at the next check, a complete catalog read once", OLD, false, 1],
+    ["at the next check, an incomplete catalog read again", OLD, true, 2],
+  ])(
+    "a backup added on another device moves the open page %s",
+    async (_, first, catalogIncomplete, reads) => {
+      h.generations.mockImplementation(async () => ({ ...generations(), catalogIncomplete }))
+      h.chainRecord = first
+      const rt = harness()
+      rt.start()
+      rt.contracts()
+      await flush()
+      h.chainRecord = NEW
+      await vi.advanceTimersByTimeAsync(first === NEW ? 0 : 60_000)
+      expect(h.reload).toHaveBeenCalledWith(expect.anything(), NEW)
+      expect(stash.get(MARK)).toBe(NEW)
+      expect(h.generations).toHaveBeenCalledTimes(reads)
+    },
+  )
 })

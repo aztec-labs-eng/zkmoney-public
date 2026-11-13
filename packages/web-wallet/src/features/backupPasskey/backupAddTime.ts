@@ -11,6 +11,7 @@ import {
   UNREAD,
   useStore,
   type BackupAddRelease,
+  type BackupRotationRecord,
   type BurnDurations,
   type QueryFactory,
   type WithdrawalPhase,
@@ -128,4 +129,12 @@ export function useBackupAddRelease(
   if (state.status !== "ready") return undefined
   // A wait before landing counts from now, so one whose refresh failed has gone stale.
   return landedBlock === undefined && state.error !== undefined ? undefined : state.value
+}
+
+/** The attempt's funding as the withdrawal tracker has it; each send writes the same row. */
+export function useFundingRow(record: BackupRotationRecord | null): WithdrawalRecord | undefined {
+  const session = useSession()
+  const { records } = useStore(session.withdrawals.list)
+  const localId = record?.fundings.at(-1)?.localId
+  return localId === undefined ? undefined : records.find((row) => row.localId === localId)
 }

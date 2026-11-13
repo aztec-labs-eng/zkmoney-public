@@ -433,6 +433,7 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
       {
         txHash: known.l2TxHash!,
         blockNumber: 42,
+        withdrawalId: `0x${"2a".repeat(32)}`,
         executor: getAddress(WIRED_TUPLE.plainWithdrawalExecutor),
         withdrawalFee: 0n,
         l1Recipient: RECIPIENT,
@@ -443,6 +444,7 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
       {
         txHash: `0x${"0b".repeat(32)}`,
         blockNumber: 50,
+        withdrawalId: `0x${"3a".repeat(32)}`,
         // An executor the bridge no longer lists: the burn's own is what the record keeps.
         executor: RETIRED_EXECUTOR,
         withdrawalFee: 7n,
@@ -489,6 +491,7 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
       {
         txHash: `0x${"0c".repeat(32)}`,
         blockNumber: 60,
+        withdrawalId: `0x${"4a".repeat(32)}`,
         executor: getAddress(WIRED_TUPLE.plainWithdrawalExecutor),
         withdrawalFee: 0n,
         l1Recipient: RECIPIENT,
@@ -507,6 +510,22 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
 
     expect(record?.tokenSymbol).toBe("sUSDS")
     scannedEvents.mockResolvedValue([])
+  })
+
+  it("tells the rescan's caller of each burn its scan sighted for the moves engine", async () => {
+    mockTuple.mockReturnValue(WIRED_TUPLE)
+    const d = deps()
+    const BURN = `0x${"0b".repeat(32)}`
+    scannedEvents.mockImplementationOnce(async (source) => {
+      ;(source as { onSighted?: (txHash: string) => void }).onSighted?.(BURN)
+      return []
+    })
+    const sighted: string[] = []
+    const rescan = rescanWithdrawals({ ...rescanDeps(), onSighted: (tx) => void sighted.push(tx) })
+
+    await rescan(d.wallet, "0xuser", [{ tokenService: d.tokenService }])
+
+    expect(sighted).toEqual([BURN])
   })
 
   it("scans a token again when its pass could not read a burn's executor", async () => {

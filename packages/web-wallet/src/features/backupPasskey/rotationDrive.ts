@@ -36,3 +36,7 @@ export const awaitsApproval = (drive: RotationDrive) =>
   drive.resume?.wait === "approval" ||
   drive.resume?.wait === "declined" ||
   drive.record.attention === "move"
+
+/** Whether a saved add waits on the user's tap to move on. */
+export const approvalWaiting = (drives: ReadonlyMap<string, RotationDrive>) =>
+  [...drives.values()].some((drive) => awaitsApproval(drive) && !drive.approving)
