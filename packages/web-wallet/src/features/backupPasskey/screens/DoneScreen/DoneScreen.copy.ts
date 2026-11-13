@@ -1,6 +1,6 @@
 export default {
   title: "Your account is protected",
-  lead: "If you lose access to your sign-up passkey, you can recover your funds with your backup passkey.",
+  lead: "If you lose access to your sign-up passkey, you can now recover your funds with your backup passkey.",
   keys: "On this account",
   signUp: "Sign-up passkey",
   backup: "Backup passkey",
@@ -11,7 +11,7 @@ export default {
   // The new backup, before the key read lists it.
   added: "Just added",
   // The sign-up passkey when the account's keys could not be read.
-  first: "Your first passkey",
+  first: "Your sign-up passkey",
   securityKey: "Security key",
   cost: "Cost",
   done: "Done",

@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import type { MoveRecord, MoveStore } from "@obsidion/front-core"
+import { moveRecord } from "../../../support/moves"
+
+type FrontCore = typeof import("@obsidion/front-core")
 
 const m = vi.hoisted(() => ({
   records: new Map<string, unknown>(),
-  noted: vi.fn(),
   /** The refund nullifier each L1 transaction ran. */
   ran: new Map<string, string>(),
 }))
@@ -10,6 +13,7 @@ vi.mock("@obsidion/front-core", async () => ({
   bestEffort: (
     await vi.importActual<typeof import("@obsidion/core/errors")>("@obsidion/core/errors")
   ).bestEffort,
+  noteRefundedMoves: (await vi.importActual<FrontCore>("@obsidion/front-core")).noteRefundedMoves,
   OldVersionWithdrawalStorage: class {
     load = async () => {}
     get = (id: string) => m.records.get(id) ?? null
@@ -23,7 +27,6 @@ vi.mock("@obsidion/front-core", async () => ({
       return next
     }
   },
-  noteRefundedSavingsMoves: m.noted,
   SWAP_STUCK_THRESHOLD_MS: 5 * 60 * 1000,
 }))
 vi.mock("../../../../src/config/oxideTuple", () => ({
@@ -37,6 +40,10 @@ vi.mock("../../../../src/config/oxideTuple", () => ({
 }))
 vi.mock("../../../../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
 
+const { createMoveStore, memoryBackend, openDatabase } = await vi.importActual<FrontCore>(
+  "@obsidion/front-core",
+)
+const { refundedMoves } = await import("../../../../src/features/deposit/recovery/refundedMoves")
 const {
   noteSelfRefunded,
   oldVersionRefundOffer,
@@ -45,7 +52,6 @@ const {
 } = await import("../../../../src/features/withdraw/oldVersionWithdrawals")
 
 const TO = `0x${"f1".repeat(20)}`
-const MOVES = {} as never
 const record = {
   id: "w1",
   startTime: 1,
@@ -62,30 +68,67 @@ const record = {
       usd: String(1965n * 10n ** 16n),
       l2TxHash: "0x01",
     },
-    { portal: "0xold", ids: ["b", "c"], usd: String(965n * 10n ** 16n), l2TxHash: "0x02" },
+    {
+      portal: "0xold",
+      ids: ["b", "c"],
+      deposits: [{ leafIndex: "9", amount: "4" }],
+      usd: String(965n * 10n ** 16n),
+      l2TxHash: "0x02",
+    },
   ],
+}
+
+let store: MoveStore
+let MOVES: ReturnType<typeof refundedMoves>
+
+/** An old version's move whose deposit is leaf `leaf` of `amount`. */
+async function retired(id: string, leaf: bigint, amount: bigint) {
+  const moved: MoveRecord = moveRecord({ id, deposit: { inboxIndex: leaf, amount, at: 1 } })
+  await store.apply(id, { type: "migrated", record: moved, at: 2 })
 }
 
 beforeEach(() => {
   m.records = new Map([["w1", record]])
   m.ran = new Map()
-  m.noted.mockReset()
+  store = createMoveStore(openDatabase(memoryBackend()))
+  MOVES = refundedMoves({ moves: store, page: { now: () => 3 } })
 })
 
 describe("following a withdrawal of old-version funds", () => {
   it("stays pending until the portal ran every refund", async () => {
+    await retired("returned", 7n, 1n)
+    // Another rollup's Inbox can hold the same leaf index.
+    await retired("other", 7n, 2n)
     m.ran.set("0xaaa", "a")
     expect(await settleOldVersionWithdrawal({} as never, MOVES, "w1")).toMatchObject({
       phase: "sending",
       refunds: [{ l1TxHash: "0xaaa" }, { ids: ["b", "c"] }],
     })
-    // The Savings moves whose deposits the refund returned end as recovered.
-    expect(m.noted).toHaveBeenCalledWith(MOVES, [{ leafIndex: "7", amount: "1" }], TO, "0xaaa")
+    // The move whose deposit the refund returned ends as recovered.
+    expect(await store.get("returned")).toMatchObject({
+      phase: "recovered",
+      recoveredTo: TO,
+      l1: { recoveryTx: "0xaaa" },
+    })
+    expect((await store.get("other"))?.phase).toBe("migrated")
 
     m.ran.set("0xbbb", "c")
     expect(await settleOldVersionWithdrawal({} as never, MOVES, "w1")).toMatchObject({
       phase: "done",
       refunds: [{ l1TxHash: "0xaaa" }, { l1TxHash: "0xbbb" }],
+    })
+  })
+
+  it("saves a refund that ran on L1 while the moves cannot be read", async () => {
+    // A store saved by a later build does not open.
+    const unreadable = createMoveStore(
+      openDatabase(memoryBackend(new Map([["acct/meta/moves", "9"]]))),
+    )
+    vi.spyOn(console, "warn").mockImplementation(() => {})
+    m.ran.set("0xaaa", "a")
+    const moves = refundedMoves({ moves: unreadable, page: { now: () => 3 } })
+    expect(await settleOldVersionWithdrawal({} as never, moves, "w1")).toMatchObject({
+      refunds: [{ l1TxHash: "0xaaa" }, { ids: ["b", "c"] }],
     })
   })
 
@@ -150,6 +193,7 @@ describe("processing an old-version withdrawal manually", () => {
   })
 
   it("ends the withdrawal once the user sent its last refund, even after L2 dropped its broadcast", async () => {
+    await retired("returned", 9n, 4n)
     // The run that sent it stopped before it saved its last send.
     const { allSent: _, ...stopped } = record
     m.records.set("w1", {
@@ -166,18 +210,7 @@ describe("processing an old-version withdrawal manually", () => {
         refunds: [{ l1TxHash: "0xaaa" }, { l1TxHash: "0xself", dropped: undefined }],
       },
     )
-    expect(m.noted).toHaveBeenCalledWith(MOVES, [], TO, "0xself")
-  })
-
-  it("saves a refund that ran on L1 while the Savings moves cannot be read", async () => {
-    m.noted.mockRejectedValue(new Error("moves unreadable"))
-    m.ran.set("0xaaa", "a")
-    expect(await settleOldVersionWithdrawal({} as never, MOVES, "w1")).toMatchObject({
-      refunds: [{ l1TxHash: "0xaaa" }, { ids: ["b", "c"] }],
-    })
-    expect(await noteSelfRefunded(MOVES, "w1", record.refunds[1] as never, "0xself")).toMatchObject(
-      { phase: "done", refunds: [{ l1TxHash: "0xaaa" }, { l1TxHash: "0xself" }] },
-    )
+    expect(await store.get("returned")).toMatchObject({ phase: "recovered", recoveredTo: TO })
   })
 
   it("keeps a refund the user sent counted when a check that read L2 before it lands after", async () => {

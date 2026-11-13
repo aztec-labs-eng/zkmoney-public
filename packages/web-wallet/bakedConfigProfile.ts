@@ -1,13 +1,17 @@
 import { createHash } from "node:crypto"
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
+import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import type { Plugin } from "vite"
 import {
   ConfigProfileError,
   fetchConfigProfile,
+  parseServedFeatures,
   parseServedProfile,
   resolveWalletProfileDocument,
   type ConfigProfile,
 } from "@obsidion/config-client"
+import { WalletError } from "@obsidion/core/errors"
 import { assertProfilePolicy, parseNetwork } from "./src/config/profilePolicy.js"
 
 /**
@@ -22,6 +26,8 @@ import { assertProfilePolicy, parseNetwork } from "./src/config/profilePolicy.js
 
 export const BAKED_PROFILE_MODULE_ID = "virtual:baked-config-profile"
 const RESOLVED_ID = "\0" + BAKED_PROFILE_MODULE_ID
+export const BAKED_FEATURES_MODULE_ID = "virtual:baked-features"
+const RESOLVED_FEATURES_ID = "\0" + BAKED_FEATURES_MODULE_ID
 
 export interface BakedProfileStamp {
   profileId: string
@@ -121,6 +127,45 @@ async function fetchProfile(
   }
 }
 
+export interface BakedFeatures {
+  payload: string
+  stamp: { profileId: string; publishedAt: string | null; sha256: string }
+}
+
+/** Where the committed features documents are: `<profileId>.json`, as the store publishes them. */
+export const COMMITTED_FEATURES_DIR = fileURLToPath(
+  new URL("../backend/config-service/features/", import.meta.url),
+)
+
+/**
+ * The committed features document of `VITE_CONFIG_EXPECTED_PROFILE_ID`, byte for byte, from the
+ * build's own commit, with the checks the wallet runs at boot. A profile with no committed document
+ * bakes nothing.
+ */
+export function bakeFeatures(env: Env, dir = COMMITTED_FEATURES_DIR): BakedFeatures | undefined {
+  const profileId = env.VITE_CONFIG_EXPECTED_PROFILE_ID
+  if (!profileId) return undefined
+  const file = join(dir, `${profileId}.json`)
+  if (!existsSync(file)) return undefined
+  const payload = readFileSync(file, "utf8")
+  const expected = { profileId, network: parseNetwork(env.VITE_NETWORK) }
+  let served: ReturnType<typeof parseServedFeatures>
+  try {
+    served = parseServedFeatures(JSON.parse(payload), { expected })
+  } catch (e) {
+    throw new WalletError("config.invalid", `${file}: ${(e as Error).message}`, { cause: e })
+  }
+  const { document } = served
+  return {
+    payload,
+    stamp: {
+      profileId: document.profileId,
+      publishedAt: document.publishedAt ?? null,
+      sha256: createHash("sha256").update(payload).digest("hex"),
+    },
+  }
+}
+
 /**
  * The virtual module's source. `JSON.parse` of a string literal, never an object literal: `meta`
  * accepts arbitrary keys, and an own `__proto__` key in a literal would become the prototype.
@@ -138,6 +183,7 @@ export function bakedConfigProfile(options: BakedConfigProfileOptions = {}): Plu
   let env: Env = {}
   let command: "build" | "serve" = "serve"
   let baked: BakedProfile | undefined
+  let bakedFeatures: BakedFeatures | undefined
 
   return {
     name: "obsidion-baked-config-profile",
@@ -152,12 +198,23 @@ export function bakedConfigProfile(options: BakedConfigProfileOptions = {}): Plu
       } catch (e) {
         throw new Error(`cannot bake the config profile: ${(e as Error).message}`)
       }
+      try {
+        bakedFeatures = bakeFeatures(env)
+      } catch (e) {
+        throw new WalletError(
+          "config.invalid",
+          `cannot bake the features document: ${(e as Error).message}`,
+          { cause: e },
+        )
+      }
     },
     resolveId(id) {
       if (id === BAKED_PROFILE_MODULE_ID) return RESOLVED_ID
+      if (id === BAKED_FEATURES_MODULE_ID) return RESOLVED_FEATURES_ID
     },
     load(id) {
       if (id === RESOLVED_ID) return renderBakedProfileModule(baked?.payload)
+      if (id === RESOLVED_FEATURES_ID) return renderBakedProfileModule(bakedFeatures?.payload)
     },
     // What this build baked, so a deploy or an operator can see what a bundle carries.
     generateBundle() {
@@ -171,6 +228,7 @@ export function bakedConfigProfile(options: BakedConfigProfileOptions = {}): Plu
             VITE_CONFIG_EXPECTED_PROFILE_ID: env.VITE_CONFIG_EXPECTED_PROFILE_ID ?? "",
             VITE_DESKTOP_BUILD: env.VITE_DESKTOP_BUILD ?? "",
             bakedProfile: baked?.stamp ?? null,
+            bakedFeatures: bakedFeatures?.stamp ?? null,
           },
           null,
           2,

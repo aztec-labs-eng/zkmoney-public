@@ -8,7 +8,7 @@ import {
   FactBox,
   InfoBox,
   KeyStatusRow,
-  NextStepsDisclosure,
+  NextSteps,
   SheetCard,
   SheetLink,
   SheetShell,
@@ -128,7 +128,7 @@ export const Intro: Story = {
             { label: "Time", value: "Up to 45 min" },
           ]}
         />
-        <NextStepsDisclosure
+        <NextSteps
           title="What happens next?"
           steps={[
             { label: "Save the backup", detail: "On your phone or a security key" },
@@ -197,15 +197,8 @@ export const Approve: Story = {
     title: "Approve with This Mac",
     lead: "Your backup's saved. Now confirm it with the passkey you signed in with.",
     primary: { label: "Approve with This Mac", onClick: noop },
-    children: (
-      <StepTracker
-        label="Adding a backup"
-        progress="Step 2 of 4"
-        steps={tracker(2, {
-          detail: "When your browser asks, pick your sign-up passkey, not the new one",
-        })}
-      />
-    ),
+    note: "When your browser asks, pick your sign-up passkey, not the new one",
+    children: <StepTracker label="Adding a backup" progress="Step 2 of 4" steps={tracker(2)} />,
   },
 }
 
@@ -214,7 +207,7 @@ export const Adding: Story = {
   args: {
     hero: "key",
     title: "Adding your backup",
-    lead: "This can take up to 40 min. Go ahead and close the tab. We'll keep working on it.",
+    lead: "This can take up to 40 min. You can close the tab. We'll keep working on it.",
     primary: { label: "Close", onClick: noop, style: "plain" },
     children: (
       <StepTracker
@@ -248,7 +241,7 @@ export const Done: Story = {
   args: {
     hero: "success",
     title: "Your account is protected",
-    lead: "If you lose access to your sign-up passkey, you can recover your funds with your backup passkey.",
+    lead: "If you lose access to your sign-up passkey, you can now recover your funds with your backup passkey.",
     primary: { label: "Done", onClick: noop },
     children: (
       <>

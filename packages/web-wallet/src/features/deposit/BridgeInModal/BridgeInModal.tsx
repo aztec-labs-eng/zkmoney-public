@@ -8,7 +8,7 @@ import {
   type BridgeInQuote,
   type BridgeInQuoteRequest,
 } from "@obsidion/front-core"
-import type { ConfigBridge } from "@obsidion/config-client"
+import type { AcrossBridge } from "@obsidion/config-client"
 import { GradientText } from "@obsidion/web-ds"
 import { CornerButton } from "../../../ui/flow/CornerButton/CornerButton"
 import { Modal } from "../../../ui/Modal"
@@ -48,6 +48,7 @@ import { fmt } from "../../../lib/fmt"
 import copy from "../sendFromWallet.copy"
 import { UNREAD } from "../../fees/highFees"
 import bridgeCopy from "./BridgeInModal.copy"
+import brandCopy from "../../../ui/brand/brand.copy"
 import type { BridgeInStart } from "../depositStart"
 import { useScreenFlow } from "../../../ui/useScreenFlow"
 import { openBridgeInFlow } from "./bridgeInFlow"
@@ -103,7 +104,7 @@ export function BridgeInModal({
   onClose,
   start,
 }: {
-  bridge: ConfigBridge
+  bridge: AcrossBridge
   /** The connected account; none once the wallet left, until one connects again. */
   account: Address | null
   /** The connected wallet: set, the From row connects one when none is. */
@@ -572,7 +573,7 @@ export function BridgeInModal({
             <OriginTokenIcon
               symbol={origin.symbol}
               coins={coins}
-              chain={{ chainId: route.chain.chainId, name: chainName }}
+              chain={{ id: route.chain.chainId, name: chainName }}
             />
           ),
           symbol: origin.symbol,
@@ -599,9 +600,9 @@ export function BridgeInModal({
           ? { error: copy.quoteFailed }
           : "unknown",
         asset: {
-          icon: <CoinIcon token={settlement ?? coins[0]} size={32} />,
+          icon: <CoinIcon token={settlement ?? coins[0]} size={32} badge="brand" />,
           symbol: settlement?.symbol ?? "",
-          chain: l1ChainName,
+          chain: brandCopy.name,
         },
       }}
       errors={[typedError, short && copy.short].filter((e): e is string => !!e)}
@@ -654,7 +655,7 @@ export function BridgeInModal({
       icon={
         <CoinIcon
           token={originCoin ?? landing}
-          chain={route && { chainId: route.chain.chainId, name: chainName }}
+          badge={route && { id: route.chain.chainId, name: chainName }}
         />
       }
       title={title}
@@ -671,7 +672,7 @@ export function BridgeInModal({
           : [
               {
                 label: (settlement ?? landing).symbol,
-                icon: <CoinIcon token={settlement ?? landing} size={16} badge={false} />,
+                icon: <CoinIcon token={settlement ?? landing} size={16} />,
               },
             ]),
       ]}
@@ -682,7 +683,7 @@ export function BridgeInModal({
       feeInfo={feeInfo(quote)}
       totalUsd={totalValue(quote) ?? bridgeCopy.pending}
       network={{
-        hops: [chainName, l1ChainName],
+        hops: [chainName, brandCopy.name],
         arrivesInMinutes: Math.max(1, Math.ceil(quote.fillSeconds / 60) + (depositMinutes ?? 0)),
       }}
       callout={sending ? copy.approve : undefined}
@@ -723,7 +724,6 @@ export function BridgeInModal({
       record={record}
       coins={coins}
       chainName={recordChain?.name ?? chainName}
-      l1ChainName={l1ChainName}
       arriving={landedText(BigInt(record.outputAmount))}
       payee={toLabel}
       fillMinutes={quote ? Math.max(1, Math.ceil(quote.fillSeconds / 60)) : undefined}

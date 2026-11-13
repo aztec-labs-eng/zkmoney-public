@@ -107,6 +107,9 @@ export class FakeL1 {
   readonly symbols = new Map<string, string>()
   /** Each ERC-4626 vault's assets per whole share, by block. */
   readonly sharePrices = new Map<string, (block: bigint) => bigint>()
+  readonly vaultAssets = new Map<string, Address>()
+  /** A contract answers no call at a block before this one: it has no code there. */
+  readonly deployedAt = new Map<string, bigint>()
   readonly client: PublicClient
   private readonly logs: Log[] = []
   private readonly balances = new Map<string, bigint>()
@@ -154,11 +157,17 @@ export class FakeL1 {
     this.decimals.set(lower(address), decimals)
   }
 
-  /** An ERC-4626 vault whose whole share redeems for `priceAt(block)` of its asset. */
-  vault(address: Address, decimals: number, priceAt: (block: bigint) => bigint): void {
+  /** An ERC-4626 vault of `asset` whose whole share redeems for `priceAt(block)` of it. */
+  vault(
+    address: Address,
+    decimals: number,
+    priceAt: (block: bigint) => bigint,
+    asset: Address,
+  ): void {
     this.abis.set(lower(address), [...erc20Abi, ...erc4626Abi] as Abi)
     this.decimals.set(lower(address), decimals)
     this.sharePrices.set(lower(address), priceAt)
+    this.vaultAssets.set(lower(address), asset)
   }
 
   row(token: Address, intent: number, row: TableRow): void {
@@ -315,7 +324,7 @@ export class FakeL1 {
   private answer(to: Address, data: Hex, block = this.head): Hex {
     const target = lower(to)
     const abi = this.abis.get(target)
-    if (!abi) return "0x"
+    if (!abi || block < (this.deployedAt.get(target) ?? 0n)) return "0x"
     const { functionName, args = [] } = decodeFunctionData({ abi, data })
     const result = this.read(target, functionName, args as readonly unknown[], block)
     return encodeFunctionResult({ abi, functionName, result } as never)
@@ -337,6 +346,8 @@ export class FakeL1 {
         return this.balanceOf(args[0] as Address)
       case "getCurrentBlockTimestamp":
         return this.timeOf(this.head)
+      case "asset":
+        return this.vaultAssets.get(target)
       case "convertToAssets": {
         const priceAt = this.sharePrices.get(target)!
         return ((args[0] as bigint) * priceAt(block)) / 10n ** BigInt(this.decimals.get(target)!)

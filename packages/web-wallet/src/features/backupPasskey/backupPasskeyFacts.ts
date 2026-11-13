@@ -5,7 +5,7 @@ import {
   backupLinks,
   FUNDING_STATUS,
   fundingFits,
-  isSavingsMoveSettled,
+  isMoveSettled,
   operationIndex,
   unreadDeposits,
   useAfter,
@@ -20,7 +20,7 @@ import {
   type OperationRecord,
   type PaylinkRecord,
   type RecordSet,
-  type SavingsMoveRecord,
+  type MoveRecord,
   type WithdrawalRecord,
   serviceStatus,
 } from "@obsidion/front-core"
@@ -37,7 +37,6 @@ import { useSession, type Session } from "../../session/session"
 import { useOldVersionHoldings } from "../migration/oldVersionBalance"
 import { useUpgradeLock } from "../migration/upgradeLock"
 import { unlockedSessionKeys } from "../registration/registrationResume"
-import { useSavingsMovesReplayed } from "../savings/savingsTasks"
 import { gatedLinks } from "./backupEntryGate"
 import { useWithdrawals } from "../withdraw/useWithdrawals"
 import { moveCount, readMoveBalances, type MoveBalance } from "./backupMoveTokens"
@@ -47,7 +46,11 @@ export interface ChainFacts {
   routeLive: boolean
   balance: bigint
   fundingAmount: bigint
+  /** The part of the funding that comes back once the backup is active; none without a route. */
+  credited: bigint
   chunk: ChunkFit
+  /** Whether one transfer from Main Account funds `amount`, such as the funding with a tip. */
+  fits: (amount: bigint) => boolean
   /** A move plan exists over every balance the add moves. */
   plan: boolean
   /** How many sponsored transfers the move takes, at most, Savings' shares included. */
@@ -82,11 +85,14 @@ export function chainFacts(
     () => moveCount([{ shape: withNotes(shape, refunds), cap }, ...others]),
     undefined,
   )
+  const fit = (at: bigint) => fundingFits(at, cap, shape, deposits)
   return {
     routeLive: funding !== undefined,
     balance: shape.balance,
     fundingAmount: amount,
-    chunk: fundingFits(amount, cap, shape, deposits),
+    credited: funding?.credited ?? 0n,
+    chunk: fit(amount),
+    fits: (at) => fit(at).kind === "fits",
     plan: moves !== undefined,
     moves: moves ?? 0,
     ...(funding && { quote: backupAddFees(funding) }),
@@ -163,21 +169,32 @@ function useBackupLinks(
 export const withdrawalInFlight = (records: readonly Pick<WithdrawalRecord, "phase">[]) =>
   records.some((record) => !WITHDRAWAL_TERMINAL_PHASES.has(record.phase))
 
+/** Move burns that funded something and no move carries yet: the replay has not rebuilt them. */
+export function unadoptedBurns(
+  moves: readonly MoveRecord[],
+  burns: readonly WithdrawalRecord[],
+): number {
+  const local = new Set(moves.map((move) => move.withdrawalLocalId))
+  const replayed = new Set(moves.map((move) => move.replayedFrom?.toLowerCase()))
+  return burns.filter(
+    (burn) =>
+      (!!burn.skyMove || !!burn.vaultMove) &&
+      burn.phase !== "failed" &&
+      !local.has(burn.localId) &&
+      !replayed.has(burn.l2TxHash?.toLowerCase()),
+  ).length
+}
+
 /**
- * Whether a Savings move has yet to land. A move whose burn failed funded nothing, and one stranded
- * on an old version can't finish here, so waiting on either would block the add for good. A Sky
- * burn a rescan rebuilt has no move record until the settle pass adopts it, so it counts as moving.
+ * Whether a Savings move has yet to land. A settled move never blocks the add: a failed burn funded
+ * nothing, and a stranded one can't finish here. A Sky burn the replay has not rebuilt yet counts
+ * as moving.
  */
 export function savingsMoving(
-  moves: readonly SavingsMoveRecord[],
+  moves: readonly MoveRecord[],
   burns: readonly WithdrawalRecord[],
 ): boolean {
-  const byId = new Map(burns.map((burn) => [burn.localId, burn]))
-  const adopted = new Set(moves.map((move) => move.withdrawalLocalId))
-  return (
-    moves.some((move) => !isSavingsMoveSettled(move, byId.get(move.withdrawalLocalId))) ||
-    burns.some((burn) => !!burn.skyMove && burn.phase !== "failed" && !adopted.has(burn.localId))
-  )
+  return moves.some((move) => !isMoveSettled(move)) || unadoptedBurns(moves, burns) > 0
 }
 
 export type EntryFacts = ChainFacts & {
@@ -218,9 +235,7 @@ export function useBackupEntryFacts(active: boolean): {
   const upgrade = useUpgradeLock(identity).state
   const links = useBackupLinks(identity, typeof chain === "string" ? undefined : chain.token)
   const synced = useAfter(useSession().milestones, READ_AFTER)
-  const savingsMoves = useStore(useSession().savingsMoves.view)
-  const replayed = useSavingsMovesReplayed()
-  const adopted = useStore(useSession().savingsSettleDue, (due) => due.unadopted === 0)
+  const moves = useStore(useSession().moves.view)
   // A deposit landing while Passkeys is open changes the spend shape, so the chain is read again.
   const balance = useStore(useSession().balances.view, (view) => view.main?.atomic)
   // eslint-disable-next-line local/effect-hook -- debt
@@ -249,9 +264,8 @@ export function useBackupEntryFacts(active: boolean): {
   if (typeof chain === "string") return { facts: chain, refresh }
   const open = gatedLinks({
     links,
-    replayed,
-    adopted,
-    savingsMoves,
+    adopted: unadoptedBurns(moves.records, withdrawals.records) === 0,
+    moves,
     withdrawalsHydrated: withdrawals.hydrated,
     holdingsPending: holdings.pending,
     synced,
@@ -262,7 +276,7 @@ export function useBackupEntryFacts(active: boolean): {
       ...chainFacts({ ...chain, refunds: open.open.map((row) => row.amountAtomic) }),
       links: open.open.length,
       ...(open.hold && { linkHold: open.hold }),
-      savingsMoving: savingsMoving(savingsMoves.records, withdrawals.records),
+      savingsMoving: savingsMoving(moves.records, withdrawals.records),
       withdrawalInFlight: withdrawalInFlight(withdrawals.records),
       historicBalance: holdings.total > 0n || upgrade === "held",
     },

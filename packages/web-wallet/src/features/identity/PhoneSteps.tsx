@@ -111,15 +111,21 @@ function WarningMark() {
 export function KeyWarningLine({
   warning,
   testId = "phone-steps-key-warning",
+  link = false,
 }: {
   warning: { label: string; note: string; models?: string }
   testId?: string
+  /** Drawn as a help link, beside another one in a picker card. */
+  link?: boolean
 }) {
   return (
     <TipRow
       testId={testId}
-      className="ww-phone-steps__tiprow"
-      mark={<Icon name="info-circle" size={14} />}
+      className={
+        link ? "ww-phone-steps__tiprow ww-phone-steps__tiprow--link" : "ww-phone-steps__tiprow"
+      }
+      {...(link && { labelClassName: "zkm-sheet-link" })}
+      mark={link ? null : <Icon name="info-circle" size={14} />}
       label={warning.label}
     >
       <strong>{warning.label}</strong>

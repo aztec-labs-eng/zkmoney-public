@@ -10,18 +10,22 @@ import type { Address, Hex } from "viem"
 import {
   passThroughScreener,
   ScreeningProvider,
-  type SavingsMoveRecord,
+  type MoveQuote,
+  type MoveRecord,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
+import { l1ExitChannel, type MoveSendWatch } from "../../../src/features/withdraw/swapRecovery"
+import type { Session } from "../../../src/session/session"
 import { useWalletPrompt } from "../../../src/session/walletPrompt"
+import { moveRecord } from "../../support/moves"
 import { testScreenings } from "../../support/page"
 const pace = createPace()
 
 const h = vi.hoisted(() => ({
   executeSwapWithdrawal: vi.fn(),
   recoverSwapWithdrawal: vi.fn(),
-  runSkyEscrowMove: vi.fn(),
-  recoverSkyEscrowMove: vi.fn(),
+  recoverMove: vi.fn(),
+  runMove: vi.fn(),
   showReportableError: vi.fn(),
 }))
 
@@ -39,8 +43,6 @@ vi.mock("../../../src/features/withdraw/swapRecovery", async (importOriginal) =>
   ...(await importOriginal<typeof import("../../../src/features/withdraw/swapRecovery")>()),
   executeSwapWithdrawal: h.executeSwapWithdrawal,
   recoverSwapWithdrawal: h.recoverSwapWithdrawal,
-  runSkyEscrowMove: h.runSkyEscrowMove,
-  recoverSkyEscrowMove: h.recoverSkyEscrowMove,
 }))
 vi.mock("../../../src/lib/analytics", () => ({
   fireEvent: vi.fn(),
@@ -127,6 +129,7 @@ function SlotProbe() {
 describe("SwapExitModal", () => {
   let container: HTMLDivElement
   let root: Root
+  let session: Session
 
   const button = (title: RegExp) =>
     Array.from(container.querySelectorAll("button")).find((b) => title.test(b.textContent ?? ""))
@@ -135,13 +138,14 @@ describe("SwapExitModal", () => {
 
   const render = async (
     reason: "stuck" | "unswappable",
-    rec: WithdrawalRecord = record,
-    move?: SavingsMoveRecord,
+    rec: WithdrawalRecord | undefined = record,
+    move?: { record: MoveRecord; run: boolean },
   ) => {
+    const props = move ? { record: rec, move } : { record: rec ?? record }
     await act(async () => {
       root.render(
         <ScreeningProvider screenings={testScreenings(passThroughScreener)}>
-          <SwapExitModal record={rec} reason={reason} move={move} pace={pace} onClose={vi.fn()} />
+          <SwapExitModal {...props} reason={reason} pace={pace} onClose={vi.fn()} />
           <SlotProbe />
         </ScreeningProvider>,
       )
@@ -152,13 +156,26 @@ describe("SwapExitModal", () => {
     })
   }
 
+  /** Types the recovery's destination, and lets its screening settle. */
+  const typeDestination = async (typed: string) => {
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Recover DAI to"]')!
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!
+      setter.call(input, typed)
+      input.dispatchEvent(new Event("input", { bubbles: true }))
+    })
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+  }
+
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     h.executeSwapWithdrawal.mockResolvedValue(L1_TX)
     h.recoverSwapWithdrawal.mockResolvedValue(L1_TX)
-    h.runSkyEscrowMove.mockResolvedValue(L1_TX)
-    h.recoverSkyEscrowMove.mockResolvedValue(L1_TX)
-    openTestSession()
+    h.recoverMove.mockResolvedValue(L1_TX)
+    h.runMove.mockResolvedValue(L1_TX)
+    session = openTestSession({ moveCommands: { recover: h.recoverMove, run: h.runMove } })
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
@@ -257,18 +274,14 @@ describe("SwapExitModal", () => {
   })
 
   describe("a Savings move whose escrow nobody ran", () => {
-    const move = {
+    const move = moveRecord({
       direction: "out",
-      withdrawalLocalId: "w1",
-      escrow: `0x${"e1".repeat(20)}`,
-      nonce: `0x${"01".repeat(32)}`,
-      recipientCommitment: `0x${"02".repeat(32)}`,
-      amount: "10",
-      startTime: 0,
-      value: (105n * 10n ** 18n).toString(),
-    } as SavingsMoveRecord
-    const burn = { ...record, phase: "done", recipient: move.escrow } as WithdrawalRecord
-    beforeEach(() => render("stuck", burn, move))
+      amount: 10n,
+      quote: { expectedOut: 105n * 10n ** 18n } as MoveQuote,
+    })
+    const escrow = move.rail === "skyEscrow" ? move.escrow.address : undefined
+    const burn = { ...record, phase: "done", recipient: escrow } as WithdrawalRecord
+    beforeEach(() => render("stuck", burn, { record: move, run: true }))
 
     it("offers the run first, and recovery to an address the user types", () => {
       expect(container.textContent).toContain("Move taking too long")
@@ -282,10 +295,16 @@ describe("SwapExitModal", () => {
 
     it("runs the escrow from the button and says where the funds went", async () => {
       await act(async () => button(/^Run the move now$/)!.click())
-      expect(h.runSkyEscrowMove).toHaveBeenCalledWith(burn, expect.anything())
+      expect(h.runMove).toHaveBeenCalledWith(move.id, expect.anything())
       expect(h.executeSwapWithdrawal).not.toHaveBeenCalled()
       expect(container.textContent).toContain("Move sent on")
       expect(container.textContent).toMatch(/Sent on to Main Account/)
+    })
+
+    it("offers only recovery once the relayer dropped a move this device did not burn", async () => {
+      await render("stuck", undefined, { record: move, run: false })
+      expect(button(/^Run the move now$/)).toBeUndefined()
+      expect(button(/^Recover DAI/)).toBeTruthy()
     })
 
     it("recovers the escrow's DAI to the typed address", async () => {
@@ -300,13 +319,54 @@ describe("SwapExitModal", () => {
         await new Promise((r) => setTimeout(r, 0))
       })
       await act(async () => button(/^Recover DAI to/)!.click())
-      expect(h.recoverSkyEscrowMove).toHaveBeenCalledWith(
-        expect.anything(),
-        move,
-        burn,
-        expect.objectContaining({ destination: typed }),
-      )
+      expect(h.recoverMove).toHaveBeenCalledWith(move.id, typed, expect.anything())
+      expect(h.executeSwapWithdrawal).not.toHaveBeenCalled()
       expect(container.textContent).toContain("Move recovered")
+    })
+
+    it("shows where the browser's page opened while the move's run waits on it", async () => {
+      const page = "http://127.0.0.1:4173/l1-submit#run"
+      h.runMove.mockImplementationOnce((_id: string, watch?: MoveSendWatch) => {
+        watch?.onStage?.("awaiting-browser")
+        watch?.onHelperOpened?.(page)
+        return new Promise<never>(() => {})
+      })
+      await act(async () => button(/^Run the move now$/)!.click())
+      expect(container.textContent).toContain(page)
+    })
+
+    it("shows the burned amount on the desktop helper page the move's run opens", async () => {
+      const shown: string[][] = []
+      vi.stubGlobal("__ZKMONEY_DESKTOP_BRIDGE__", { l1SubmitPath: "/desktop/l1-submit" })
+      // The launcher takes the request and never answers: the run stays open.
+      vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => {
+        const { display } = JSON.parse(String(init?.body)) as { display: { lines: string[][] } }
+        shown.push(display.lines.map(([, value]) => value!))
+        return new Promise<Response>(() => {})
+      })
+      h.runMove.mockImplementationOnce(async (_id: string, watch?: MoveSendWatch) => {
+        const paid = { label: "Escrow", address: escrow! }
+        const channel = await l1ExitChannel(session, "Run", paid, watch)
+        return channel.sendTransaction(escrow!, "0x")
+      })
+      await act(async () => button(/^Run the move now$/)!.click())
+      vi.unstubAllGlobals()
+      expect(shown[0]).toContain([burn.amount, burn.tokenSymbol].join(" "))
+    })
+
+    it("frees the slot once the move's recovery is confirming, before the receipt lands", async () => {
+      let stage: MoveSendWatch["onStage"]
+      h.recoverMove.mockImplementationOnce((_id: string, _to: Address, watch?: MoveSendWatch) => {
+        stage = watch?.onStage
+        stage?.("signing")
+        return new Promise<never>(() => {})
+      })
+      await render("stuck", undefined, { record: move, run: false })
+      await typeDestination(`0x${"55".repeat(20)}`)
+      await act(async () => button(/^Recover DAI to/)!.click())
+      expect(slotOpen()).toBe("true")
+      await act(async () => stage?.("confirming"))
+      expect(slotOpen()).toBe("false")
     })
   })
 

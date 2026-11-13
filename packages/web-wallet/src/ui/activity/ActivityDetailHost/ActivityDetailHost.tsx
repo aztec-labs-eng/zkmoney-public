@@ -22,8 +22,9 @@ import {
   registrationFor,
   registrationTagForDeposit,
   savingsMoveEta,
-  savingsMoveExitOffer,
-  savingsMoveOfWithdrawal,
+  findMoveItem,
+  moveExitOffer,
+  selectMoveRecoverable,
   tagPriceOf,
   useStore,
   withdrawalExit,
@@ -37,7 +38,7 @@ import {
   type OldVersionWithdrawal,
   type SipaProcessingState,
   type SavingsMoveEta,
-  type SavingsMoveRecord,
+  type MoveRecord,
   type SipaDeposit,
   type SwapExitReason,
   type UpgradePricing,
@@ -59,7 +60,7 @@ import { BridgeInDetailModal } from "../../../features/deposit/BridgeInDetailMod
 import { DepositExitModal } from "../../../features/deposit/DepositExitModal/DepositExitModal"
 import { settlementDecimals, useDepositTokens } from "../../../features/sipa/loadDepositFacts"
 import { useSavedL1Wallets } from "../../../session/savedL1Wallets"
-import { profileBridge } from "../../../session/walletChains"
+import { acrossBridge } from "../../../session/walletChains"
 import { upgradeRunTitle } from "../../../features/migration/upgradeCopy"
 import { upgradeRunAccount } from "../../../features/migration/upgradeRunAccount"
 import { RegistrationDepositDetailModal } from "../../../features/onboarding/RegistrationDepositDetailModal/RegistrationDepositDetailModal"
@@ -73,12 +74,10 @@ import { CancelRequestLinkModal } from "../../../features/requests/CancelRequest
 import { IncomingRequestDetailModal } from "../../../features/requests/IncomingRequestDetailModal"
 import { SharePaylinkModal } from "../../../features/requests/SharePaylinkModal"
 import { SavingsMoveDetailModal } from "../../../features/savings/SavingsMoveDetailModal"
-import {
-  savingsFinalizeDeployment,
-  useSavingsAsset,
-} from "../../../features/savings/savingsGateway"
+import { moveFinalizeDeployment } from "../../../features/savings/movesSession"
 import { useSavingsMoveTiming } from "../../../features/savings/savingsMoveTiming"
 import { OldVersionRefundExitModal } from "../../../features/withdraw/OldVersionRefundExitModal"
+import { useMoveSharePrice } from "../../../features/savings/useSavings"
 import { SwapExitModal } from "../../../features/withdraw/SwapExitModal"
 import { useWithdrawals } from "../../../features/withdraw/useWithdrawals"
 import { WithdrawalExitModal } from "../../../features/withdraw/WithdrawalExitModal"
@@ -151,7 +150,7 @@ type Exit =
   /** `savings`: a move out's burn, finalized on the Savings deployment and its co-signer. */
   | { kind: "withdrawal"; record: WithdrawalRecord; savings?: boolean }
   | { kind: "swap"; record: WithdrawalRecord; reason: SwapExitReason }
-  | { kind: "skyEscrow"; move: SavingsMoveRecord; burn: WithdrawalRecord }
+  | { kind: "skyEscrow"; move: MoveRecord; burn?: WithdrawalRecord; run: boolean }
   | { kind: "oldVersion"; record: OldVersionWithdrawal; refund: OldVersionRefund }
   | {
       kind: "linkRecovery"
@@ -167,8 +166,11 @@ type Exit =
 type Sheet =
   | { detail: DetailTarget; notice?: DetailNotice; backRun?: string }
   | { exit: Exit }
-  /** Where a stopped backup attempt's funding is recovered; closing it reopens the funding's sheet. */
-  | { passkeys: DetailTarget }
+  /**
+   * Where a backup passkey add shows its progress, or a stopped one's funding is recovered. Closing
+   * it reopens the sheet it came from, if any.
+   */
+  | { passkeys: { back?: DetailTarget } }
   | null
 
 export interface ActivityHost {
@@ -194,12 +196,13 @@ export interface ActivityHost {
   chainName(chainId: number): string
   copiedLinkId: string | null
   registration?: RegistrationDepositEntry
-  sharePrice?: bigint
+  /** The share price of the holding a move is in. */
+  moveSharePrice(holdingId: string): bigint | undefined
   /** What values an upgrade run in its credited asset. */
   upgradePricing: UpgradePricing
   /** The decimals of the row a deposit of `token` settles on. */
   depositDecimals(token: string | undefined): number | undefined
-  savingsEta(move: SavingsMoveRecord, burn?: WithdrawalRecord): SavingsMoveEta | undefined
+  savingsEta(move: MoveRecord, burn?: WithdrawalRecord): SavingsMoveEta | undefined
 }
 
 // Kept across hot updates: a re-run module's new context would leave mounted rows outside its host.
@@ -258,10 +261,12 @@ export function ActivityDetailHost({
   const { contacts } = useContactDirectory()
   const paylinkDeps = usePaylinkDeps()
   const { checkAgain } = useWithdrawals()
-  const savingsAsset = useSavingsAsset() ?? undefined
-  const savingsPosition = useStore(session.savingsHolding).position
-  const sharePrice = savingsPosition?.sharePrice
-  const settleTask = session.tasks.savingsSettle
+  const savingsLine = useStore(session.savingsLine)
+  const savingsPosition = savingsLine.position
+  const moveSharePrice = useMoveSharePrice()
+  const settleTask = session.tasks.settleMoves
+  const recoverable = useStore(session.recoverableRails)
+  const runnable = useStore(session.runnableRails)
   const depositTokens = useDepositTokens()
   const upgradePricing = useStore(session.upgradePricing)
   const timing = useSavingsMoveTiming()
@@ -305,9 +310,12 @@ export function ActivityDetailHost({
     (target: DetailTarget) => {
       // A sent link's sheet asks the chain whether it was claimed since the last sweep.
       if (target.kind === "tx" && target.item.kind === "link") sweep.recheck()
-      setSheet({ detail: target })
+      const running =
+        target.kind === "withdrawal" &&
+        feed.items.some((i) => i.kind === "withdrawal" && i.id === target.id && i.running)
+      setSheet(running ? { passkeys: {} } : { detail: target })
     },
-    [sweep],
+    [sweep, feed.items],
   )
   const regs = { records: registrations, handle }
 
@@ -347,7 +355,7 @@ export function ActivityDetailHost({
     void declineRequestById(session, id).catch((err) =>
       console.warn("[activity] decline failed:", err),
     )
-  const savingsEta = (move: SavingsMoveRecord, burn?: WithdrawalRecord) =>
+  const savingsEta = (move: MoveRecord, burn?: WithdrawalRecord) =>
     timing ? savingsMoveEta(move, burn, timing, now) : undefined
 
   const exitFor = (record: WithdrawalRecord, offer: WithdrawalExit): Exit =>
@@ -406,13 +414,11 @@ export function ActivityDetailHost({
   ])
 
   // The savings ledger's figure may be off: the console says why, once per change.
-  const { ledger } = feed.savings
+  const { ledger } = savingsLine
   const position = savingsPosition
   const ledgerKey =
     ledger && position
-      ? `${ledger.shares}/${position.shares}/${ledger.excluded
-          .map((e) => e.withdrawalLocalId)
-          .join(",")}`
+      ? `${ledger.shares}/${position.shares}/${ledger.excluded.map((e) => e.moveId).join(",")}`
       : undefined
   // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
@@ -421,14 +427,7 @@ export function ActivityDetailHost({
       console.info(
         `[savings] earnings: the counted moves add up to ${ledger.shares} shares, ${position.shares} held` +
           (ledger.excluded.length
-            ? `; left out: ${ledger.excluded
-                .map(
-                  (e) =>
-                    `${e.withdrawalLocalId} (${e.reason}${
-                      e.backfilling ? ", awaiting its escrow run's receipt" : ""
-                    })`,
-                )
-                .join(", ")}`
+            ? `; left out: ${ledger.excluded.map((e) => `${e.moveId} (${e.reason})`).join(", ")}`
             : ""),
       )
     // Keyed on what the line would say, so it prints once per change.
@@ -472,10 +471,10 @@ export function ActivityDetailHost({
     network: session.network,
     l1ChainId: session.page.config.l1ChainId,
     chainName: (chainId) =>
-      profileBridge(session.page.config)?.chains.find((c) => c.chainId === chainId)?.name ?? "",
+      acrossBridge(session.page.config)?.chains.find((c) => c.chainId === chainId)?.name ?? "",
     copiedLinkId,
     registration: registrationDeposit ?? undefined,
-    sharePrice,
+    moveSharePrice,
     upgradePricing,
     depositDecimals: (token) => settlementDecimals(depositTokens, token),
     savingsEta,
@@ -488,12 +487,13 @@ export function ActivityDetailHost({
   const depositItem = (id: string) => depositDetailItem(feed.bridge, id)
   const burns = feed.savingsCsv.burns
   const moves = feed.savingsCsv.moves
+  const moveItem = (id: string) => findMoveItem([...feed.items, ...feed.savings.items], id)
 
   const modal = (): ReactNode => {
     if (exit) return exitModal(exit)
     if (sheet && "passkeys" in sheet) {
-      const from = sheet.passkeys
-      return <PasskeysSheet onClose={() => open(from)} onLeave={close} />
+      const { back } = sheet.passkeys
+      return <PasskeysSheet onClose={back ? () => open(back) : close} onLeave={close} />
     }
     if (!detail) return null
     switch (detail.kind) {
@@ -538,19 +538,20 @@ export function ActivityDetailHost({
           i.kind === "withdrawal" && i.id === record.localId ? [i] : [],
         )[0]
         const recovery = item?.recovery
-        const cost = item?.cost
+        const fee = item?.fee
         const intent = item?.intent
         return (
           <WithdrawalDetailModal
             record={record}
             intent={intent}
-            amount={withdrawalHeroAmount(record, cost)}
-            cost={cost}
+            amount={withdrawalHeroAmount(record, fee)}
+            fee={fee}
             added={item?.added}
+            running={item?.running}
             recovery={recovery}
             onOpenPasskeys={
-              recovery && recovery.state !== "recovered"
-                ? () => setSheet({ passkeys: detail })
+              (recovery ? recovery.state !== "recovered" : item?.running)
+                ? () => setSheet({ passkeys: { back: detail } })
                 : undefined
             }
             notice={detailNoticeFor(notice, record)}
@@ -631,7 +632,7 @@ export function ActivityDetailHost({
               bridgeIn && {
                 record: bridgeIn,
                 walletName: funder?.name,
-                chainName: profileBridge(session.page.config)?.chains.find(
+                chainName: acrossBridge(session.page.config)?.chains.find(
                   (c) => c.chainId === bridgeIn.originChainId,
                 )?.name,
               }
@@ -665,41 +666,43 @@ export function ActivityDetailHost({
         ) : null
       }
       case "savings": {
-        const burn = burns.get(detail.id)
-        const move =
-          moves.find((m) => m.withdrawalLocalId === detail.id) ??
-          (() => {
-            const derived = burn && savingsMoveOfWithdrawal(burn)
-            return derived ? { ...derived, startTime: burn.startTime } : undefined
-          })()
-        if (!move) return null
-        const offer = burn && savingsMoveExitOffer(move, burn, now)
+        const item = moveItem(detail.id)
+        if (!item) return null
+        const { move, burn } = item
+        const rail = {
+          recoverable: selectMoveRecoverable(move, recoverable),
+          runnable: runnable.has(move.rail),
+        }
+        const offer = moveExitOffer(item, rail, now)
         return (
           <SavingsMoveDetailModal
             move={move}
+            state={item.state}
             burn={burn}
-            sharePrice={sharePrice}
+            sharePrice={moveSharePrice(move.holdingId)}
             eta={savingsEta(move, burn)}
-            onCheckAgain={
-              savingsAsset && settleTask ? () => void session.wake(settleTask) : undefined
-            }
+            onCheckAgain={settleTask ? () => void session.wake(settleTask) : undefined}
             exit={
-              burn && offer
-                ? {
-                    title: offer === "finalize" ? copy.action.finalize : copy.action.runMove,
+              offer === null
+                ? undefined
+                : {
+                    title: {
+                      finalize: copy.action.finalize,
+                      run: copy.action.runMove,
+                      recover: copy.action.recover,
+                    }[offer],
                     onStart: () =>
                       setSheet({
                         exit:
-                          offer === "finalize"
+                          offer === "finalize" && burn
                             ? {
                                 kind: "withdrawal",
                                 record: burn,
                                 savings: move.direction === "out",
                               }
-                            : { kind: "skyEscrow", move, burn },
+                            : { kind: "skyEscrow", move, burn, run: offer === "run" },
                       }),
                   }
-                : undefined
             }
             onWithdraw={() => navigate("/withdraw")}
             onClose={close}
@@ -788,7 +791,7 @@ export function ActivityDetailHost({
             record={sheet.record}
             deployment={
               sheet.savings && walletBuilt
-                ? () => savingsFinalizeDeployment(session, sheet.record)
+                ? () => moveFinalizeDeployment(session, sheet.record)
                 : undefined
             }
             onClose={close}
@@ -797,10 +800,11 @@ export function ActivityDetailHost({
       case "skyEscrow":
         return (
           <SwapExitModal
-            record={burns.get(sheet.burn.localId) ?? sheet.burn}
-            move={
-              moves.find((m) => m.withdrawalLocalId === sheet.move.withdrawalLocalId) ?? sheet.move
-            }
+            record={sheet.burn && (burns.get(sheet.burn.localId) ?? sheet.burn)}
+            move={{
+              record: moves.find((m) => m.id === sheet.move.id) ?? sheet.move,
+              run: sheet.run,
+            }}
             reason="stuck"
             pace={session.page.pace}
             onClose={close}

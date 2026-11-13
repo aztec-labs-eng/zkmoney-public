@@ -122,10 +122,13 @@ export function SpeedRow({
   choice,
   outcome,
   disabled,
+  afterSeconds,
 }: {
   choice: SpeedChoice
   outcome: SpeedOutcome
   disabled?: boolean
+  /** Seconds the trip takes after the release, such as a bridge's leg. */
+  afterSeconds?: number
 }) {
   if (!choice.offer) return choice.loading ? <WithdrawalSpeedChecking /> : null
   return (
@@ -136,6 +139,7 @@ export function SpeedRow({
       settled={choice.settled}
       fasterBlocked={outcome.blocked}
       disabled={disabled}
+      afterSeconds={afterSeconds}
     />
   )
 }

@@ -135,9 +135,14 @@ export function testPage(
   const wallet = createPageWallet({} as never)
   const pace = createPace()
   const visible = memoryStore(true).readonly
-  const query = queries({ pace, visible, now: () => Date.now() })
   const now = () => Date.now()
-  const chain = createPageChain(config, { query, database: testCore().database }, undefined, primed)
+  const query = queries({ pace, visible, now })
+  const chain = createPageChain(
+    config,
+    { query, database: testCore().database, now },
+    undefined,
+    primed,
+  )
   const page: Page = {
     ...testCore(),
     config,
@@ -162,8 +167,8 @@ export function testPage(
     walletPrompt: createWalletPrompt(),
     registrationTurn: createTurn(),
     sponsors: pageSponsors(pageAuth),
-    landingRate: query<[], { apy: undefined }>("landingRate", {
-      load: async () => ({ apy: undefined }),
+    landingRate: query<[], { rate: undefined }>("landingRate", {
+      load: async () => ({ rate: undefined }),
     })(),
     preBoot: createPreBoot(),
     noirWasm,

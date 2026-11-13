@@ -26,7 +26,7 @@ const home = (over: Partial<HomeNudgeFacts>) =>
     busy: false,
     putOffAt: null,
     hiddenForSession: false,
-    awaitsApproval: false,
+    add: undefined,
     moveUnfinished: false,
     ...over,
   })
@@ -89,15 +89,22 @@ describe("balanceThreshold", () => {
 })
 
 describe("homeNudge", () => {
-  it("asks for a waiting add's last approval before anything else, only in a build with the add", () => {
-    expect(home({ awaitsApproval: true, noAddSaved: false })).toEqual({ kind: "finish" })
-    expect(home({ awaitsApproval: true, enabled: false })).toBeUndefined()
+  it("shows a saved add's step before anything else, only in a build with the add", () => {
+    const steps = [
+      { kind: "resume" },
+      { kind: "adding", leftMs: 60_000 },
+      { kind: "finish" },
+    ] as const
+    for (const add of steps) {
+      expect(home({ add, noAddSaved: false })).toEqual(add)
+      expect(home({ add, noAddSaved: false, enabled: false })).toBeUndefined()
+    }
   })
 
   it("asks to go on with a move from the earlier address, after a waiting add and before the rest, in every build", () => {
     const oneDevice = { record: { backupEligible: false }, balance: 1n }
     expect(home({ moveUnfinished: true, ...oneDevice })).toEqual({ kind: "moveFunds" })
-    expect(home({ moveUnfinished: true, awaitsApproval: true })).toEqual({ kind: "finish" })
+    expect(home({ moveUnfinished: true, add: { kind: "resume" } })).toEqual({ kind: "resume" })
     // Account history moves funds in a build without the add too.
     expect(home({ moveUnfinished: true, enabled: false })).toEqual({ kind: "moveFunds" })
   })

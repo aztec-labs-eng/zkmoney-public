@@ -1,8 +1,7 @@
-import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import { InfoBox, StepTracker, type SheetAction, type TrackerStep } from "@obsidion/web-ds"
-import { formatUnits } from "viem"
 import { fmt } from "../../../../lib/fmt"
-import { usdFigure } from "../../../../ui/format"
+import { usdFromCents } from "../../../../ui/format"
+import { addCost } from "../../backupCost"
 import { failureLine, type BackupFailure } from "../../backupFailure"
 import { relandingCopy } from "../../backupPasskeyCopy"
 import type { BackupActions, BackupSaved, Tracked } from "../../backupScreen"
@@ -11,17 +10,11 @@ import styles from "./AddTracker.module.css"
 
 const MINUTE = 60_000
 
-/** Dollars, as the add's Activity row shows them. */
-export const dollars = (atomic: bigint) => usdFigure(formatUnits(atomic, DEFAULT_DECIMALS))
-
 /** Whole minutes, rounded up the way the time left is, so it never reads past its bound. */
 export const minutes = (ms: number) => Math.ceil(ms / MINUTE)
 
 /** The passkey that approves, by the key list's name for it. */
 export const approverOf = ({ approver }: Pick<Tracked, "approver">) => approver ?? copy.yourPasskey
-
-export const approveLabel = (screen: Pick<Tracked, "approver">) =>
-  fmt(copy.approve, { approver: approverOf(screen) })
 
 /**
  * The current step's line. A warning or error is announced as `say`, else as the line itself, so
@@ -91,7 +84,7 @@ export function AddTracker({
   /** What the step asks the user to do. */
   prompt?: StepLine
 }) {
-  const { step, relanding } = screen.progress
+  const { step, stage, relanding } = screen.progress
   const approver = approverOf(screen)
   const kept = screen.failure ? failedLine(screen.failure) : prompt
   const shown = kept ?? (relanding ? RELANDING : line)
@@ -111,13 +104,15 @@ export function AddTracker({
     step > 2
       ? {
           label: fmt(copy.approved, { approver }),
+          // What left the balance, as the pay button named it.
           detail:
             screen.paid === undefined
               ? undefined
-              : fmt(copy.paid, { amount: dollars(screen.paid) }),
+              : fmt(copy.paid, { amount: usdFromCents(addCost(screen.paid).total) }),
           state: "done",
         }
-      : { label: approveLabel(screen), ...at(2) },
+      : // The payment is on this step too, so once approved it names the payment and stays current.
+        { label: stage === "sign" ? fmt(copy.approve, { approver }) : copy.pay, ...at(2) },
     step > 3
       ? { label: copy.confirmed, detail: copy.confirmedDetail, state: "done" }
       : { label: step === 3 ? copy.waiting : copy.wait, ...at(3) },

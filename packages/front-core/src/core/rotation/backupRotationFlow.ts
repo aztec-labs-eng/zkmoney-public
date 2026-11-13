@@ -42,6 +42,7 @@ import {
   type MoveChunkRecord,
   type MoveRun,
   type MoveSend,
+  type TokenAmount,
 } from "../../engine/backupRotations"
 import { bestEffort } from "../../engine/errors"
 import { planMove, type MoveDeposits } from "./planMove"
@@ -745,9 +746,61 @@ export async function rerootRotation(
       c.phase === record.phase ? { reroot: { ...c.reroot, ...fields } } : null,
     )
   }
+  // Read before the switch, so the figure is saved by the time Home counts it.
+  if (!record.reroot?.switched) {
+    const read = await readOneKeyBalances(deps.move)
+    if (read.length > 0) {
+      await save(deps, record, (c) => (c.phase === record.phase ? withBalances(c, read) : null))
+    }
+  }
   const reroot = await deps.reroot(record, checkpoint)
   return save(deps, record, (c) =>
     c.phase === record.phase ? { phase: "rerooted", reroot: { ...c.reroot, ...reroot } } : null,
+  )
+}
+
+/**
+ * The one-key account's balance in each move token `known` lacks; a token whose read fails is left
+ * out.
+ */
+async function readOneKeyBalances(
+  move: MoveDeps,
+  known: readonly TokenAmount[] = [],
+): Promise<TokenAmount[]> {
+  const tokens = (await bestEffort("unknown", move.tokens())) ?? []
+  const read = await Promise.all(
+    tokens
+      .filter((token) => !known.some((b) => b.token === token))
+      .map((token) =>
+        bestEffort(
+          "unknown",
+          move.shape(token).then(({ balance }) => ({ token, amount: `${balance}` })),
+        ),
+      ),
+  )
+  return read.filter((balance) => balance !== undefined)
+}
+
+/** `read` over the saved balances: a token whose read failed keeps its earlier figure. */
+const withBalances = (c: BackupRotationRecord, read: readonly TokenAmount[]) => ({
+  reroot: {
+    ...c.reroot,
+    oneKeyBalances: [
+      ...(c.reroot?.oneKeyBalances ?? []).filter((b) => !read.some((r) => r.token === b.token)),
+      ...read,
+    ],
+  },
+})
+
+/** The tokens the re-root's read missed, saved while a paylink refund holds the first run. */
+async function fillOneKeyBalances(
+  deps: RotationFlowDeps,
+  record: BackupRotationRecord,
+): Promise<BackupRotationRecord> {
+  const read = await readOneKeyBalances(deps.move, record.reroot?.oneKeyBalances)
+  if (read.length === 0) return record
+  return save(deps, record, (c) =>
+    c.phase === record.phase && !c.move?.runs.length ? withBalances(c, read) : null,
   )
 }
 
@@ -1054,9 +1107,11 @@ async function takeBackLinks(
     current,
     write(current, { refunds: { links, ...(declined && { declined }) } }),
   )
+  if (links.every((l) => l.state === "mined" || l.state === "skipped")) return { settled: current }
+  // A refund still to land holds the first run, whose own read would otherwise name the balance.
+  current = await fillOneKeyBalances(deps, current)
   if (links.some(sendOpen)) return { stop: { record: current, wait: "chunk" } }
   if (left) return { stop: await sendNextRefund(deps, current, options) }
-  if (links.every((l) => l.state === "mined" || l.state === "skipped")) return { settled: current }
   return { stop: { record: current, wait: "chunk" } }
 }
 

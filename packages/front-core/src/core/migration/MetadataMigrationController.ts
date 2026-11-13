@@ -44,11 +44,11 @@ export class MetadataMigrationController {
 
   /**
    * start=true is the user's initial action; subsequent calls reconcile the same saved plan.
-   * `observeOnly` never prepares, signs or sends, and `promptless` never prepares, signs or
-   * broadcasts a bootstrap; `onPrepared` fires once a start has approved and proven everything it
-   * needs. `prompts` (default `start`) off lets a start run on saved approvals. A start saves
-   * `summary`, what it was quoted, with the record. `exclusive` runs each step that sends one
-   * transaction.
+   * `observeOnly` never prepares or signs and sends only what the run sent before, and
+   * `promptless` never prepares, signs or broadcasts a bootstrap; `onPrepared` fires once a start
+   * has approved and proven everything it needs. `prompts` (default `start`) off lets a start run
+   * on saved approvals. A start saves `summary`, what it was quoted, with the record. `exclusive`
+   * runs each step that sends one transaction.
    */
   advance(
     start = false,

@@ -14,7 +14,11 @@ import {
   SWAP_QUOTE_MAX_AGE_MS,
   SWAP_QUOTE_REFRESH_MS,
 } from "../../../src/features/withdraw/swapQuotes"
-import { DEMO_OXIDE_TUPLE } from "../../../src/dev/demoFixtures"
+import {
+  DEMO_ACROSS_EXIT,
+  DEMO_OXIDE_DEPLOYMENT,
+  DEMO_OXIDE_TUPLE,
+} from "../../../src/dev/demoFixtures"
 import { defaultConfig } from "../../support/page"
 import { testQuery } from "../../support/query"
 
@@ -108,10 +112,15 @@ describe("bridgeOutRoutes", () => {
 })
 
 describe("acrossBridgeOut", () => {
-  const ACROSS = { provider: "across", apiUrl: "https://across.example", chains: [] }
-  /** A retired deployment a link still holds: its own executor and escrow factory. */
+  const ACROSS = {
+    apiUrl: "https://across.example",
+    chains: [],
+    oxide: { exit: DEMO_ACROSS_EXIT.id },
+  }
+  /** A retired deployment a link still holds: its own bridge, executor and escrow factory. */
   const RETIRED = {
     ...DEMO_OXIDE_TUPLE,
+    bridgeId: "brg-dai-retired",
     l2Token: `0x${"0e".repeat(32)}`,
     portal: `0x${"0e".repeat(20)}`,
     plainWithdrawalExecutor: `0x${"e0".repeat(20)}`,
@@ -125,9 +134,13 @@ describe("acrossBridgeOut", () => {
       read: async () => ({ address, fee: RETIRED_FEE, portal: RETIRED.portal }),
     }))
     const facts = {
-      config: { ...defaultConfig, bridge: ACROSS },
-      // The active deployment is never read: the link's own prices the burn.
-      chain: { withdrawalExecutorAt: executorAt, oxideTuple: undefined },
+      config: { ...defaultConfig, features: { across: ACROSS } },
+      // The pinned deployment only enables the exit: the link's own deployment prices the burn.
+      chain: {
+        withdrawalExecutorAt: executorAt,
+        oxideTuple: undefined,
+        oxideDeployment: { read: async () => DEMO_OXIDE_DEPLOYMENT },
+      },
     }
     const price = vi.fn(async () => ({ acrossFee: 1n, minReceived: 2n, tip: { relayerTip: 3n } }))
     const tupleOf = vi.fn(async () => RETIRED)

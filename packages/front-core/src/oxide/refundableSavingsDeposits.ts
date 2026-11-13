@@ -4,7 +4,7 @@ import { chunkedContractEvents } from "@obsidion/sdk"
 import { OxidePortalAbi } from "@oxide/l1-contracts"
 import { computeRecipientCommitment } from "@oxide/oxide-lib/recipient_commitment.js"
 import type { Address, GetContractEventsReturnType, Hex, PublicClient } from "viem"
-import { readSkyFactoryPortals } from "../core/services/savings/savingsDeployment"
+import { readSkyFactoryPortals } from "../core/services/moves/skyFactoryPortals"
 import { deriveSkyEscrowSalts, type FieldLike } from "./oxideAccountKeys"
 import { logger } from "../utils/logger"
 

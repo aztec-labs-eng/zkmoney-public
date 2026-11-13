@@ -65,7 +65,7 @@ export default {
   keep: "Keep @{tag}",
   whichToken: "Which token are you sending?",
   network: "Network",
-  coinSubtitle: "Pick the coin you are sending on {chain}.",
+  coinSubtitle: "Pick the token you are sending on {chain}.",
   coinList: {
     separator: ", ",
     last: "{rest} and {last}",

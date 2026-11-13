@@ -5,17 +5,14 @@
  */
 import type { Address, Hex } from "viem"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
-import {
-  runMetadataMigration,
-  type OldVersionWithdrawal,
-  type SavingsMoves,
-} from "@obsidion/front-core"
+import { runMetadataMigration, type OldVersionWithdrawal } from "@obsidion/front-core"
 import { FrozenMetadataMigrationSource, planFrozenSelfRefunds } from "@obsidion/sdk"
 import type { WebWalletConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import type { Pace } from "@obsidion/core/cadence"
 import type { WithdrawableSource } from "../migration/oldVersionWithdraw"
 import type { FrozenExitRead } from "./frozenExitRun"
+import type { RefundedMoves } from "../deposit/recovery/refundedMoves"
 import {
   getOldVersionWithdrawalStore,
   pendingRefundIds,
@@ -85,7 +82,7 @@ async function inFlight() {
 
 async function settled(
   config: WebWalletConfig,
-  moves: SavingsMoves,
+  moves: RefundedMoves,
   id: string,
   pace: Pick<Pace, "wait">,
 ) {
@@ -103,7 +100,7 @@ async function settled(
 
 /** `pace`: the page's, which the wait for each refund to settle reads on. */
 export function zkMoneyExit(
-  moves: SavingsMoves,
+  moves: RefundedMoves,
   config: WebWalletConfig,
   pace: Pick<Pace, "wait">,
 ): ZkMoneyExit {

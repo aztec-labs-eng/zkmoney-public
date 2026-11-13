@@ -59,7 +59,7 @@ const DEFAULT_LOG_RANGE_BLOCKS = 10_000n
  * `OxidePortal.$isWithdrawalSpent(withdrawalId)` — the authoritative "already finalized" read.
  */
 export function isWithdrawalSpent(
-  client: PublicClient,
+  client: Pick<PublicClient, "readContract">,
   portal: Hex,
   withdrawalId: Hex,
 ): Promise<boolean> {
@@ -69,6 +69,28 @@ export function isWithdrawalSpent(
     functionName: "$isWithdrawalSpent",
     args: [withdrawalId],
   }) as Promise<boolean>
+}
+
+/** The portal's release of `withdrawalId` in `[fromBlock, toBlock]`: its `WithdrawalOrRefund` log. */
+export async function readWithdrawalRelease(
+  client: Pick<PublicClient, "getContractEvents">,
+  portal: Hex,
+  withdrawalId: Hex,
+  fromBlock: bigint,
+  toBlock: bigint,
+): Promise<{ txHash: Hex; blockNumber: bigint } | undefined> {
+  const logs = await client.getContractEvents({
+    address: portal,
+    abi: OxidePortalAbi,
+    eventName: "WithdrawalOrRefund",
+    args: { flow: WITHDRAWAL_FLOW, nullifier: withdrawalId },
+    fromBlock,
+    toBlock,
+    strict: true,
+  })
+  // A withdrawalId is spent once, so exactly one release logs it.
+  const [log] = logs
+  return log && { txHash: log.transactionHash, blockNumber: log.blockNumber }
 }
 
 export class L1WithdrawalFinalizationReader implements WithdrawalFinalizationReader {
@@ -96,21 +118,17 @@ export class L1WithdrawalFinalizationReader implements WithdrawalFinalizationRea
         options?.fromBlock ??
         (toBlock > this.maxLookbackBlocks ? toBlock - this.maxLookbackBlocks : 0n)
 
-      // A withdrawalId is spent once, so exactly one release logs it.
       for (let start = fromBlock; start <= toBlock; start += this.logRangeBlocks) {
         const end =
           start + this.logRangeBlocks - 1n < toBlock ? start + this.logRangeBlocks - 1n : toBlock
-        const logs = await this.client.getContractEvents({
-          address: this.portal,
-          abi: OxidePortalAbi,
-          eventName: "WithdrawalOrRefund",
-          args: { flow: WITHDRAWAL_FLOW, nullifier: withdrawalId },
-          fromBlock: start,
-          toBlock: end,
-          strict: true,
-        })
-        const hash = logs.find((log) => log.transactionHash)?.transactionHash
-        if (hash) return hash
+        const release = await readWithdrawalRelease(
+          this.client,
+          this.portal,
+          withdrawalId,
+          start,
+          end,
+        )
+        if (release) return release.txHash
       }
       return undefined
     } catch {

@@ -18,8 +18,9 @@ import {
   type PaylinkRecord,
   type TokenTransaction,
   type WithdrawalPhase,
+  bridgeInReturned,
 } from "@obsidion/front-core"
-import type { ConfigBridge } from "@obsidion/config-client"
+import type { AcrossBridge } from "@obsidion/config-client"
 import { itemNote } from "../features/migration/residualNotes"
 import { operationText } from "../features/operations/operationEntries"
 import { withdrawalSent } from "../features/withdraw/oldVersionWithdrawals"
@@ -84,6 +85,15 @@ function bridgeAmount(item: BridgeActivityItem): string {
   return isNativeEth(item.record.tokenAddress)
     ? fmt(copy.bridge.eth, { amount: tokenAmount(figure) })
     : dollarsOf(figure)
+}
+
+/** What a bridge-out landed: the fill's amount, else the quote's floor, in its output token. */
+function bridgeOutArrived(item: BridgeActivityItem): string | undefined {
+  if (item.kind !== "bridge.withdrawal") return undefined
+  const { bridgeOut, swapOutput, swapOutputDecimals } = item.record
+  if (!bridgeOut || swapOutput === undefined || swapOutputDecimals === undefined) return undefined
+  const atomic = BigInt(bridgeOut.filledAmount ?? bridgeOut.minReceived)
+  return `${tokenAmount(formatUnits(atomic, swapOutputDecimals))} ${swapOutput}`
 }
 
 /** The phases a withdrawal spends releasing its burn on Ethereum. */
@@ -164,7 +174,10 @@ function bridgeEnded(about: Extract<NotificationAbout, { kind: "bridgeEnded" }>)
     : savings
     ? amount
     : bridgeOut
-    ? fmt(copy.bridge.arrivedOn, { amount, chain: bridgeOut.chainName })
+    ? fmt(copy.bridge.arrivedOn, {
+        amount: bridgeOutArrived(item) ?? amount,
+        chain: bridgeOut.chainName,
+      })
     : item.kind === "bridge.withdrawal"
     ? fmt(copy.bridge.sentToEthereum, { amount })
     : fmt(copy.bridge.arrived, { amount })
@@ -174,7 +187,7 @@ function bridgeEnded(about: Extract<NotificationAbout, { kind: "bridgeEnded" }>)
 /** Origin amounts in the origin token's decimals. A payment to someone else names its payee. */
 function bridgeInEnded(
   about: Extract<NotificationAbout, { kind: "bridgeInEnded" | "paymentBridgeEnded" }>,
-  bridge?: ConfigBridge,
+  bridge?: AcrossBridge,
 ): NotificationText {
   const { record } = about
   const words = copy.bridgeIn
@@ -193,24 +206,35 @@ function bridgeInEnded(
         }
       : { title: words.filled, description: fmt(words.filledDescription, { amount }) }
   }
-  const amount = tokenFigure(
+  // What comes back is what Across bridged, which an origin swap or wrap makes another token: the
+  // refund then names both.
+  const sent = tokenFigure(
     formatUnits(BigInt(record.inputAmount), record.inputDecimals),
     record.symbol,
   )
+  const back = bridgeInReturned(record)
+  const returned = tokenFigure(formatUnits(back.amount, back.decimals), back.symbol)
   const network =
     bridge?.chains.find((c) => c.chainId === record.originChainId)?.name ?? words.otherChain
+  const figures = { amount: sent, returned, network }
   switch (record.status) {
     case "refunded":
       return {
         title: words.refunded,
-        description: fmt(words.refundedDescription, { amount, network }),
+        description: fmt(
+          back.other ? words.refundedAsDescription : words.refundedDescription,
+          figures,
+        ),
       }
     case "failed":
-      return { title: words.failed, description: fmt(words.failedDescription, { amount, network }) }
+      return { title: words.failed, description: fmt(words.failedDescription, figures) }
     default:
       return {
         title: words.expired,
-        description: fmt(words.expiredDescription, { amount, network }),
+        description: fmt(
+          back.other ? words.expiredAsDescription : words.expiredDescription,
+          figures,
+        ),
       }
   }
 }
@@ -281,7 +305,7 @@ function eventText(about: Extract<NotificationAbout, { kind: "event" }>): Notifi
 /** `bridge` names a bridge-in's origin chain. */
 export function notificationText(
   entry: Pick<NotificationEntry, "about">,
-  bridge?: ConfigBridge,
+  bridge?: AcrossBridge,
 ): NotificationText {
   const { about } = entry
   switch (about.kind) {

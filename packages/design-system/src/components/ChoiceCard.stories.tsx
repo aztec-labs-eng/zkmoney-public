@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite"
 import { useState } from "react"
-import { ChoiceCard } from "@obsidion/web-ds"
+import { ChoiceCard, SheetLink } from "@obsidion/web-ds"
 
 const meta = {
   title: "Sheets & Modals/ChoiceCard",
@@ -53,6 +53,15 @@ export const Unchecked: Story = {
 
 export const Disabled: Story = {
   args: { ...Unchecked.args, disabled: true },
+}
+
+/** Help under the description: following the link leaves the choice as it was. */
+export const WithHelp: Story = {
+  args: {
+    ...Checked.args,
+    description: "Scan a QR code and save it on your phone.",
+    children: <SheetLink label="Which passkey managers work?" href="https://zk.money" />,
+  },
 }
 
 function Group() {

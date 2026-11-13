@@ -21,7 +21,7 @@ import type {
   WithdrawalRecord,
 } from "@obsidion/front-core"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
-import type { OxideEnvTuple } from "@obsidion/core/types"
+import type { OxideEnvTuple, OxideFeature } from "@obsidion/core/types"
 import { deploymentOfTuples, type PinnedOxideDeployment } from "@obsidion/core/oxide"
 import { getAddress, parseUnits, type Address, type Hash, type Hex } from "viem"
 import { STUCK_SWEEP_MS } from "../features/deposit/recovery/sipaRecovery"
@@ -55,6 +55,17 @@ export const DEMO_L1_FUNDER = "0xf0de1000000000000000000000000000000fd0e1" as Ad
 /** 1,284.50 DAI, at the flat 18 decimals every network uses. */
 export const DEMO_BALANCE_RAW = 1_284_500_000_000_000_000_000n
 
+const DEMO_ACROSS_ESCROW_FACTORY = "0xac40550000000000000000000000000000000fac"
+
+/** The demo deployment's Across feature: the demo bridge's withdrawals leave through its escrow. */
+export const DEMO_ACROSS_EXIT: OxideFeature = {
+  id: "fea-across-demo",
+  project: "across",
+  bridges: { dai: "brg-dai-demo" },
+  contracts: { acrossBridgeEscrowFactory: DEMO_ACROSS_ESCROW_FACTORY },
+  variables: {},
+}
+
 /** Stands in for the oxide manifest so nothing dials the env registry. */
 export const DEMO_OXIDE_TUPLE: OxideEnvTuple = {
   version: "demo",
@@ -77,9 +88,17 @@ export const DEMO_OXIDE_TUPLE: OxideEnvTuple = {
   withdrawalSubsidy: "0x5ab500000000000000000000000000000000d1db",
   // Every burn settles into it; the withdrawal rails resolve only when it is present.
   plainWithdrawalExecutor: "0xe8ec000000000000000000000000000000000e8c",
-  // Shows the bridge-out banner over the demo profile's bridge.
-  acrossBridgeEscrowFactory: "0xac40550000000000000000000000000000000fac",
+  acrossBridgeEscrowFactory: DEMO_ACROSS_ESCROW_FACTORY,
+  bridgeId: DEMO_ACROSS_EXIT.bridges.dai,
+  // Shows the bridge-out banner over the demo features' bridge.
+  features: [DEMO_ACROSS_EXIT],
 }
+
+/** The demo's Across exit: its feature, in the deployment that holds the demo bridge. */
+export const demoAcrossExit = () => ({
+  feature: DEMO_ACROSS_EXIT,
+  pinnedBridges: new Set([DEMO_ACROSS_EXIT.bridges.dai!]),
+})
 
 /** The demo's deployment: one bridge, {@link DEMO_OXIDE_TUPLE}'s. */
 export const DEMO_OXIDE_DEPLOYMENT: PinnedOxideDeployment = (() => {

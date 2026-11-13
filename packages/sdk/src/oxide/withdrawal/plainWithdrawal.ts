@@ -3,6 +3,11 @@
 import type { EthAddress } from "@aztec-labs/foundation/eth-address"
 import type { WithdrawOperation } from "@oxide/oxide-client/l2_operations.js"
 import {
+  buildRecoveryData,
+  buildSimulationFinalizationData,
+} from "@oxide/oxide-client/submitted_withdrawal.js"
+import { chunkRecoveryData } from "@oxide/oxide-lib/withdrawal_recovery_data.js"
+import {
   assertPlainWithdrawalTip,
   decodePlainWithdrawalPayload,
 } from "@oxide/oxide-lib/plain_withdrawal_executor.js"
@@ -16,6 +21,12 @@ export interface PlainWithdrawalContext {
   executor: EthAddress
   /** The executor's `FEE()`, taken from each withdrawal. */
   fee: bigint
+}
+
+/** The recovery chunk events `op`'s burn emits. */
+export function withdrawalRecoveryChunks(op: WithdrawOperation): number {
+  const [data] = buildRecoveryData([op], [buildSimulationFinalizationData(op)])
+  return chunkRecoveryData(data!).length
 }
 
 /** The withdrawals a batch declares, in the order the token emits them: its withdraw operations and

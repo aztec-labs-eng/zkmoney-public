@@ -2,7 +2,13 @@
 import { act, type ReactNode } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { SavingsMoveRecord, WithdrawalRecord } from "@obsidion/front-core"
+import {
+  selectMoveState,
+  type MoveDeposit,
+  type MoveQuote,
+  type MoveRecord,
+  type WithdrawalRecord,
+} from "@obsidion/front-core"
 
 vi.mock("@obsidion/web-ds", () => ({
   Icon: () => null,
@@ -41,24 +47,27 @@ vi.mock("../../../src/features/migration/oldVersionWithdraw", () => ({
 }))
 import { SavingsMoveDetailModal } from "../../../src/features/savings/SavingsMoveDetailModal"
 import { closeSession } from "../../../src/session/session"
+import { moveRecord } from "../../support/moves"
 import { openTestSession } from "../../support/session"
 
 const ONE = 10n ** 18n
-const move = (extra: Partial<SavingsMoveRecord> = {}): SavingsMoveRecord =>
-  ({
-    direction: "in",
-    withdrawalLocalId: "w1",
-    escrow: "0x00000000000000000000000000000000000000ee",
-    nonce: `0x${"03".repeat(32)}`,
-    recipientCommitment: `0x${"01".repeat(32)}`,
-    amount: (25n * ONE).toString(),
-    startTime: 1_700_000_000_000,
-    value: (25n * ONE).toString(),
-    net: ((2335n * ONE) / 100n).toString(),
+const T0 = 1_700_000_000_000
+const move = (extra: Partial<MoveRecord> = {}) =>
+  moveRecord({
+    amount: 25n * ONE,
+    startTime: T0,
+    quote: { expectedOut: 25n * ONE, conversionOut: (2335n * ONE) / 100n } as MoveQuote,
     ...extra,
-  } as SavingsMoveRecord)
+  })
 const burn = (phase: WithdrawalRecord["phase"]) =>
-  ({ localId: "w1", phase, l2TxHash: `0x${"5a".repeat(32)}` } as WithdrawalRecord)
+  ({ localId: "w1", phase, l2TxHash: `0x${"5a".repeat(32)}`, startTime: T0 } as WithdrawalRecord)
+const deposited: MoveDeposit = { inboxIndex: 1n, amount: ONE, at: T0 }
+/** The modal's props for `record` and its burn, in the state they put the move in. */
+const shown = (record: MoveRecord, withdrawal: WithdrawalRecord) => ({
+  move: record,
+  state: selectMoveState(record, withdrawal, T0),
+  burn: withdrawal,
+})
 
 let host: HTMLDivElement
 let root: Root
@@ -79,11 +88,7 @@ describe("SavingsMoveDetailModal", () => {
   it.each([
     ["no old Savings source", [], undefined],
     ["an escrow that never ran", [{ savings: true }], undefined],
-    [
-      "a Main source for a move into Savings",
-      [{ savings: false }],
-      { inboxIndex: "1", amount: "1", claimed: false },
-    ],
+    ["a Main source for a move into Savings", [{ savings: false }], deposited],
   ])(
     "says an old version closed before the move finished, without Withdraw for %s",
     (_, list, deposit) => {
@@ -91,8 +96,7 @@ describe("SavingsMoveDetailModal", () => {
       act(() =>
         root.render(
           <SavingsMoveDetailModal
-            move={move({ retired: true, deposit })}
-            burn={burn("done")}
+            {...shown(move({ phase: "migrated", deposit }), burn("done"))}
             onWithdraw={() => {}}
             onClose={() => {}}
           />,
@@ -109,12 +113,10 @@ describe("SavingsMoveDetailModal", () => {
   it("offers Withdraw for a stranded move whose deposit reached an old Savings portal", () => {
     sources.list = [{ savings: true }]
     const onWithdraw = vi.fn()
-    const deposit = { inboxIndex: "1", amount: "1", claimed: false }
     act(() =>
       root.render(
         <SavingsMoveDetailModal
-          move={move({ retired: true, deposit })}
-          burn={burn("done")}
+          {...shown(move({ phase: "migrated", deposit: deposited }), burn("done"))}
           onWithdraw={onWithdraw}
           onClose={() => {}}
         />,
@@ -132,8 +134,7 @@ describe("SavingsMoveDetailModal", () => {
     act(() =>
       root.render(
         <SavingsMoveDetailModal
-          move={move()}
-          burn={burn("finalizing_l1")}
+          {...shown(move(), burn("finalizing_l1"))}
           exit={{ title: "Finalize manually", onStart }}
           onClose={() => {}}
         />,

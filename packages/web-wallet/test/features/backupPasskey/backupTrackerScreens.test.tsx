@@ -9,10 +9,10 @@ import type {
   BackupScreen,
   Tracked,
 } from "../../../src/features/backupPasskey/backupScreen"
-import { approveLabel } from "../../../src/features/backupPasskey/screens/AddTracker/AddTracker"
 import trackerCopy from "../../../src/features/backupPasskey/screens/AddTracker/AddTracker.copy"
 import { AddingScreen } from "../../../src/features/backupPasskey/screens/AddingScreen/AddingScreen"
 import { ApproveScreen } from "../../../src/features/backupPasskey/screens/ApproveScreen/ApproveScreen"
+import approveCopy from "../../../src/features/backupPasskey/screens/ApproveScreen/ApproveScreen.copy"
 import { DoneScreen } from "../../../src/features/backupPasskey/screens/DoneScreen/DoneScreen"
 import { FinishScreen } from "../../../src/features/backupPasskey/screens/FinishScreen/FinishScreen"
 import finishCopy from "../../../src/features/backupPasskey/screens/FinishScreen/FinishScreen.copy"
@@ -127,7 +127,7 @@ afterEach(unmount)
 describe("the tracker screens", () => {
   it.each<[string, BackupScreen, string, keyof BackupActions]>([
     ["A4 approves", { id: "approve", ...at(2, "sign") }, "backup-approve", "approve"],
-    ["A4 cancels before paying", { id: "approve", ...at(2, "sign") }, "backup-cancel", "cancel"],
+    ["A4 asks to cancel", { id: "approve", ...at(2, "sign") }, "backup-cancel", "askCancel"],
     [
       "the pay step pays",
       { id: "approve", ...at(2, "pay"), pay: PAY },
@@ -189,7 +189,7 @@ describe("the tracker screens", () => {
     expect(alert()).toBe(failureLine(unknown))
   })
 
-  it("shows step 4 as the move's rows once they are read, the asking row naming the approver", () => {
+  it("shows step 4 as the move's rows once they are read, leaving the ask to the button", () => {
     const rows = [
       { kind: "links", count: 1, state: "done" },
       { kind: "main", state: "confirming" },
@@ -198,9 +198,9 @@ describe("the tracker screens", () => {
     const moved = { included: 1, total: 2 }
     render({ id: "finish", ...moving({ rows, moved }), ...finish, ask: "approve" })
     expect(container.textContent).toContain(finishCopy.step)
-    expect(container.textContent).toContain(finishCopy.one)
+    expect(texts(".zkm-step-tracker__progress")).toEqual([""])
     expect(labels()).toEqual([finishCopy.rows.link, finishCopy.rows.main, finishCopy.rows.savings])
-    expect(details()).toEqual([stepsCopy.confirming, approveLabel({})])
+    expect(details()).toEqual([stepsCopy.confirming])
     expect(container.querySelector('[data-testid="backup-move-approve"]')).not.toBeNull()
     // The tap's send is out: the row prepares it.
     render({ id: "finish", ...moving({ rows, moved }), ...finish, ask: "approve", approving: true })
@@ -218,10 +218,18 @@ describe("the tracker screens", () => {
       { kind: "main", state: "confirming" },
       { kind: "savings", state: "todo" },
     ] as const
-    render({ id: "finish", ...moving({ rows: toCome, moved: { included: 1, total: 2 } }), ...finish })
+    render({
+      id: "finish",
+      ...moving({ rows: toCome, moved: { included: 1, total: 2 } }),
+      ...finish,
+    })
     expect(close()).toBeNull()
     expect(container.textContent).toContain(finishCopy.working.keepOpen.one)
-    render({ id: "finish", ...moving({ rows: toCome, moved: { included: 0, total: 3 } }), ...finish })
+    render({
+      id: "finish",
+      ...moving({ rows: toCome, moved: { included: 0, total: 3 } }),
+      ...finish,
+    })
     expect(close()).toBeNull()
     expect(container.textContent).toContain(fmt(finishCopy.working.keepOpen.count, { count: 3 }))
     const links = [
@@ -256,7 +264,6 @@ describe("the tracker screens", () => {
       ...finish,
     })
     expect(container.textContent).toContain(finishCopy.working.lead)
-    expect(container.textContent).not.toContain(finishCopy.one)
     tap("backup-close")
     expect(actions.close).toHaveBeenCalledTimes(1)
   })
@@ -286,6 +293,53 @@ describe("the tracker screens", () => {
     render({ id: "finish", ...moving({ rows, relanding: true }), ...finish, ask: "approve" })
     expect(container.textContent).toContain(relandingCopy.title)
     expect(container.textContent).toContain(relandingCopy.line)
+  })
+
+  it("labels step 2 for the approval, then for the payment while it stays current, then as approved", () => {
+    const step2 = () => labels()[1]
+    const approver = trackerCopy.yourPasskey
+    render({ id: "approve", ...at(2, "sign") })
+    expect(step2()).toBe(fmt(trackerCopy.approve, { approver }))
+    for (const stage of ["publish", "pay"] as const) {
+      render({ id: "approve", ...at(2, stage), ...(stage === "pay" && { pay: PAY }) })
+      expect(texts('[aria-current="step"] .zkm-step-tracker__step-label')).toEqual([
+        trackerCopy.pay,
+      ])
+    }
+    render({ id: "adding", ...at(3, "funded") })
+    expect(step2()).toBe(fmt(trackerCopy.approved, { approver }))
+  })
+
+  it("opens each of step 2's sheets at the top of the card, and keeps the scroll within one", () => {
+    const actions = render({ id: "approve", ...at(2, "sign") })
+    container.classList.add("ww-modal")
+    const show = (screen: Extract<BackupScreen, { id: "approve" }>, scrolled: number) => {
+      container.scrollTop = scrolled
+      act(() => root!.render(<ApproveScreen screen={screen} actions={actions} />))
+    }
+    show({ id: "approve", ...at(2, "publish") }, 120)
+    expect(container.scrollTop).toBe(0)
+    show({ id: "approve", ...at(2, "pay"), pay: PAY }, 120)
+    expect(container.scrollTop).toBe(0)
+    show({ id: "approve", ...at(2, "pay"), pay: PAY, busy: true }, 120)
+    expect(container.scrollTop).toBe(120)
+  })
+
+  it("prices a send already going out with the tip its plan saved", () => {
+    // Opened after the tap: the sheet has no speed choice, and the burn carries 2.4 DAI.
+    const tip = (4n * DAI) / 10n
+    const plan = { ...PLAN, fundingAmount: (2n * DAI + tip).toString(), proverTip: tip.toString() }
+    render({ id: "approve", ...at(2, "pay"), pay: { ...PAY, plan }, sending: true })
+    expect(container.textContent).toContain(fmt(approveCopy.pay.detail, { amount: "$2.40" }))
+  })
+
+  it("names on the paid step what left the balance, and on the done sheet what it cost", () => {
+    // 2.0551 sent and 1.5004 back: $2.06 left the balance, $0.56 of it the fee.
+    const paid = { sent: (20551n * DAI) / 10000n, credited: (15004n * DAI) / 10000n }
+    render({ id: "adding", ...at(3, "funded"), paid })
+    expect(container.textContent).toContain(fmt(trackerCopy.paid, { amount: "$2.06" }))
+    render({ id: "done", keys: [], paid })
+    expect(container.textContent).toContain("$0.56")
   })
 
   it("lists the sign-up key and the backup the key read predates", () => {

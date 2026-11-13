@@ -1,8 +1,7 @@
 import { useState } from "react"
 import { PasskeysSheet } from "../../ui/PasskeysSheet/PasskeysSheet"
 import { moveCopy } from "./backupPasskeyCopy"
-import { useRotationDrives } from "./rotationDrive"
-import { approvalWaiting } from "./useBackupNudge"
+import { approvalWaiting, useRotationDrives } from "./rotationDrive"
 
 /** Home's line while a rotation's move waits for the user's tap; the tap itself is in Settings. */
 export function RotationApprovalLine() {

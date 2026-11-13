@@ -318,6 +318,33 @@ describe("shared metadata migration", () => {
     expect(steps.broadcast).not.toHaveBeenCalled()
   })
 
+  it.each<[string, Partial<MetadataMigrationObservation>, string]>([
+    ["sends a subscription the network dropped again", {}, "subscription-again"],
+    ["waits for a subscription not yet included", { subscriptionStatus: "pending" }, "first"],
+    ["waits for the registration message", { messagesReady: false }, "first"],
+  ])("an observe pass on an arriving run %s", async (_, seen, subscriptionTx) => {
+    const { drive, steps, observed, stored } = fixture()
+    steps.subscribe = vi.fn(async (_plan, onTxHash) => onTxHash("first"))
+    await drive({ start: true })
+    Object.assign(observed, {
+      bootstrapStatus: "included",
+      bootstrapSpent: true,
+      metadataSettled: true,
+      messagesReady: true,
+    })
+    await drive({ start: true })
+    Object.assign(observed, { subscriptionStatus: "included", recurringSponsorship: true })
+    observed.sent = true
+    await drive({ start: true })
+    // The block that held the subscription was dropped, and its note with it.
+    Object.assign(observed, { subscriptionStatus: "dropped", recurringSponsorship: false }, seen)
+    steps.subscribe = vi.fn(async (_plan, onTxHash) => onTxHash("subscription-again"))
+
+    await drive({ observeOnly: true })
+
+    expect(stored()).toMatchObject({ phase: "arriving", subscriptionTx })
+  })
+
   it("waits, with no stop, for another run's registration before a funds-only run sends", async () => {
     const { drive, steps, observed, stored } = fixture()
     Object.assign(steps, { waitsForRegistration: true })

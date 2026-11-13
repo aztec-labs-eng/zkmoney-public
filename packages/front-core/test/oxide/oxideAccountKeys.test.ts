@@ -10,6 +10,7 @@ import {
   deriveStealthKey,
   deriveSkyEscrowSalts,
   deriveSwapEscrowRecoverySalt,
+  deriveVaultMoveSalts,
   selfSipaResolverKeys,
   type FieldLike,
 } from "../../src/oxide/oxideAccountKeys"
@@ -136,6 +137,38 @@ describe("oxideAccountKeys — deriveSkyEscrowSalts", () => {
     )
     expect(recipient.equals(recovery)).toBe(false)
     expect(recovery.equals(deriveSwapEscrowRecoverySalt(SECRET, NONCE))).toBe(false)
-    expect(() => deriveSkyEscrowSalts(SECRET, "0x1234")).toThrow(/32-byte/)
+    expect(() => deriveSkyEscrowSalts(SECRET, "0x1234")).toThrow(
+      expect.objectContaining({ code: "invariant" }),
+    )
+  })
+})
+
+describe("oxideAccountKeys — a move's salts on each rail", () => {
+  const NONCE = `0x${"ab".repeat(32)}` as const
+
+  it("keeps a Sky escrow move's salts at their pinned values", () => {
+    const { recipient, recovery } = deriveSkyEscrowSalts(SECRET, NONCE)
+    expect(recipient.toString()).toBe(
+      "0x2452f9f5b29c5123881ae18ac82af86ac717953ef1b3e57183718c8bc0b1b734",
+    )
+    expect(recovery.toString()).toBe(
+      "0x00ee6adc9998b0ab49a4ac2508354670872c032b154e7fecdd57d6f95886725c",
+    )
+  })
+
+  it("derives a vault move's salts under their own labels, apart from a Sky move's", () => {
+    const { recipient, recovery } = deriveVaultMoveSalts(SECRET, NONCE)
+    expect(recipient.toBigInt()).toBe(
+      oxideScalar(SECRET.toString(), `oxide:position-move-recipient-salt:${NONCE}`, Fr.MODULUS),
+    )
+    expect(recovery.toBigInt()).toBe(
+      oxideScalar(SECRET.toString(), `oxide:position-move-recovery-salt:${NONCE}`, Fr.MODULUS),
+    )
+    const sky = deriveSkyEscrowSalts(SECRET, NONCE)
+    expect(recipient.equals(sky.recipient)).toBe(false)
+    expect(recovery.equals(sky.recovery)).toBe(false)
+    expect(() => deriveVaultMoveSalts(SECRET, "0x1234")).toThrow(
+      expect.objectContaining({ code: "invariant" }),
+    )
   })
 })

@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   publicRead: vi.fn(),
   optimismRead: vi.fn(),
   network: "mainnet" as string,
+  features: {},
 }))
 
 vi.mock("../../../src/config/oxideTuple", () => ({

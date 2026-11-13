@@ -37,7 +37,7 @@ import { useL1Wallet } from "../../session/useL1Wallet"
 import { useSession } from "../../session/session"
 import { BridgeInModal } from "../deposit/BridgeInModal/BridgeInModal"
 import { bridgeRoutes } from "../deposit/bridgeChains"
-import { profileBridge } from "../../session/walletChains"
+import { acrossBridge } from "../../session/walletChains"
 import {
   DepositFlow,
   type DepositFlowNav,
@@ -126,7 +126,7 @@ export function ExternalWalletPayModal({
   const canFund = bridgeMode || !!l1.account
   // The typed amount, kept while the wallet picker covers the sheet.
   const payee = result.sipaAddress as Address
-  const bridge = profileBridge(config)
+  const bridge = acrossBridge(config)
   const bridgeIn = valueOf(page.bridgeInProvider) ?? undefined
   // A payment from this browser that nothing here can show settled: paying again could pay twice.
   const { database, device, bridgeIns } = useSession()
@@ -501,6 +501,7 @@ export function ExternalWalletPayModal({
     <>
       <DepositFlow
         l1ChainId={l1ChainId}
+        account={l1.account ?? undefined}
         chainName={chainsCopy.ethereum}
         // The quoted fee and the URI's amount are in the request's token: Ethereum offers only it.
         coins={[token]}

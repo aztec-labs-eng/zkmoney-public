@@ -1,0 +1,26 @@
+{
+  "scenario": "activity",
+  "viewport": "402x879,1280x832",
+  "path": "/settings?flowFixture=success&backupFixture=low-balance",
+  "ready": {
+    "selector": ".ww-settings__user"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=lowBalance]"
+    },
+    {
+      "action": "screenshot",
+      "file": "b1-low-balance.png",
+      "state": "B1: a short balance is all that holds the add"
+    }
+  ],
+  "finalScreenshot": false
+}

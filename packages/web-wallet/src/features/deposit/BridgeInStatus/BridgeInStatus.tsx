@@ -4,6 +4,7 @@ import {
   sipaSweepsReceived,
   useStore,
   type BridgeInRecord,
+  bridgeInReturned,
 } from "@obsidion/front-core"
 import { tokenFigure } from "../../../ui/format"
 import { coinFigure } from "../../../ui/coinDecimals"
@@ -36,7 +37,6 @@ export function BridgeInStatus({
   record,
   coins,
   chainName,
-  l1ChainName,
   arriving,
   payee,
   fillMinutes,
@@ -48,7 +48,6 @@ export function BridgeInStatus({
   /** The offered coins, for the origin and landing icons. */
   coins: readonly DepositTokenOption[]
   chainName: string
-  l1ChainName: string
   /** What reaches the private balance, where the deposit fee is known. */
   arriving?: string
   /** The tag a request payment goes to; the copy then names them, not the private balance. */
@@ -77,24 +76,40 @@ export function BridgeInStatus({
   const landing =
     arriving ?? (credit?.approx ? fmt(sendCopy.arrived.approx, { amount: figure }) : figure)
 
+  // A refund of another token than the one sent names both.
+  const returned = bridgeInReturned(record)
   const failedLine = fmt(
     record.status === "failed"
       ? copy.failed.notSent
       : record.status === "refunded"
-      ? copy.failed.refunded
+      ? returned.other
+        ? copy.failed.refundedAs
+        : copy.failed.refunded
+      : returned.other
+      ? copy.failed.expiredAs
       : copy.failed.expired,
-    { amount, chain: chainName },
+    {
+      amount,
+      returned: coinFigure(returned.amount, returned.decimals, returned.symbol),
+      chain: chainName,
+    },
   )
   const blocks: RingStageBlock[] = [
     {
       key: "bridging",
+      chip: {
+        text:
+          fillMinutes === undefined
+            ? copy.bridging.chip
+            : fmt(sendCopy.chipAbout, { chip: copy.bridging.chip, minutes: fillMinutes }),
+        tone: "live",
+      },
       title: payee
         ? fmt(copy.paying.title, { payee })
         : fmt(copy.bridging.title, { coin: record.symbol }),
       line: payee
         ? fmt(copy.paying.line, { amount, chain: chainName, payee })
         : fmt(copy.bridging.line, { amount, chain: chainName }),
-      subline: fillMinutes === undefined ? undefined : fmt(copy.about, { minutes: fillMinutes }),
       note: fmt(sendCopy.confirming, { network: chainName }),
       noteTone: "pending",
     },
@@ -108,7 +123,7 @@ export function BridgeInStatus({
         tone: "live",
       },
       title: payee ? fmt(sendCopy.paying.status, { payee }) : sendCopy.arriving.title,
-      line: fmt(copy.arriving.line, { amount, network: l1ChainName, landing }),
+      line: fmt(copy.arriving.line, { amount, landing }),
       note: payee ? fmt(sendCopy.paying.note, { payee }) : sendCopy.arriving.note,
       button: { label: sendCopy.arrived.close, onClick: onClose },
     },

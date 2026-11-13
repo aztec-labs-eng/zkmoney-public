@@ -85,7 +85,7 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
   min-width: 0;
 }
 .text b {
@@ -103,6 +103,13 @@
 .text b small {
   font-size: 14px;
   font-weight: 400;
+}
+.trailing {
+  flex: none;
+  text-align: right;
+}
+.trailing:empty {
+  display: none;
 }
 .check {
   display: grid;

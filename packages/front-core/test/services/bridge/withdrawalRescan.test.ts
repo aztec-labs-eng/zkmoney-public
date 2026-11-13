@@ -14,7 +14,6 @@ import { createWithdrawals, type Withdrawals } from "../../../src/engine/withdra
 import { rebuildWithdrawals } from "../../../src/core/services/bridge/withdrawalRescan"
 import { escrowLeg } from "../../../src/core/services/bridge/escrowLeg"
 import { withdrawalRecipients } from "../../../src/core/services/bridge/withdrawalRecipients"
-import { savingsMoveOfWithdrawal } from "../../../src/oxide/savingsMoves"
 import { syncCatchUp } from "../../../src/engine/catchUp"
 
 const RECIPIENT = getAddress(`0x${"b0".repeat(20)}`)
@@ -379,15 +378,7 @@ describe("rebuildWithdrawals", () => {
       relayerTip: TIP.toString(),
       nonce: NONCE,
     })
-    expect(savingsMoveOfWithdrawal(record)).toEqual({
-      direction: "out",
-      withdrawalLocalId: record.localId,
-      escrow: ESCROW,
-      factory: FACTORY,
-      nonce: NONCE,
-      recipientCommitment: sky.recipientCommitment,
-      amount: (6n * 10n ** 18n).toString(),
-    })
+    expect(record).toMatchObject({ recipient: ESCROW, rawAmount: (6n * 10n ** 18n).toString() })
     expect(report).toHaveBeenCalledWith(expect.objectContaining({ savingsMoves: 1 }))
   })
 
@@ -425,18 +416,6 @@ describe("rebuildWithdrawals", () => {
     })
     expect(created.map((r) => r.l2TxHash)).toEqual([DIRECT_TX, KNOWN_TX])
     expect(await store.byHash(ESCROW_TX)).toBeUndefined()
-  })
-
-  it("rebuilds no move from a plain burn", async () => {
-    const store = await newStore()
-    await rebuildWithdrawals({
-      networkId: "0xnet",
-      source: makeSource(),
-      store,
-      tokenSymbol: "DAI",
-      tokenDecimals: 18,
-    })
-    expect(savingsMoveOfWithdrawal((await store.byHash(DIRECT_TX))!)).toBeUndefined()
   })
 
   it("stamps the fallback time on a burn whose block cannot be read, and creates nothing twice", async () => {

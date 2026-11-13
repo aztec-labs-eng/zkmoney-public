@@ -31,20 +31,20 @@ import {
   type TokenDecimals,
   type UsdValuation,
 } from "@obsidion/front-core"
-import type { ConfigBridge, ConfigBridgeChain } from "@obsidion/config-client"
+import type { AcrossBridge, AcrossChain } from "@obsidion/config-client"
 import type { WebWalletConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { amountError, usdFigure } from "../../ui/format"
 import { coinFigure } from "../../ui/coinDecimals"
 import { groupedCents } from "../../ui/groupedCents"
-import { bridgeChainFor, profileBridge } from "../../session/walletChains"
+import { bridgeChainFor, acrossBridge } from "../../session/walletChains"
 import type { DepositTokenOption } from "../sipa/loadDepositFacts"
 
-export type OriginToken = ConfigBridgeChain["in"][number]
+export type OriginToken = AcrossChain["in"][number]
 
 /** A chain a wallet can bridge in from, with the tokens it lists there. */
 export interface BridgeRoute {
-  chain: ConfigBridgeChain
+  chain: AcrossChain
   tokens: OriginToken[]
 }
 
@@ -60,7 +60,7 @@ export const isNativeToken = (address: Address) => isAddressEqual(address, zeroA
  * the tokens that land as themselves, the only ones that can land an exact amount.
  */
 export function bridgeRoutes(
-  bridge: ConfigBridge,
+  bridge: AcrossBridge,
   coins: DepositTokenOption[],
   { sameToken = false }: { sameToken?: boolean } = {},
 ): BridgeRoute[] {
@@ -381,11 +381,11 @@ export function firstDepositNetwork({
  * where the profile names no bridge.
  */
 export function bridgeInSource(
-  config: Pick<WebWalletConfig, "bridge">,
+  config: Pick<WebWalletConfig, "features">,
   decimals: TokenDecimals,
   fake?: BridgeInProvider,
 ): { provider: BridgeInProvider | null; deposits: BridgeInDepositLookup | null } {
-  const bridge = profileBridge(config)
+  const bridge = acrossBridge(config)
   if (!bridge) return { provider: null, deposits: null }
   if (fake) return { provider: fake, deposits: null }
   const contracts: AcrossContracts = {
@@ -408,13 +408,13 @@ export function bridgeInSource(
 
 /** A bridge chain's public client, one per chain of `config`'s profile; an unlisted chain throws. */
 export function bridgeChainClients(
-  config: Pick<WebWalletConfig, "bridge">,
+  config: Pick<WebWalletConfig, "features">,
 ): (chainId: number) => PublicClient<Transport, Chain> {
   const clients = new Map<number, PublicClient<Transport, Chain>>()
   return (chainId) => {
     let client = clients.get(chainId)
     if (!client) {
-      const chain = profileBridge(config)?.chains.find((c) => c.chainId === chainId)
+      const chain = acrossBridge(config)?.chains.find((c) => c.chainId === chainId)
       if (!chain) throw new WalletError("invariant", `No bridge chain ${chainId} to read`)
       client = createPublicClient({ chain: bridgeChainFor(chain), transport: http() })
       clients.set(chainId, client)
@@ -494,11 +494,11 @@ export function bridgeBelowFee(e: unknown): { amount: bigint; fee: bigint } | un
 
 /** The symbol the profile lists for `token` on bridge chain `chainId`. */
 export function listedBridgeSymbol(
-  config: Pick<WebWalletConfig, "bridge">,
+  config: Pick<WebWalletConfig, "features">,
   chainId: number,
   token: Address,
 ): string | undefined {
-  const chain = profileBridge(config)?.chains.find((c) => c.chainId === chainId)
+  const chain = acrossBridge(config)?.chains.find((c) => c.chainId === chainId)
   return chain?.in.find((t) => isAddressEqual(tokenAddress(t), token))?.symbol
 }
 

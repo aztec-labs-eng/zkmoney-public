@@ -1,5 +1,6 @@
 import { BootGate } from "./BootGate"
 import bakedProfile from "virtual:baked-config-profile"
+import bakedFeatures from "virtual:baked-features"
 import { resolveBootConfig, type ResolveBootConfigInput } from "./config/env"
 import { useState } from "react"
 import type { Pace } from "@obsidion/core/cadence"
@@ -34,7 +35,7 @@ async function resolveAndSeed(pace: Pace, profileFetch?: typeof fetch): Promise<
     import.meta.env.VITE_CONFIG_EDITOR === "true"
       ? {
           ...input,
-          fetchImpl: (await import("./dev/configDraft")).profileDraftFetch(input.fetchImpl),
+          fetchImpl: (await import("./dev/configDraft")).configDraftFetch(input.fetchImpl),
         }
       : input
   const scenario = import.meta.env.DEV ? demoScenario() : null
@@ -42,13 +43,17 @@ async function resolveAndSeed(pace: Pace, profileFetch?: typeof fetch): Promise<
     ? await resolveBootConfig(
         await previewInput((await import("./dev/demoProfile")).demoBootInput()),
       )
-    : await resolveBootConfig(await previewInput({ bakedProfile, fetchImpl: profileFetch }))
+    : await resolveBootConfig(
+        await previewInput({ bakedProfile, bakedFeatures, fetchImpl: profileFetch }),
+      )
   const seeded =
     scenario &&
     (await (await import("./dev/seedDemo")).seedDemo(scenario, resolved, undefined, pace))
   if (seeded) return { ...resolved, page: seeded }
   // A refusal (this origin holds a real wallet) boots the real app from the real profile.
-  const config = scenario ? await resolveBootConfig(await previewInput({ bakedProfile })) : resolved
+  const config = scenario
+    ? await resolveBootConfig(await previewInput({ bakedProfile, bakedFeatures }))
+    : resolved
   const onboardingMock = import.meta.env.DEV
     ? (await import("./dev/mockOnboarding")).mockOnboarding
     : undefined

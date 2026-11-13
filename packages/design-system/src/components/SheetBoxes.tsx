@@ -8,6 +8,8 @@ export interface FactHint {
   title: string
   rows: { label: string; value: string }[]
   note?: string
+  /** Opens above the label, for a fact whose rows below must stay readable. */
+  above?: boolean
 }
 
 export interface Fact {
@@ -100,7 +102,7 @@ function FactHintButton({ hint }: { hint: FactHint }) {
       <span
         id={tip}
         role="tooltip"
-        className="zkm-fact-hint__tip"
+        className={`zkm-fact-hint__tip${hint.above ? " zkm-fact-hint__tip--above" : ""}`}
         // Stays mounted while closed, so screen readers read it as the button's description.
         hidden={!open}
       >
@@ -163,6 +165,8 @@ export interface ChoiceCardProps {
   /** Pill after the label, e.g. "Recommended". */
   badge?: string
   disabled?: boolean
+  /** Help under the description, e.g. a `SheetLink`; its controls don't pick the card. */
+  children?: ReactNode
 }
 
 /** One option of a single choice, as a card with a radio. */
@@ -175,9 +179,10 @@ export function ChoiceCard({
   description,
   badge,
   disabled,
+  children,
 }: ChoiceCardProps) {
   return (
-    <label
+    <div
       className={[
         "zkm-choice-card",
         checked && "zkm-choice-card--checked",
@@ -186,23 +191,27 @@ export function ChoiceCard({
         .filter(Boolean)
         .join(" ")}
     >
-      <input
-        type="radio"
-        className="zkm-choice-card__input"
-        name={name}
-        value={value}
-        checked={checked}
-        disabled={disabled}
-        onChange={() => onChange(value)}
-      />
-      <span className="zkm-choice-card__radio" aria-hidden />
-      <span className="zkm-choice-card__text">
-        <span className="zkm-choice-card__title-row">
-          <span className="zkm-choice-card__label">{label}</span>
-          {badge && <span className="zkm-choice-card__badge">{badge}</span>}
+      {/* The help can't sit inside the label: a label may hold no button. */}
+      <label className="zkm-choice-card__choice">
+        <input
+          type="radio"
+          className="zkm-choice-card__input"
+          name={name}
+          value={value}
+          checked={checked}
+          disabled={disabled}
+          onChange={() => onChange(value)}
+        />
+        <span className="zkm-choice-card__radio" aria-hidden />
+        <span className="zkm-choice-card__text">
+          <span className="zkm-choice-card__title-row">
+            <span className="zkm-choice-card__label">{label}</span>
+            {badge && <span className="zkm-choice-card__badge">{badge}</span>}
+          </span>
+          {description && <span className="zkm-choice-card__description">{description}</span>}
         </span>
-        {description && <span className="zkm-choice-card__description">{description}</span>}
-      </span>
-    </label>
+      </label>
+      {children && <div className="zkm-choice-card__help">{children}</div>}
+    </div>
   )
 }

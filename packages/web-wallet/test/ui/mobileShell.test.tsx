@@ -10,7 +10,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { saveSetting } from "../../src/platform/storage/deviceKeys"
 
 const state = vi.hoisted(() => ({
-  savings: false,
   unlocked: true,
   handle: "alice" as string | undefined,
   owed: false,
@@ -29,10 +28,6 @@ vi.mock("../../src/features/actionGate", () => ({
     state.asked.push(action)
     if (!state.upgrade.has(action)) run()
   },
-}))
-// Savings reads the booted profile, which this suite never boots.
-vi.mock("../../src/features/savings/savingsGateway", () => ({
-  useSavingsAvailable: () => state.savings,
 }))
 vi.mock("../../src/features/registration/openRegistration", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/features/registration/openRegistration")>()),
@@ -159,7 +154,6 @@ beforeEach(async () => {
   await saveSetting(deviceDb, "analyticsConsent", false)
   state.upgrade = new Set()
   state.asked = []
-  state.savings = false
   state.phone = true
   state.unlocked = true
   state.handle = "alice"

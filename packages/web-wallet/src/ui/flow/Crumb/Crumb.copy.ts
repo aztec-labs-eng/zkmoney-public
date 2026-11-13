@@ -1,4 +1,4 @@
 export default {
   locked: "{network} · {coin}",
-  change: "Change network or coin",
+  change: "Change network or token",
 } as const

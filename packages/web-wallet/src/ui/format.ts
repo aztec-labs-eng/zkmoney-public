@@ -77,6 +77,21 @@ export function chargedAmount(amount: string, fee: string, decimals: number): st
   }
 }
 
+/** Whole cents, rounded up or down in the token's integer arithmetic. */
+export function toCents(amount: bigint, decimals: number, up: boolean): bigint {
+  if (decimals <= 2) return amount * 10n ** BigInt(2 - decimals)
+  const step = 10n ** BigInt(decimals - 2)
+  const whole = amount / step
+  return up && amount % step !== 0n ? whole + 1n : whole
+}
+
+/** `$1,234.56` from whole cents. */
+export function usdFromCents(cents: bigint): string {
+  const sign = cents < 0n ? "-" : ""
+  const abs = cents < 0n ? -cents : cents
+  return `${sign}$${(abs / 100n).toLocaleString("en-US")}.${String(abs % 100n).padStart(2, "0")}`
+}
+
 /** `1234.57`: a balance rounded half up to cents, ungrouped; `0.00` for none. */
 export function fixedCents(balance: { atomic: bigint; decimals: number } | null): string {
   if (!balance) return "0.00"
@@ -125,12 +140,7 @@ export const HIDDEN_BALANCE = "$••••••"
  * every Savings dollar figure uses it so none disagrees with the balance by a cent.
  */
 export function usdAtomicFloor(atomic: bigint, decimals: number = DEFAULT_DECIMALS): string {
-  const cents = (atomic < 0n ? -atomic : atomic) / 10n ** BigInt(decimals - 2)
-  const sign = atomic < 0n && cents > 0n ? "-" : ""
-  return `${sign}$${(cents / 100n).toLocaleString("en-US")}.${String(cents % 100n).padStart(
-    2,
-    "0",
-  )}`
+  return usdFromCents(toCents(atomic, decimals, false))
 }
 
 /** `$1,234.56` — a balance string with thousands separators. */

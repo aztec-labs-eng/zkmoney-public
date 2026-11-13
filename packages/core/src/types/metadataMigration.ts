@@ -67,6 +67,14 @@ export interface MigrationFundingBatch {
   approved?: boolean
   /** Its refund executed on L1, whatever its carrier transaction's receipt says. */
   refunded?: boolean
+  /**
+   * The last transaction that carried a direct batch's announcement alone, and how many were sent:
+   * its refund executed while its carrier never landed.
+   */
+  announcementTx?: string
+  announcements?: number
+  /** A direct batch's announcement is in a block on L1, so any device of the account finds its deposit. */
+  announced?: boolean
   /** Its selection stopped holding before it was sent; a later plan covers its funds. */
   abandoned?: boolean
   /** Source generation identifiers, never note preimages or keys. */

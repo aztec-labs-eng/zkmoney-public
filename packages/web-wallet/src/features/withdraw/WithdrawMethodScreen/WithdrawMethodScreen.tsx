@@ -249,7 +249,7 @@ export function WithdrawMethodScreen({
               <div className="ww-method-banners">
                 {available && (
                   <MethodOption
-                    glow="green"
+                    banner
                     title={copy.fresh.title}
                     body={copy.fresh.body}
                     testId="withdraw-fresh"
@@ -257,14 +257,14 @@ export function WithdrawMethodScreen({
                   >
                     <IconStack front>
                       {WITHDRAWAL_RECEIVE_ASSETS.map((asset) => (
-                        <CoinIcon key={asset.id} token={asset} size={26} badge={false} />
+                        <CoinIcon key={asset.id} token={asset} size={26} />
                       ))}
                     </IconStack>
                   </MethodOption>
                 )}
                 {routes.length > 0 && (
                   <MethodOption
-                    glow="blue"
+                    banner
                     title={copy.bridge.title}
                     body={copy.bridge.body}
                     testId="withdraw-bridge-out"

@@ -21,8 +21,13 @@ import {
 } from "../../engine/sipaDeposits"
 import { WITHDRAWAL_TERMINAL_PHASES, type WithdrawalRecord } from "../services/bridge/types"
 import { storedWithdrawals, type Withdrawals } from "../../engine/withdrawals"
-import { storedSavingsMoves, type SavingsMoves } from "../../engine/savingsMoves"
-import type { SavingsMoveRecord } from "../services/savings/types"
+import type { MoveStore } from "../../engine/moves"
+import {
+  retiredSavingsMoves,
+  savedMoveRecord,
+  type SavedSavingsMove,
+  type SkyHoldingRef,
+} from "../../storageMigrations/savingsMoves"
 import { scannedNetworks } from "../services/transactions/TransferEventScanner"
 import { logger } from "../../utils/logger"
 
@@ -67,7 +72,10 @@ export interface HistoricActivityImportDeps {
   transactions: Pick<Transfers, "importHistoricRows">
   sipaDeposits: Pick<SipaDeposits, "adopt">
   withdrawals: Pick<Withdrawals, "ready" | "adopt">
-  savingsMoves: Pick<SavingsMoves, "ready" | "get" | "put">
+  moves: Pick<MoveStore, "ready" | "apply">
+  /** The Sky holding the upgrade carried Savings' shares into; absent, no move is carried. */
+  skyHolding?: SkyHoldingRef
+  now: () => number
   /** Whether the account the import started for is still the active one; false stops it before a write. */
   ownsStorage?: () => boolean
   /** Runs the writes while no account switch may commit; absent, they run as they are. */
@@ -91,7 +99,7 @@ interface Snapshot {
   rows: Transaction[]
   deposits: SipaDeposit[]
   withdrawals: WithdrawalRecord[]
-  savingsMoves: SavingsMoveRecord[]
+  savingsMoves: SavedSavingsMove[]
   partial?: boolean
 }
 
@@ -117,7 +125,8 @@ export async function importHistoricActivity(
       unstamped: 0,
     }
     assertOwner()
-    await Promise.all([deps.withdrawals.ready, deps.savingsMoves.ready])
+    await Promise.all([deps.withdrawals.ready, deps.moves.ready])
+    const skipped = new Map<string, number>()
     for (const snapshot of snapshots) {
       assertOwner()
       result.transactions += await deps.transactions.importHistoricRows(
@@ -144,24 +153,39 @@ export async function importHistoricActivity(
         assertOwner()
         const { record: held, adopted } = await deps.withdrawals.adopt({ ...record, networkId })
         if (adopted) result.withdrawals++
-        const withdrawalLocalId = held.localId
         const move = snapshot.savingsMoves.find((m) => m.withdrawalLocalId === record.localId)
-        const current = await deps.savingsMoves.get(withdrawalLocalId)
-        if (!move || current?.retired) continue
+        if (!move) continue
+        const moved = deps.skyHolding
+          ? savedMoveRecord(
+              { ...move, withdrawalLocalId: held.localId, retired: true },
+              held,
+              deps.skyHolding,
+            )
+          : "noHolding"
+        if (typeof moved === "string") {
+          skipped.set(moved, (skipped.get(moved) ?? 0) + 1)
+          continue
+        }
         assertOwner()
-        // The retired record's outcome wins over a move this rollup adopted from the burn alone.
-        await deps.savingsMoves.put({ ...current, ...move, withdrawalLocalId, retired: true })
-        result.savingsMoves++
+        const at = deps.now()
+        if (await deps.moves.apply(moved.id, { type: "migrated", record: moved, at }))
+          result.savingsMoves++
       }
     }
     assertOwner()
+    for (const [reason, count] of skipped)
+      logger.warn(`${LOG_PREFIX} skipped ${count} retired Savings move(s): ${reason}`)
+    if (skipped.has("noHolding")) {
+      logger.warn(`${LOG_PREFIX} no Sky holding; the Savings moves are imported again next boot`)
+      return result
+    }
     if (snapshots.some((s) => s.partial)) {
       logger.warn(`${LOG_PREFIX} a source read short; the rest is imported again next boot`)
       return result
     }
     await deps.storage.setItem(
       key,
-      JSON.stringify({ at: Date.now(), databases: snapshots.map((s) => s.version) }),
+      JSON.stringify({ at: deps.now(), databases: snapshots.map((s) => s.version) }),
     )
     return result
   }
@@ -178,7 +202,7 @@ function snapshotOf(db: RetiredDatabase): Snapshot {
   const rows = storedTransfers(db) as Transaction[]
   const deposits = storedSipaDeposits(db)
   const withdrawals = storedWithdrawals(db)
-  const savingsMoves = storedSavingsMoves(db)
+  const savingsMoves = retiredSavingsMoves(db)
   const networks = scannedNetworks(db)
   for (const r of [...rows, ...deposits, ...withdrawals]) if (r.networkId) networks.add(r.networkId)
   if (networks.size > 1) {

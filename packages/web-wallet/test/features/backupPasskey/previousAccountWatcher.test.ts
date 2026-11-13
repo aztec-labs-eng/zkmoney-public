@@ -9,12 +9,9 @@ import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
 import {
   createSavedPreviousAccount,
-  fixed,
   memoryBackend,
   openDatabase,
-  type Service,
   type SavedPreviousAccount,
-  type SavingsSource,
 } from "@obsidion/front-core"
 import {
   ObsidionAccount,
@@ -44,7 +41,8 @@ const h = vi.hoisted(() => {
     savingsTuple: undefined as Record<string, string> | undefined,
     savingsBalance: 0n,
     savingsService: {} as Record<string, ReturnType<typeof vi.fn>>,
-    savingsSource: undefined as { quote: ReturnType<typeof vi.fn> } | undefined,
+    /** What the session prices Savings' shares at; unpriced when unset. */
+    savingsValue: undefined as ((shares: bigint) => Promise<bigint | undefined>) | undefined,
     caps: {} as Record<string, bigint>,
     wallet: undefined as unknown,
   }
@@ -198,12 +196,8 @@ function fakeWallet() {
 
 let saved: SavedPreviousAccount
 let offSaved: () => void
-/** The session's Savings, as `h.savingsSource` stands when the watcher reads it. */
-const savings: Service<SavingsSource | null> = {
-  ...fixed<SavingsSource | null>("savings", null),
-  get: () => ({ status: "ready", value: (h.savingsSource ?? null) as SavingsSource | null }),
-  ready: async () => (h.savingsSource ?? null) as SavingsSource | null,
-}
+/** Savings' shares priced as `h.savingsValue` stands when the watcher reads them. */
+const savingsValue = async (shares: bigint) => h.savingsValue?.(shares)
 /** Waits for the session's saved copy of the previous account to read `address`. */
 const savedReads = (address: string | undefined) =>
   vi.waitFor(() => expect(saved.address.get()).toBe(address))
@@ -234,7 +228,7 @@ beforeEach(() => {
   }
   h.savingsTuple = undefined
   h.savingsBalance = 0n
-  h.savingsSource = undefined
+  h.savingsValue = undefined
   h.caps = {}
   h.auth = {
     sessionKeys: async () =>
@@ -257,7 +251,7 @@ beforeEach(() => {
     feeTokenBridgeTuple: async () => h.feeTuple,
     teeSignerOfToken: async () => ({ signer: true }),
   })
-  getPreviousAccountWatcher().serve({ session, saved, pipeline: h.pipeline, savings })
+  getPreviousAccountWatcher().serve({ session, saved, pipeline: h.pipeline, savingsValue })
   h.tokenService = {
     getBalance: vi.fn(async () => h.balance),
     fetchTokenInformation: vi.fn(async () => ({ decimals: 18 })),
@@ -296,9 +290,8 @@ beforeEach(() => {
   }
   h.l2TokenService
     .mockReset()
-    .mockImplementation(
-      async (_page: unknown, _account: unknown, token: string) =>
-        token === SAVINGS_L2 ? h.savingsService : h.tokenService,
+    .mockImplementation(async (_page: unknown, _account: unknown, token: string) =>
+      token === SAVINGS_L2 ? h.savingsService : h.tokenService,
     )
   h.sponsor.mockReset().mockResolvedValue({ fpcAddress: "fpc", fpcArtifact: { artifact: true } })
   h.identity.mockReset().mockResolvedValue({ kind: "verified", identity: {} })
@@ -550,10 +543,10 @@ describe("the check", () => {
       h.savingsTuple = { portal: SAVINGS_PORTAL, l2Token: SAVINGS_L2 }
     })
 
-    it("reads Savings' shares beside Main's token, priced through the session's Savings", async () => {
+    it("reads Savings' shares beside Main's token, priced by the session", async () => {
       h.balance = ONE
       h.savingsBalance = 3n * ONE
-      h.savingsSource = { quote: vi.fn(async () => ({ value: 4n * ONE })) }
+      h.savingsValue = async () => 4n * ONE
       const pxe = fakeWallet()
       signIn(ROOT)
       const watcher = getPreviousAccountWatcher()
@@ -565,9 +558,10 @@ describe("the check", () => {
       ])
     })
 
-    it("leaves the shares unpriced while the session has no Savings or its quote fails", async () => {
+    it("leaves the shares unpriced while the session fails to read their price", async () => {
       vi.spyOn(console, "warn").mockImplementation(() => {})
       h.savingsBalance = 3n * ONE
+      h.savingsValue = async () => Promise.reject(new Error("no price"))
       const pxe = fakeWallet()
       signIn(ROOT)
       const watcher = getPreviousAccountWatcher()
@@ -577,10 +571,6 @@ describe("the check", () => {
         amount: 3n * ONE,
         dust: DUST,
       })
-
-      h.savingsSource = { quote: vi.fn(async () => Promise.reject(new Error("no price"))) }
-      await watcher.check(pxe.wallet)
-      expect(watcher.state.get().holdings?.[1]?.value).toBeUndefined()
     })
   })
 })
@@ -1252,6 +1242,7 @@ describe("moving", () => {
     h.caps = { [SAVINGS_PORTAL]: 2n * ONE }
     h.balance = ONE
     h.savingsBalance = 3n * ONE
+    h.savingsValue = async (shares) => shares
     const pxe = fakeWallet()
     signIn(ROOT)
     const watcher = getPreviousAccountWatcher()

@@ -92,7 +92,7 @@ export function sentDepositStage(
         tone: "live",
       },
       title: payee ? fmt(sendCopy.paying.status, { payee }) : sendCopy.arriving.title,
-      line: fmt(copy.arriving.line, { amount, network, landing: view.landing }),
+      line: fmt(copy.arriving.line, { amount, landing: view.landing }),
       note: payee ? fmt(sendCopy.paying.note, { payee }) : sendCopy.arriving.note,
       button: close,
     },
@@ -194,11 +194,7 @@ export function DepositSentStatus({
       front={coinIcon(view.coin)}
       back={<ChainIcon chainId={l1ChainId} name={l1ChainName} size={RING_TOKEN_SIZE} />}
       landing={
-        settlement ? (
-          <CoinIcon token={settlement} size={RING_TOKEN_SIZE} badge={false} />
-        ) : (
-          coinIcon(settled)
-        )
+        settlement ? <CoinIcon token={settlement} size={RING_TOKEN_SIZE} /> : coinIcon(settled)
       }
       blocks={blocks}
     />

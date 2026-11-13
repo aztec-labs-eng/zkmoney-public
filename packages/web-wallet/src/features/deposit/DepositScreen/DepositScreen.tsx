@@ -93,7 +93,7 @@ import { ChainStack } from "../../../ui/flow/ChainStack/ChainStack"
 import { BridgeInModal } from "../BridgeInModal/BridgeInModal"
 import { SwitchAccountModal } from "../SwitchAccountModal/SwitchAccountModal"
 import { bridgeRoutes } from "../bridgeChains"
-import { profileBridge } from "../../../session/walletChains"
+import { acrossBridge } from "../../../session/walletChains"
 import {
   DepositFlow,
   type DepositFlowNav,
@@ -102,6 +102,7 @@ import {
   type WalletKind,
 } from "../DepositFlow/DepositFlow"
 import { useSavedL1WalletList } from "../../../session/savedL1Wallets"
+import { balanceAccount } from "../coinBalance"
 import type { SavedL1Wallet } from "../../../session/savedL1Wallets"
 import { tokenName } from "../../token/tokenName"
 import { CoinIcon } from "../../../ui/CoinIcon/CoinIcon"
@@ -331,7 +332,7 @@ function DepositScreenBody({
   const [infoOpen, setInfoOpen] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [aboutLimits, setAboutLimits] = useState(start?.aboutLimits)
-  const bridge = profileBridge(config)
+  const bridge = acrossBridge(config)
   const bridgeIn = useStore(session.page.bridgeInProvider, serviceStatus) === "ready"
   const savedWallets = useSavedL1WalletList(Infinity).wallets
   // A desktop send may have been approved without a known hash: that address may still be funded, so
@@ -1365,7 +1366,7 @@ function DepositScreenBody({
               <div className="ww-method-banners">
                 {bridgeChains.length > 0 && (
                   <MethodOption
-                    glow="blue"
+                    banner
                     title={depositCopy.landing.bridgeTitle}
                     body={depositCopy.landing.bridgeBody}
                     testId="deposit-bridge-in"
@@ -1383,7 +1384,7 @@ function DepositScreenBody({
                   </MethodOption>
                 )}
                 <MethodOption
-                  glow="purple"
+                  banner
                   title={depositCopy.landing.addressTitle}
                   body={fmt(depositCopy.landing.addressBody, { chain: chainName })}
                   testId="deposit-show-address"
@@ -1459,6 +1460,7 @@ function DepositScreenBody({
                 ? l1.chainId ?? undefined
                 : undefined
             }
+            account={balanceAccount(entry.saved, l1.account)}
             intent={entry.intent}
             fundReady={fee != null && !(claiming && !target)}
             addressReady={!(busy && !shown)}
@@ -1482,6 +1484,7 @@ function DepositScreenBody({
                       saved={savedWallets}
                       onSaved={(saved) => {
                         done()
+                        steps.sender(saved)
                         if (permittedAccount(l1.accounts, saved.address))
                           return void pickAccount(l1, saved.address)
                         // An account of another wallet connects that wallet first.
@@ -1490,7 +1493,17 @@ function DepositScreenBody({
                         else l1.connectAnother()
                         steps.awaitAccount({ kind: fundOpen ? "fund" : "bridge", saved })
                       }}
-                      onPicked={done}
+                      onPicked={(changed) => {
+                        // A new account is not known yet; the connected one is its saved wallet, if any.
+                        steps.sender(
+                          changed
+                            ? undefined
+                            : savedWallets.find(
+                                (w) => w.address.toLowerCase() === l1.account?.toLowerCase(),
+                              ),
+                        )
+                        done()
+                      }}
                     />
                   )
             }
@@ -1551,7 +1564,7 @@ function DepositScreenBody({
                         disabled={!offering || (busy && !shown)}
                         onClick={() => openSheet(t)}
                       >
-                        <CoinIcon token={t} />
+                        <CoinIcon token={t} badge={l1Chain} />
                         <span className="ww-deposit__coin-name">
                           {t.symbol}
                           <small>{coinName(t)}</small>

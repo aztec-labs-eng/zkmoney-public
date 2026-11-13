@@ -18,9 +18,9 @@ import type { ActivityItem } from "../../../engine/feedRules"
 import type { WithdrawalRecord } from "../bridge/types"
 import { withdrawalAmounts } from "../bridge/withdrawalAmounts"
 import type { SipaDeposit, SIPASweep } from "../../../engine/sipaDeposits"
-import { savingsMoveBasis } from "../savings/savingsBasis"
-import type { SavingsMoveRecord } from "../savings/types"
+import type { MoveRecord } from "../../../engine/moveTransition"
 import type { UpgradeBatchItem } from "../../migration/upgradeActivity"
+import { rescale } from "../../../utils/rescale"
 
 export const ACTIVITY_CSV_COLUMNS = [
   "Date",
@@ -96,7 +96,7 @@ export interface ActivityCsvSources {
 
 export interface SavingsCsvSources {
   walletToken: ActivityCsvToken
-  moves: readonly SavingsMoveRecord[]
+  moves: readonly MoveRecord[]
   /** The moves' burns by local id. */
   burns: ReadonlyMap<string, WithdrawalRecord>
 }
@@ -297,7 +297,7 @@ export function buildActivityCsvRows(sources: ActivityCsvSources): ActivityCsvRo
 /**
  * The Savings account's rows: each move as that side sees it, in the wallet token, once its deposit
  * is claimed where the funds land. In: what the vault took, the figure the earnings basis counts,
- * or the burn's gross when nothing was read. Out: what landed on Main, with the rest of what the
+ * else its quote's, else what the move burned. Out: what landed on Main, with the rest of what the
  * vault paid as the fee.
  */
 export function buildSavingsCsvRows({
@@ -307,19 +307,20 @@ export function buildSavingsCsvRows({
 }: SavingsCsvSources): ActivityCsvRow[] {
   return moves
     .flatMap((move): ActivityCsvRow[] => {
-      if (!move.deposit?.claimed) return []
-      const burn = burns.get(move.withdrawalLocalId)
-      const landed = BigInt(move.deposit.amount)
-      const paid = move.vault ? BigInt(move.vault.assets) : undefined
+      if (move.phase !== "claimed" || !move.deposit) return []
+      const burn =
+        move.withdrawalLocalId === undefined ? undefined : burns.get(move.withdrawalLocalId)
+      const landed = move.deposit.amount
+      const paid = move.assets
       const hashes = {
-        aztecTxHash: burn?.l2TxHash,
-        ethereumTxHash: move.vault?.txHash ?? move.deposit.txHash,
+        aztecTxHash: burn?.l2TxHash ?? move.replayedFrom,
+        ethereumTxHash: move.l1?.depositTx ?? move.l1?.releaseTx,
       }
       if (move.direction === "in") {
-        const took = savingsMoveBasis(move, burn) ?? BigInt(move.amount)
+        const took = move.assets ?? move.quote?.conversionOut ?? move.amount
         return [
           {
-            timestampMs: move.deposit.at ?? move.endTime ?? move.startTime,
+            timestampMs: move.deposit.at,
             type: "Savings deposit",
             received: money(took, decimals, symbol),
             ...hashes,
@@ -415,10 +416,6 @@ function aztecCounterparty(nameOrAddress?: string, address?: string): Counterpar
   if (!name && !resolved) return undefined
   if (resolved && /^0x0+$/i.test(resolved)) return { name: "Faucet", network: "Aztec" }
   return { name, address: resolved, network: "Aztec" }
-}
-
-function rescale(amount: bigint, from: number, to: number): bigint {
-  return to >= from ? amount * 10n ** BigInt(to - from) : amount / 10n ** BigInt(from - to)
 }
 
 /** Undefined for a non-positive amount: a fee the chain shows as none is left blank, not 0. */

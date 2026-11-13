@@ -165,15 +165,17 @@ export async function probeAccountResiduals(
   // Folds the contract reads of the scan, and of the migration subsidy, into Multicall3 calls.
   const publicClient = l1MulticallClient(config)
   const storageId = session.namespace.id
-  // Unread, its sources would read as no history: the probe fails as a manifest that cannot be read.
-  const otherSources = await pageChain.otherManifestSources.read().catch((error) => {
+  // Unread, its sources or Savings shares would read as no history: the probe fails as a manifest
+  // that cannot be read.
+  const [otherSources, holdings] = await Promise.all([
+    pageChain.otherManifestSources.read(),
+    pageChain.holdings.read(),
+  ]).catch((error: unknown) => {
     throw new ManifestUnavailableError(error)
   })
-  const savings = await pageChain.savingsTuple.read().catch((error) => {
-    console.warn("[migration] the Savings deployment failed to load:", error)
-    return undefined
-  })
-  const products = savings ? [{ tuple: savings, symbol: "sUSDS" }] : []
+  const products = holdings.holdings
+    .filter((h) => h.rail === "skyEscrow")
+    .map((h) => ({ tuple: h.held.tuple, symbol: "sUSDS" }))
   const detected = await detectHistoricDeployments({
     ...config.oxideProfile,
     network: config.network,

@@ -132,10 +132,10 @@ export {
 } from "./components/SheetShell"
 export {
   StepTracker,
-  NextStepsDisclosure,
+  NextSteps,
   type TrackerStep,
   type StepTrackerProps,
-  type NextStepsDisclosureProps,
+  type NextStepsProps,
 } from "./components/StepTracker"
 export {
   FactBox,

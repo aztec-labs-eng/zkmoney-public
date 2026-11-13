@@ -15,11 +15,22 @@ import { DEFAULT_CONTRACTS, getHardcodedArtifact } from "@obsidion/contracts"
 import { encodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal_executor.js"
 
 import { buildSponsoredTeeOperation } from "../../../src/services/tee/sponsoredTeeOperation.js"
+import { withdrawalRecoveryChunks } from "../../../src/oxide/withdrawal/plainWithdrawal.js"
 import {
+  KIND_BY_ADDRESS,
   KIND_BY_ANY,
   buildClaimFpcPolicy,
   buildClaimSponsorPayload,
 } from "../../../src/feePaymentMethod/claimFpc/claimSponsoredCall.js"
+import {
+  CLAIM_FPC_BATCH_CAPS,
+  claimFpcBatchGas,
+  claimFpcSponsoredFee,
+} from "../../../src/feePaymentMethod/claimFpc/gas/claimFpcBatchGas.js"
+import { HOLDING_ADAPTERS } from "../../../src/oxide/holdings/adapters.js"
+import { readHoldingRoute } from "../../../src/oxide/holdings/holdingDeployment.js"
+import { buildMove } from "../../../src/oxide/holdings/moveRoute.js"
+import { fakeChain, vaultHolding } from "../../oxide/holdings/holdingFixtures.js"
 import { buildIntentCapsule } from "../../../src/feePaymentMethod/claimFpc/sponsoredCall.js"
 
 const interaction = (name: string) => ({ request: async () => ({ calls: [{ name }] }) } as never)
@@ -101,8 +112,15 @@ describe("buildSponsoredTeeOperation batch layout", () => {
     ])
     // Riders match by address or ByAny — no class witness.
     expect(assembled.classWitnesses).toEqual([{ leaf: 0 }, undefined, undefined, undefined])
-    // The declared fee prices the rider and the publish_da the finalized batch appends.
-    expect(feeSpy.mock.calls[0]![1]).toEqual([...assembled.innerCalls, { name: "publish_da" }])
+    // The declared fee prices the burn at the recovery chunks it emits, the rider, and the
+    // publish_da the finalized batch appends.
+    const [auth, burn, ...rest] = assembled.innerCalls
+    expect(feeSpy.mock.calls[0]![1]).toEqual([
+      auth,
+      { ...burn, recoveryChunks: 1 },
+      ...rest,
+      { name: "publish_da" },
+    ])
   })
 
   it("counts riders against MAX_SPONSORED_CALLS", async () => {
@@ -111,6 +129,120 @@ describe("buildSponsoredTeeOperation batch layout", () => {
     await expect(
       build({ teeUnsignedInteractions: [interaction("a"), interaction("b")] }),
     ).rejects.toThrow(/6 calls.*at most 5/)
+  })
+})
+
+describe("buildSponsoredTeeOperation per-call pricing", () => {
+  // Names each broadcast by its size tier, as the real Broadcaster does.
+  const tiered = {
+    methods: new Proxy({}, { get: (_, method) => () => interaction(String(method)) }),
+  }
+  const fourChunkBurn = {
+    ...withdrawOp(),
+    recoveryMemo: Buffer.alloc(800, 7),
+    finalizationRequestBroadcastParams: {
+      ...withdrawOp().finalizationRequestBroadcastParams,
+      broadcaster: tiered,
+    },
+  }
+  const accountCall = { call: { name: "authorize_intents" }, classWitness: { leaf: 0 } }
+
+  it.each([
+    ["with", accountCall],
+    ["without", undefined],
+  ])("prices a four-chunk burn at its four chunks %s the account call", async (_, account) => {
+    expect(withdrawalRecoveryChunks(fourChunkBurn as never)).toBe(4)
+    const policy = await buildClaimFpcPolicy([
+      { kind: KIND_BY_ADDRESS, target: new Fr(0x101n), selector: new Fr(0x202n), max_fee: 1n },
+    ])
+    sponsorSpy.mockClear()
+    const result = await buildSponsoredTeeOperation(
+      ctx,
+      args({ operations: [fourChunkBurn], accountCall: account, policy }),
+      { ...(deps as object), claimFpcSponsoredFee } as never,
+    )
+    const { innerCalls } = sponsorSpy.mock.calls[0]![0] as unknown as {
+      innerCalls: { name: string }[]
+    }
+    const sent = [...innerCalls, { name: "publish_da" }]
+    const at = (recoveryChunks: number) =>
+      claimFpcBatchGas(sent.map((c) => (c.name === "withdraw" ? { ...c, recoveryChunks } : c)))
+    const { gasLimits } = (result as { sendOpts: { fee: ReturnType<typeof claimFpcSponsoredFee> } })
+      .sendOpts.fee.gasSettings
+    expect({ daGas: gasLimits.daGas, l2Gas: gasLimits.l2Gas }).toEqual(at(4))
+    expect(at(4).l2Gas).toBeGreaterThan(at(2).l2Gas)
+  })
+})
+
+describe("a vault move's burn under the open policy every network commits", () => {
+  const tiered = {
+    methods: new Proxy({}, { get: (_, method) => () => interaction(String(method)) }),
+  }
+  const accountCall = { call: { name: "authorize_intents" }, classWitness: { leaf: 0 } }
+  /** The largest vault burn measured on a mainnet fork: a `Psm` move sponsored by the ClaimFPC. */
+  const MEASURED = { l2Gas: 962_501, daGas: 5_600 }
+
+  /** A move into a USDS vault whose memo is the shortest that makes its burn emit `chunks`. */
+  const burnOf = async (chunks: number) => {
+    const route = await readHoldingRoute(
+      fakeChain() as never,
+      HOLDING_ADAPTERS,
+      vaultHolding("DaiUsds"),
+    )
+    for (let length = 0; ; length += 8) {
+      const { operation, recoveryChunks } = buildMove(route, {
+        direction: "in",
+        minOut: 1n,
+        conversionMinOut: 1n,
+        recipientCommitment: `0x${"01".repeat(32)}`,
+        from: addr(2),
+        amount: 10n ** 21n,
+        proverTip: 0n,
+        relayerTip: 10n ** 18n,
+        recovery: { salt: new Fr(3n), account: `0x${"0a".repeat(20)}` },
+        recoveryMemo: Buffer.alloc(length, 7),
+      })
+      if (recoveryChunks === chunks) {
+        const broadcast = {
+          ...withdrawOp().finalizationRequestBroadcastParams,
+          broadcaster: tiered,
+        }
+        return { ...operation, finalizationRequestBroadcastParams: broadcast }
+      }
+    }
+  }
+
+  it.each(
+    [4, 5, 6].flatMap((chunks) => [
+      [chunks, "with", accountCall],
+      [chunks, "without", undefined],
+    ]),
+  )("fits the batch caps at %i chunks, %s the account call", async (chunks, _, account) => {
+    const policy = await buildClaimFpcPolicy([
+      { kind: KIND_BY_ANY, target: Fr.ZERO, selector: Fr.ZERO, max_fee: 1n },
+    ])
+    sponsorSpy.mockClear()
+    const result = await buildSponsoredTeeOperation(
+      ctx,
+      args({ operations: [await burnOf(chunks as number)], accountCall: account, policy }),
+      { ...(deps as object), claimFpcSponsoredFee } as never,
+    )
+    const { innerCalls } = sponsorSpy.mock.calls[0]![0] as unknown as {
+      innerCalls: { name: string }[]
+    }
+    const metered = claimFpcBatchGas(
+      [...innerCalls, { name: "publish_da" }].map((call) =>
+        call.name === "withdraw" ? { ...call, recoveryChunks: chunks as number } : call,
+      ),
+    )
+    // The model bounds a real burn, and the caps bound the model.
+    expect(metered.daGas).toBeGreaterThanOrEqual(MEASURED.daGas)
+    expect(metered.l2Gas).toBeGreaterThanOrEqual(MEASURED.l2Gas)
+    expect(metered.daGas).toBeLessThanOrEqual(CLAIM_FPC_BATCH_CAPS.daGas)
+    expect(metered.l2Gas).toBeLessThanOrEqual(CLAIM_FPC_BATCH_CAPS.l2Gas)
+    const { gasLimits } = (result as { sendOpts: { fee: ReturnType<typeof claimFpcSponsoredFee> } })
+      .sendOpts.fee.gasSettings
+    expect({ daGas: gasLimits.daGas, l2Gas: gasLimits.l2Gas }).toEqual(CLAIM_FPC_BATCH_CAPS)
   })
 })
 

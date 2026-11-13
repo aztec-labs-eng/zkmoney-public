@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react"
 import { Link } from "react-router-dom"
 import { ChainIcon } from "../../../ui/ChainIcon/ChainIcon"
+import { useSession } from "../../../session/session"
 import { CoinIcon } from "../../../ui/CoinIcon/CoinIcon"
 import { GradientText, Icon, PrimaryGradientButton } from "@obsidion/web-ds"
 import { CornerButton } from "../../../ui/flow/CornerButton/CornerButton"
@@ -242,6 +243,7 @@ export function DepositAddressSheet({
   onBack?: () => void
   onClose: () => void
 }) {
+  const { l1Chain } = useSession().page.config
   const phone = usePhoneLayout()
   // The bell's colors: gold while this page runs work that closing would lose, green when closing is safe.
   const tabBound = !!useTabBoundOperation()
@@ -381,10 +383,10 @@ export function DepositAddressSheet({
                 className={`${styles.coinRing} ${tabBound ? "is-tab-bound" : "is-safe"}`}
                 data-testid="deposit-coin-ring"
               />
-              <CoinIcon token={token} />
+              <CoinIcon token={token} badge={l1Chain} />
             </span>
           ) : (
-            <CoinIcon token={token} />
+            <CoinIcon token={token} badge={l1Chain} />
           )}
           <GradientText size={24} weight={700}>
             {title}
@@ -401,9 +403,9 @@ export function DepositAddressSheet({
           <RingStage
             active={stage.active}
             ring={stage.ring}
-            front={<CoinIcon token={token} size={RING_TOKEN_SIZE} badge={false} />}
+            front={<CoinIcon token={token} size={RING_TOKEN_SIZE} />}
             back={<ChainIcon chainId={chainId} name={chainName} size={RING_TOKEN_SIZE} />}
-            landing={<CoinIcon token={swapInto ?? token} size={RING_TOKEN_SIZE} badge={false} />}
+            landing={<CoinIcon token={swapInto ?? token} size={RING_TOKEN_SIZE} />}
             blocks={stage.blocks}
           />
           {/* Funds wait at the address until its broadcast lands. */}

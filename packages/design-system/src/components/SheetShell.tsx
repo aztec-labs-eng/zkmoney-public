@@ -1,4 +1,4 @@
-import type { ReactNode } from "react"
+import type { ReactNode, Ref } from "react"
 import { PrimaryGradientButton } from "./Buttons"
 import { Icon } from "./Icon"
 
@@ -24,6 +24,9 @@ export interface SheetShellProps {
   primary?: SheetAction & { style?: "gradient" | "plain" }
   /** Text button under the primary. */
   secondary?: SheetAction
+  /** A line above the primary that stays in view with it, e.g. which passkey to pick. */
+  note?: string
+  ref?: Ref<HTMLDivElement>
 }
 
 function SheetHeroMark({ hero }: { hero: SheetHero }) {
@@ -47,9 +50,18 @@ function SheetHeroMark({ hero }: { hero: SheetHero }) {
  * Body of a guided-flow sheet: hero mark, title, lead, boxes, actions. Transparent: the host dialog
  * draws the card and the close button, and on phones docks it as the bottom sheet.
  */
-export function SheetShell({ hero, title, lead, children, primary, secondary }: SheetShellProps) {
+export function SheetShell({
+  hero,
+  title,
+  lead,
+  children,
+  primary,
+  secondary,
+  note,
+  ref,
+}: SheetShellProps) {
   return (
-    <div className="zkm-sheet-shell">
+    <div className="zkm-sheet-shell" ref={ref}>
       <div className="zkm-sheet-shell__head">
         <SheetHeroMark hero={hero} />
         <div className="zkm-sheet-shell__titles">
@@ -60,26 +72,31 @@ export function SheetShell({ hero, title, lead, children, primary, secondary }: 
         </div>
       </div>
       {children && <div className="zkm-sheet-shell__body">{children}</div>}
-      {primary && (
-        <PrimaryGradientButton
-          title={primary.label}
-          buttonStyle={primary.style}
-          isDisabled={primary.disabled}
-          isLoading={primary.loading}
-          onClick={primary.onClick}
-          testId={primary.testId}
-        />
-      )}
-      {secondary && (
-        <button
-          type="button"
-          className="zkm-btn-reset zkm-pressable zkm-sheet-shell__secondary"
-          disabled={secondary.disabled || secondary.loading}
-          onClick={secondary.onClick}
-          data-testid={secondary.testId}
-        >
-          {secondary.label}
-        </button>
+      {(primary || secondary) && (
+        <div className="zkm-sheet-shell__actions">
+          {note && <p className="zkm-sheet-shell__note">{note}</p>}
+          {primary && (
+            <PrimaryGradientButton
+              title={primary.label}
+              buttonStyle={primary.style}
+              isDisabled={primary.disabled}
+              isLoading={primary.loading}
+              onClick={primary.onClick}
+              testId={primary.testId}
+            />
+          )}
+          {secondary && (
+            <button
+              type="button"
+              className="zkm-btn-reset zkm-pressable zkm-sheet-shell__secondary"
+              disabled={secondary.disabled || secondary.loading}
+              onClick={secondary.onClick}
+              data-testid={secondary.testId}
+            >
+              {secondary.label}
+            </button>
+          )}
+        </div>
       )}
     </div>
   )

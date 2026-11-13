@@ -26,7 +26,7 @@ const RELEASED: ReadonlySet<WithdrawalRecord["phase"]> = new Set<WithdrawalRecor
 
 /** What a withdrawal record's burn pays for, as the exit events' `kind` reports it. */
 export function withdrawKind(r: WithdrawalRecord): "withdraw" | "savings" | "paylink" {
-  return r.skyMove ? "savings" : r.source === "paylink" ? "paylink" : "withdraw"
+  return r.skyMove || r.vaultMove ? "savings" : r.source === "paylink" ? "paylink" : "withdraw"
 }
 
 /** A user's own cash-out. A legacy split withdrawal counts once, by its funds leg. */

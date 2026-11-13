@@ -8,6 +8,8 @@ export type BackupAddChoice = "1password" | "proton" | "computer" | "phone" | "p
 
 export type BackupKeyWarning = typeof BACKUP_ADD_SHEET_COPY.keyWarning
 
+export type BackupManagersLink = typeof BACKUP_ADD_SHEET_COPY.managersLink
+
 export type BackupAddOption = {
   id: BackupAddChoice
   label: string
@@ -15,8 +17,10 @@ export type BackupAddOption = {
   advice: readonly string[]
   /** On every option that can reach a key, which keeps the only copy of the backup. */
   keyWarning?: BackupKeyWarning
-  /** The phone: a backup there survives losing this computer. */
-  recommended?: true
+  /** Where a phone is reached, else on this computer: not every manager is admitted. */
+  managersLink?: BackupManagersLink
+  /** The phone is recommended: a backup there survives losing this computer, one here is lost. */
+  badge?: "recommended" | "notRecommended"
 }
 
 export type BackupAddOptionsInput = {
@@ -59,7 +63,8 @@ export function backupAddOptionsFor(input: BackupAddOptionsInput): BackupAddOpti
       label: copy.phone.label,
       description: own.phone.description,
       advice: lines(crossDevice),
-      recommended: true,
+      managersLink: own.managersLink,
+      badge: "recommended",
     })
   } else if (phone === "phone-or-key") {
     options.push({
@@ -68,7 +73,8 @@ export function backupAddOptionsFor(input: BackupAddOptionsInput): BackupAddOpti
       description: own.phoneOrKey.description,
       advice: lines(os === "windows" && copy.phoneOrKey.windows, crossDevice),
       keyWarning: own.keyWarning,
-      recommended: true,
+      managersLink: own.managersLink,
+      badge: "recommended",
     })
   }
   if (phone !== "phone-or-key") {
@@ -101,6 +107,8 @@ export function backupAddOptionsFor(input: BackupAddOptionsInput): BackupAddOpti
     label: mac ? copy.computer.macLabel : copy.computer.label,
     description: mac ? own.computer.macDescription : own.computer.description,
     advice: lines(script && PHONE_STEPS_COPY.local.extension),
+    ...(phone === undefined && { managersLink: own.managersLink }),
+    badge: "notRecommended",
   })
   return { options, selected: phone ?? "key" }
 }

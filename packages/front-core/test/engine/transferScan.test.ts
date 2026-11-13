@@ -77,7 +77,7 @@ describe("transferScan task", () => {
     const lookup = async () => {
       lookups()
       if (lookupFails-- > 0) throw new Error("no deployment")
-      return { tokenService: { tokenAddress: "0xshares", ...reader(shares) } }
+      return [{ tokenService: { tokenAddress: "0xshares", ...reader(shares) } }]
     }
     h.tasks.push(scan.task, savingsLookup({ wallet, account: account.service, lookup, scan }))
     ends.push(h.end, scan.dispose)

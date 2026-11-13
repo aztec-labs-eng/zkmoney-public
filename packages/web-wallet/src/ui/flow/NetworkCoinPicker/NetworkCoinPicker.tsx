@@ -22,6 +22,8 @@ export interface Coin {
   name: string
   icon: ReactNode
   comingSoon?: boolean
+  /** The row's right side, such as a balance. */
+  trailing?: ReactNode
 }
 
 /**
@@ -44,8 +46,8 @@ export function NetworkCoinPicker({
   /** At least one. */
   networks: readonly PickerNetwork[]
   coinsOn: (chainId: number) => Coin[]
-  /** Without a symbol, no coin starts picked. A network tap clears it until a coin is tapped. */
-  current: { chainId: number; symbol?: string }
+  /** The network it opens on; no coin starts picked. */
+  current: { chainId: number }
   onPick: (chainId: number, symbol: string) => void
   /** Leaves the picker; on a phone the coins go back to the networks first. */
   onBack?: () => void
@@ -92,7 +94,6 @@ export function NetworkCoinPicker({
       inPane
       searchLabel={!phone || coins.length > PHONE_COIN_SEARCH ? copy.searchCoins : undefined}
       section={(count) => fmt(copy.coinsOn, { network: shownNetwork.name, count })}
-      selected={pickChain === null ? current.symbol : undefined}
       items={coins.map((c) => ({
         id: c.symbol,
         icon: (
@@ -107,6 +108,7 @@ export function NetworkCoinPicker({
         tag: c.symbol,
         detail: shownNetwork.name,
         comingSoon: c.comingSoon,
+        trailing: c.trailing,
       }))}
       onPick={(symbol) => onPick(shownChain, symbol)}
     />

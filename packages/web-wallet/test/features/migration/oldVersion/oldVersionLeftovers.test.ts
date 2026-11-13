@@ -1,17 +1,13 @@
 import { describe, expect, it } from "vitest"
-import type { FeedItem, SavingsMoveRecord, WithdrawalRecord } from "@obsidion/front-core"
+import type { FeedItem, MoveDeposit, MoveRecord } from "@obsidion/front-core"
 import { oldVersionLeftovers } from "../../../../src/features/migration/oldVersionLeftovers"
+import { moveRecord } from "../../../support/moves"
 
 const ONE = 10n ** 18n
 
-const move = (localId: string, cents: bigint, extra: Partial<SavingsMoveRecord> = {}) =>
-  ({
-    withdrawalLocalId: localId,
-    direction: "in",
-    amount: ((cents * ONE) / 100n).toString(),
-    startTime: 1,
-    ...extra,
-  } as SavingsMoveRecord)
+const move = (id: string, cents: bigint, extra: Partial<MoveRecord> = {}) =>
+  moveRecord({ id, amount: (cents * ONE) / 100n, ...extra })
+const deposit = (inboxIndex: bigint): MoveDeposit => ({ inboxIndex, amount: 1n, at: 1 })
 
 const link = (
   networkId: string,
@@ -31,23 +27,10 @@ describe("old-version leftovers", () => {
     expect(
       oldVersionLeftovers({
         moves: [
-          {
-            move: move("old", 1022n, { retired: true }),
-            burn: { phase: "done" } as WithdrawalRecord,
-          },
-          {
-            move: move("ran", 300n, {
-              retired: true,
-              deposit: { inboxIndex: "1", amount: "1", claimed: false },
-            }),
-          },
-          {
-            move: move("done", 400n, {
-              retired: true,
-              deposit: { inboxIndex: "2", amount: "1", claimed: true },
-            }),
-          },
-          { move: move("new", 500n) },
+          move("old", 1022n, { phase: "migrated" }),
+          move("ran", 300n, { phase: "migrated", deposit: deposit(1n) }),
+          move("done", 400n, { phase: "claimed", deposit: deposit(2n) }),
+          move("new", 500n),
         ],
         items: [
           link("0xold", 10),

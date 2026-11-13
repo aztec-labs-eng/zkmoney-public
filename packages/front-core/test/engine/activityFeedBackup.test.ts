@@ -48,14 +48,21 @@ describe("selectFeed: backup passkey adds", () => {
     expect(shown(reopened)).toEqual([expect.not.objectContaining({ stopped: true })])
   })
 
-  it("marks a backup funding added once its add ran, not while its sweep waits", () => {
+  it("marks a backup funding added once its add finished, and running until then", () => {
     const funding = burn({ localId: "wdraw_backup_a1", recipient: addr("08"), intent: "backup" })
     const attempt = (phase: BackupRotationRecord["phase"]) =>
       ({ attemptId: "a1", phase, fundings: [{ localId: funding.localId }] } as BackupRotationRecord)
     const item = (rotations: readonly BackupRotationRecord[]) =>
       feedOf({ withdrawals: [funding], rotations }).items.find((i) => i.kind === "withdrawal")
     expect(item([attempt("funded")])).not.toHaveProperty("added")
+    // A landed funding whose add still runs is pending until the add is done.
+    expect(item([attempt("funded")])).toMatchObject({ running: true, pending: true })
+    // Its final approval is still in progress: the backup counts as added only once it is done.
+    expect(item([attempt("rerooted")])).not.toHaveProperty("added")
+    expect(item([attempt("rerooted")])).toMatchObject({ running: true, pending: true })
     expect(item([attempt("done")])).toMatchObject({ kind: "withdrawal", added: true })
+    expect(item([attempt("done")])).not.toHaveProperty("running")
+    expect(item([attempt("done")])).toMatchObject({ pending: false })
   })
 
   it("reads a stopped backup attempt's paid funding from its recovery, pending while sent", () => {
@@ -92,7 +99,9 @@ describe("selectFeed: backup passkey adds", () => {
     withdrawalFee: ((15n * E18) / 100n).toString(),
   }
 
-  it("prices a backup passkey add's one row at its cost, once the leftover is credited back", () => {
+  const returned = { amount: (7n * E18) / 10n, hold: (6n * E18) / 10n, returned: true }
+
+  it("prices a backup passkey add's one row at its fee, once the hold is credited back", () => {
     const leftover = backupLeftover()
     const funding = burn({
       recipient: addr("05"),
@@ -102,15 +111,10 @@ describe("selectFeed: backup passkey adds", () => {
       ...backupFees,
     })
     const { items } = feedOf({ deposits: [leftover], withdrawals: [funding] })
-    expect(items).toEqual([
-      expect.objectContaining({
-        kind: "withdrawal",
-        cost: expect.objectContaining({ costDisplay: "0.7" }),
-      }),
-    ])
+    expect(items).toEqual([expect.objectContaining({ kind: "withdrawal", fee: returned })])
   })
 
-  it("lists a backup passkey funding rebuilt from chain as the add, priced at its cost", () => {
+  it("lists a backup passkey funding rebuilt from chain as the add, priced at its fee", () => {
     // A fresh device rebuilds the burn from the previous account's events, with no intent.
     const leftover = backupLeftover()
     const funding = burn({
@@ -123,12 +127,8 @@ describe("selectFeed: backup passkey adds", () => {
     const plain = burn({ localId: "w2", recipient: addr("e2"), tokenDecimals: 18, rebuilt: true })
     const { items } = feedOf({ deposits: [leftover], withdrawals: [funding, plain] })
     expect(items).toEqual([
-      expect.objectContaining({
-        id: "w1",
-        intent: "backup",
-        cost: expect.objectContaining({ costDisplay: "0.7" }),
-      }),
-      expect.objectContaining({ id: "w2", intent: undefined, cost: undefined }),
+      expect.objectContaining({ id: "w1", intent: "backup", fee: returned }),
+      expect.objectContaining({ id: "w2", intent: undefined, fee: undefined }),
     ])
   })
 })

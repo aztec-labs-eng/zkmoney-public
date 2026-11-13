@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
+import { assetSymbol, fullGitSha, httpUrl, isoInstant, l1Address, profileId } from "./fields.js"
 
 /**
  * The store serves one document per published version at `profiles/<generation>/<x.y.z>.json` — this
@@ -24,21 +25,13 @@ export const NETWORK_L1_CHAIN_IDS: Record<ProfileNetwork, number> = {
   mainnet: 1,
 }
 
-const nonEmpty = z.string().min(1)
-const l1Address = z.string().regex(/^0x[0-9a-fA-F]{40}$/, "expected 20-byte 0x-hex L1 address")
 const field32 = z.string().regex(/^0x[0-9a-fA-F]{64}$/, "expected 32-byte 0x-hex value")
 const sha256 = z.string().regex(/^[0-9a-f]{64}$/, "expected lowercase SHA-256 value")
-const fullGitSha = z.string().regex(/^[0-9a-f]{40}$/, "expected full 40-char lowercase git sha")
-const isoInstant = z.iso.datetime({ offset: true })
-const httpUrl = z.url({ protocol: /^https?$/ })
 const versionProfileUrl = httpUrl.refine(
   (value) => !new URL(value).pathname.endsWith("/current.json"),
   "profile reference must not name mutable current.json",
 )
 
-const profileId = z
-  .string()
-  .regex(/^[a-z0-9][a-z0-9-]{0,63}$/, "profileId: lowercase alphanumeric + dashes, max 64 chars")
 /**
  * Our deployment id, spelled like the `CONTRACT_SERVICE_VERSION` it succeeds; only uniqueness
  * matters — `current`, not ordering, picks the live one.
@@ -54,8 +47,6 @@ export function isConfigVersionId(value: unknown): value is string {
 const contractName = z
   .string()
   .regex(/^[a-zA-Z][a-zA-Z0-9]{0,63}$/, "contract name: camelCase identifier")
-
-const assetSymbol = z.string().regex(/^[A-Za-z][A-Za-z0-9]{0,15}$/, "asset: a token symbol")
 
 const featureId = z.string().min(1)
 
@@ -84,62 +75,6 @@ export const PER_INSTANCE_CONTRACTS = [
   "obsidionAccountAlphaTest",
   "linkLocator",
 ] as const
-
-const bridgeToken = z.strictObject({
-  symbol: assetSymbol,
-  address: l1Address,
-  comingSoon: z.literal(true).optional(),
-})
-const bridgeNativeToken = z.strictObject({
-  symbol: assetSymbol,
-  native: z.literal(true),
-  comingSoon: z.literal(true).optional(),
-})
-/** Oxide's bridge escrows swap DAI to these on L1 before bridging; nothing else can leave. */
-export const BRIDGE_OUT_SYMBOLS = ["USDC", "USDT"] as const
-
-const bridgeChainBase = {
-  chainId: z.int().positive(),
-  name: nonEmpty,
-  etaMinutes: z.int().positive(),
-  rpcUrl: httpUrl,
-  /** Tokens a wallet on this chain can bridge in. */
-  in: z.array(z.union([bridgeToken, bridgeNativeToken])),
-}
-const escrowBridgeChain = z.strictObject({
-  ...bridgeChainBase,
-  /** Tokens a withdrawal can land here, through oxide's bridge escrow for this provider. */
-  out: z.array(bridgeToken.extend({ symbol: z.enum(BRIDGE_OUT_SYMBOLS) })),
-  /**
-   * Across's SpokePool and periphery here: the only contracts a bridge-in call and its approvals
-   * may name. Without them the chain quotes nothing.
-   */
-  contracts: z.array(l1Address).min(1).optional(),
-})
-/** Oxide has no escrow for this provider, so it bridges in only. */
-const inOnlyBridgeChain = z.strictObject(bridgeChainBase)
-
-/** The one bridge a version offers, and the chains and tokens it serves. */
-const bridgeSchema = z.discriminatedUnion("provider", [
-  z.strictObject({
-    provider: z.literal("across"),
-    apiUrl: httpUrl,
-    /** Oxide's AcrossBridgeEscrowFactory, used when the pinned manifest names none. */
-    escrowFactory: l1Address.optional(),
-    /** Across's MulticallHandler on the L1. Without it no deposit that carries a message quotes. */
-    multicallHandler: l1Address.optional(),
-    chains: z.array(escrowBridgeChain),
-  }),
-  z.strictObject({
-    provider: z.literal("lifi"),
-    apiUrl: httpUrl,
-    integrator: nonEmpty,
-    chains: z.array(inOnlyBridgeChain),
-  }),
-])
-
-export type ConfigBridge = z.infer<typeof bridgeSchema>
-export type ConfigBridgeChain = ConfigBridge["chains"][number]
 
 export type ConfigContractEntry = z.infer<typeof contractEntry>
 export type ConfigL1ContractEntry = z.infer<typeof l1ContractEntry>
@@ -202,13 +137,35 @@ const versionSchema = z.strictObject({
       }),
     )
     .optional(),
-  /** Absent: deposits and withdrawals stay on L1. */
-  bridge: bridgeSchema.optional(),
   /**
    * The holdings the wallet shows, in order: each names a holding feature of `oxide`'s pinned
-   * deployment. One the deployment lacks does not show.
+   * deployment, or a savings portal of `portals`. One the deployment lacks does not show. Absent:
+   * the deployment's Sky savings on the pinned bridge show, unless `portals.savings` leaves them
+   * out. An empty list shows none.
    */
   holdings: z.array(featureId).optional(),
+  /**
+   * What each portal of `oxide`'s pinned deployment is to the wallet. `main`: the portals whose
+   * tokens the deposit surfaces offer, `oxide.portal` among them. `savings`: each holds `portal`'s
+   * token over `base`'s, under an `id` that `holdings` lists it by. A manifest feature of that id
+   * supplies its contracts. A portal in neither shows nowhere, but for the fee token's. Absent:
+   * the manifest's features split the rows, and the deposit surfaces offer only the Main rows
+   * that `assets` names.
+   * `conversion` is open, so a kind a later build adds does not fail this one's parse.
+   */
+  portals: z
+    .strictObject({
+      main: z.array(l1Address).min(1),
+      savings: z.array(
+        z.strictObject({
+          id: featureId,
+          portal: l1Address,
+          base: l1Address,
+          conversion: z.string().min(1),
+        }),
+      ),
+    })
+    .optional(),
   /**
    * Exact bytes at `artifacts/<generation>/<version>.json`; absent on profiles predating catalogs.
    * Pre-field clients prune this as an additive version key in their served-profile wire parser;
@@ -289,51 +246,6 @@ const baseSchema = z.strictObject({
   versions: z.record(versionId, versionEntrySchema),
 })
 
-function checkBridge(
-  issues: z.core.$ZodRawIssue[],
-  p: z.infer<typeof baseSchema>,
-  id: string,
-  bridge: ConfigBridge,
-) {
-  const issue = (message: string, input: unknown, path: (string | number)[]) =>
-    issues.push({
-      code: "custom",
-      message: `version "${id}" ${message}`,
-      input,
-      path: ["versions", id, "bridge", ...path],
-    })
-  const chainIds = new Set<number>()
-  const outs: { symbol: string }[][] =
-    bridge.provider === "lifi" ? [] : bridge.chains.map((chain) => chain.out)
-  bridge.chains.forEach((chain, index) => {
-    if (chain.chainId === p.shared.l1ChainId)
-      issue(`lists the L1 chain ${chain.chainId} as a bridge chain`, chain.chainId, [
-        "chains",
-        index,
-        "chainId",
-      ])
-    if (chainIds.has(chain.chainId))
-      issue(`lists chain ${chain.chainId} twice`, chain.chainId, ["chains", index, "chainId"])
-    chainIds.add(chain.chainId)
-    const directions: [string, { symbol: string }[]][] = [["in", chain.in]]
-    if (outs[index]) directions.push(["out", outs[index]])
-    for (const [direction, tokens] of directions) {
-      const symbols = new Set<string>()
-      tokens.forEach((token, tokenIndex) => {
-        if (symbols.has(token.symbol))
-          issue(`lists ${token.symbol} twice on chain ${chain.chainId}`, token, [
-            "chains",
-            index,
-            direction,
-            tokenIndex,
-            "symbol",
-          ])
-        symbols.add(token.symbol)
-      })
-    }
-  })
-}
-
 export const configProfileSchema = baseSchema.check((ctx) => {
   const p = ctx.value
 
@@ -409,6 +321,29 @@ export const configProfileSchema = baseSchema.check((ctx) => {
         path: ["versions", id, "oxide", "expectedGitSha"],
       })
     }
+    if (version.portals) {
+      const { main, savings } = version.portals
+      const refuse = (message: string) =>
+        ctx.issues.push({
+          code: "custom",
+          message: `version "${id}" ${message}`,
+          input: version.portals,
+          path: ["versions", id, "portals"],
+        })
+      const own = savings.find((entry) => entry.portal.toLowerCase() === entry.base.toLowerCase())
+      if (own) refuse(`names the savings portal ${own.id} over itself`)
+      const ids = savings.map((entry) => entry.id)
+      const twice = ids.find((entry, i) => ids.indexOf(entry) !== i)
+      if (twice !== undefined) refuse(`names two savings portals ${twice}`)
+      const mains = new Set(main.map((portal) => portal.toLowerCase()))
+      if (!mains.has(version.oxide.portal.toLowerCase()))
+        refuse("leaves oxide.portal out of portals.main")
+      const both = savings.find((entry) => mains.has(entry.portal.toLowerCase()))
+      if (both) refuse(`lists the portal ${both.portal} as Main and as savings`)
+      const unnamed = version.holdings?.find((holding) => !ids.includes(holding))
+      if (unnamed !== undefined)
+        refuse(`lists the holding ${unnamed}, which portals.savings does not name`)
+    }
     const assets = version.assets ?? []
     const isOxides = (portal: string) => portal.toLowerCase() === version.oxide.portal.toLowerCase()
     const walletToken = assets.find((asset) => asset.symbol === WALLET_TOKEN_SYMBOL)
@@ -449,7 +384,6 @@ export const configProfileSchema = baseSchema.check((ctx) => {
       if (isOxides(asset.portal) && asset.expectedGitSha !== version.oxide.expectedGitSha)
         issue(`pins ${asset.symbol} to oxide's deployment at another oxide cut`, "expectedGitSha")
     })
-    if (version.bridge) checkBridge(ctx.issues, p, id, version.bridge)
   }
 
   // Every network but sandbox serves real users, so every endpoint must be https — keyed on
@@ -467,11 +401,6 @@ export const configProfileSchema = baseSchema.check((ctx) => {
       if (version.zkmoneyApiUrl) urls.push([`versions.${id}.zkmoneyApiUrl`, version.zkmoneyApiUrl])
       urls.push([`versions.${id}.paylinkDomain`, version.paylinkDomain])
       urls.push([`versions.${id}.oxide.manifestUrl`, version.oxide.manifestUrl])
-      const bridge = version.bridge
-      if (bridge && "apiUrl" in bridge) urls.push([`versions.${id}.bridge.apiUrl`, bridge.apiUrl])
-      bridge?.chains.forEach((chain, index) =>
-        urls.push([`versions.${id}.bridge.chains.${index}.rpcUrl`, chain.rpcUrl]),
-      )
     }
     for (const [path, url] of urls) {
       if (!url.startsWith("https://")) {

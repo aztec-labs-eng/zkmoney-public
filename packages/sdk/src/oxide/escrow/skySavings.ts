@@ -3,14 +3,19 @@
  * tip is priced the way the swap escrow's is, by oxide's relayer quote: the relayer's exact
  * `OperationExecutor.execute`, simulated against the counterfactual escrow funded by state override.
  */
+import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import {
+  SkyEscrowAbi,
   SkyEscrowFactoryAbi,
   SkyRoute,
   encodeSkyEscrowDeploy,
   predictSkyEscrowAddressLocally,
   type SkyEscrowArgs,
 } from "@oxide/experiments/sky/sky_savings.js"
+import { buildSkyEscrowWithdrawal } from "@oxide/experiments/sky/withdraw_escrow.js"
 import { PlainWithdrawalSubsidyAbi } from "@oxide/l1-contracts"
+import type { L1OperationBroadcaster } from "@oxide/oxide-client/broadcaster_calls.js"
 import {
   UINT256_EXTRA_CALLDATA_GAS,
   estimateL1OperationFeeValues,
@@ -21,10 +26,13 @@ import {
   keccak256,
   numberToHex,
   type Address,
+  type Hash,
   type Hex,
   type PublicClient,
 } from "viem"
+import type { WithdrawalOptions } from "../../services/withdrawal/plainWithdrawal.js"
 import { quoteL1OperationTip, type RelayerTipEstimate } from "../tip/l1OperationQuote.js"
+import type { SwapRecovery } from "./swapOnWithdraw.js"
 import { findBalanceOfSlot, mappingSlot } from "./swapOnWithdrawSimulator.js"
 import {
   PAR_TIP_TOKEN,
@@ -196,6 +204,141 @@ export async function quoteSkyReleaseTip(
     baseFee,
     priorityFee: feeValues.maxPriorityFeePerGas,
     subsidy,
+  }
+}
+
+export interface SkyEscrowMoveArgs {
+  /** Main's broadcaster binding, on both routes: Main's relayer runs every Sky escrow. */
+  broadcaster: L1OperationBroadcaster & { address: AztecAddress }
+  factory: Address
+  /** What the escrow holds and tips in. */
+  dai: Address
+  /** The account that burns. */
+  from: AztecAddress
+  /** The source portal, which releases the burn. */
+  portal: Address
+  /** The executor the burn pays, which must deliver DAI to the escrow, and its fee as priced. */
+  executor: { address: Address; fee: bigint }
+  amount: bigint
+  route: SkyRoute
+  /** The secret hash of the deposit the escrow makes. */
+  recipientCommitment: Hex
+  recovery: SwapRecovery
+  nonce: Hex
+  /** DAI the escrow pays whoever runs it. */
+  escrowTip: bigint
+  /** DAI the release pays the relayer. */
+  releaseTip: bigint
+}
+
+export interface SkyEscrowMove {
+  /** The counterfactual escrow the burn pays. */
+  escrow: Address
+  args: SkyEscrowArgs
+  /** The burn's `WithdrawalOptions.escrow`. */
+  options: NonNullable<WithdrawalOptions["escrow"]>
+}
+
+/**
+ * The burn into a counterfactual Sky escrow, and the L1 operation that runs the escrow once the
+ * release has paid it its DAI.
+ */
+export function buildSkyEscrowMove(move: SkyEscrowMoveArgs): SkyEscrowMove {
+  const built = buildSkyEscrowWithdrawal({
+    broadcaster: move.broadcaster,
+    skyEscrowFactory: EthAddress.fromString(move.factory),
+    dai: EthAddress.fromString(move.dai),
+    from: move.from,
+    withdrawalExecutor: {
+      address: EthAddress.fromString(move.executor.address),
+      fee: move.executor.fee,
+    },
+    amount: move.amount,
+    withdrawalRelayerTip: move.releaseTip,
+    // A move's burn pays no prover tip.
+    proverTip: 0n,
+    portal: EthAddress.fromString(move.portal),
+    route: move.route,
+    recipientCommitment: move.recipientCommitment,
+    recoveryAccount: EthAddress.fromString(move.recovery.account),
+    relayerTip: move.escrowTip,
+    nonce: move.nonce,
+    recoverySalt: move.recovery.salt,
+  })
+  return {
+    escrow: built.escrow.toString() as Address,
+    args: built.escrowArgs,
+    options: {
+      escrow: built.escrow,
+      userPayload: built.operation.userPayload,
+      l1Operation: built.l1Operation,
+      broadcaster: move.broadcaster.address.toString(),
+      memo: { sky: { ...built.escrowArgs, factory: move.factory } },
+      executor: move.executor.address,
+      withdrawalFee: move.executor.fee,
+    },
+  }
+}
+
+/** One `EscrowRecovered`: a token the escrow's recovery account took back. */
+export interface SkyEscrowRecovery {
+  txHash: Hash
+  /** DAI, sUSDS, or the zero address for ETH. */
+  token: Address
+  amount: bigint
+  to: Address
+  blockNumber: bigint
+}
+
+/**
+ * What became of an escrow's DAI: its factory ran it, or its recovery account took tokens back. An
+ * Unstake escrow can hold sUSDS and DAI, so a recovery lists every token taken back, in log order.
+ * `assets`: the run's DAI after its tip, which a Stake puts into the vault as USDS.
+ */
+export type SkyEscrowOutcome =
+  | { kind: "ran"; assets: bigint }
+  | { kind: "recovered"; recoveries: SkyEscrowRecovery[] }
+
+/**
+ * The escrow's outcome in `fromBlock..toBlock`, from its `SkyEscrowExecuted` or `EscrowRecovered`;
+ * undefined while it waits. The caller bounds the range to what its provider serves. A run wins: a
+ * recovery after it took back only what reached the escrow later.
+ */
+export async function readSkyEscrowOutcome(
+  client: Pick<PublicClient, "getContractEvents">,
+  args: { escrow: Address; fromBlock: bigint; toBlock: bigint },
+): Promise<SkyEscrowOutcome | undefined> {
+  const { escrow, fromBlock, toBlock } = args
+  const [ran, recovered] = await Promise.all([
+    client.getContractEvents({
+      address: escrow,
+      abi: SkyEscrowAbi,
+      eventName: "SkyEscrowExecuted",
+      fromBlock,
+      toBlock,
+      strict: true,
+    }),
+    client.getContractEvents({
+      address: escrow,
+      abi: SkyEscrowAbi,
+      eventName: "EscrowRecovered",
+      fromBlock,
+      toBlock,
+      strict: true,
+    }),
+  ])
+  const [run] = ran
+  if (run) return { kind: "ran", assets: run.args.daiAmount }
+  if (recovered.length === 0) return undefined
+  return {
+    kind: "recovered",
+    recoveries: recovered.map((log) => ({
+      txHash: log.transactionHash,
+      token: log.args.token,
+      amount: log.args.amount,
+      to: log.args.target,
+      blockNumber: log.blockNumber,
+    })),
   }
 }
 

@@ -1,33 +1,13 @@
 // @vitest-environment node
-import type { SavingsMoveRecord, WithdrawalRecord } from "@obsidion/front-core"
+import type { WithdrawalRecord } from "@obsidion/front-core"
 import type { FundingAmount, SpendShape } from "@obsidion/sdk"
-import { describe, expect, it, vi } from "vitest"
-
-vi.mock("../../../src/features/withdraw/useWithdrawals", () => ({ useWithdrawals: () => ({}) }))
-vi.mock("../../../src/features/migration/oldVersionBalance", () => ({
-  useOldVersionHoldings: () => ({}),
-}))
-vi.mock("../../../src/features/migration/upgradeLock", () => ({
-  useUpgradeLock: () => ({ state: "pending" }),
-}))
-vi.mock("../../../src/features/registration/registrationResume", () => ({
-  unlockedSessionKeys: () => {},
-}))
-vi.mock("../../../src/config/classArtifacts", () => ({ getWebOxideToken: () => {} }))
-vi.mock("../../../src/config/oxideTuple", () => ({}))
-vi.mock("../../../src/features/backupPasskey/backupMoveTokens", async (importOriginal) => ({
-  moveCount: (
-    await importOriginal<typeof import("../../../src/features/backupPasskey/backupMoveTokens")>()
-  ).moveCount,
-  readMoveBalances: () => {},
-}))
-vi.mock("../../../src/features/savings/savingsTasks", () => ({
-  useSavingsMovesReplayed: () => true,
-}))
-
-const { chainFacts, savingsMoving, withdrawalInFlight } = await import(
-  "../../../src/features/backupPasskey/backupPasskeyFacts"
-)
+import { describe, expect, it } from "vitest"
+import {
+  chainFacts,
+  savingsMoving,
+  withdrawalInFlight,
+} from "../../../src/features/backupPasskey/backupPasskeyFacts"
+import { moveRecord as move } from "../../support/moves"
 
 const DAI = 10n ** 18n
 const funding = (amount: bigint): FundingAmount =>
@@ -56,6 +36,18 @@ describe("chainFacts", () => {
       cap: 5n * DAI,
     })
     expect(facts.quote).toEqual({ total: 2n * DAI, fixed: DAI, network: DAI })
+  })
+
+  it("says the funding comes back in part, and whether one transfer funds a tip on top", () => {
+    // Main Account holds one 3 DAI note: one transfer funds up to it, not a unit more.
+    const facts = chainFacts({
+      funding: funding(2n * DAI),
+      shape: shape([3n * DAI]),
+      cap: 5n * DAI,
+    })
+    expect(facts.credited).toBe(DAI)
+    expect(facts.fits(3n * DAI)).toBe(true)
+    expect(facts.fits(3n * DAI + 1n)).toBe(false)
   })
 
   it("has no plan over a cap of nothing", () => {
@@ -108,43 +100,34 @@ describe("withdrawalInFlight", () => {
 })
 
 describe("savingsMoving", () => {
-  const move = (over: Partial<SavingsMoveRecord> = {}) =>
-    ({
-      direction: "in",
-      withdrawalLocalId: "w1",
-      escrow: "0x01",
-      nonce: "0x02",
-      recipientCommitment: "0x03",
-      amount: "1",
-      startTime: 0,
-      ...over,
-    } as SavingsMoveRecord)
-
-  it("counts a move until its deposit is claimed or its escrow recovered", () => {
+  it("counts a move until it settles", () => {
     expect(savingsMoving([move()], [])).toBe(true)
-    const claimed = { inboxIndex: "1", amount: "1", claimed: true }
-    expect(savingsMoving([move({ deposit: claimed })], [])).toBe(false)
-    expect(savingsMoving([move({ recovered: { to: "0x04", txHashes: [] } })], [])).toBe(false)
+    expect(savingsMoving([move({ phase: "depositSeen" })], [])).toBe(true)
+    expect(savingsMoving([move({ phase: "claimed" })], [])).toBe(false)
+    expect(savingsMoving([move({ phase: "recovered" })], [])).toBe(false)
   })
 
-  const burn = (phase: WithdrawalRecord["phase"]) => ({ localId: "w1", phase } as WithdrawalRecord)
-
-  it("leaves out a move whose burn failed, and a retired one", () => {
-    expect(savingsMoving([move()], [burn("failed")])).toBe(false)
-    expect(savingsMoving([move()], [burn("done")])).toBe(true)
-    expect(savingsMoving([move({ retired: true })], [])).toBe(false)
+  it("leaves out a move whose burn failed or never went out, and a retired one", () => {
+    expect(savingsMoving([move({ phase: "failed" })], [])).toBe(false)
+    expect(savingsMoving([move({ phase: "dropped" })], [])).toBe(false)
+    expect(savingsMoving([move({ phase: "migrated" })], [])).toBe(false)
   })
 
-  it("counts a move out like a move in", () => {
-    expect(savingsMoving([move({ direction: "out" })], [burn("done")])).toBe(true)
-  })
+  // The burn's hash in another case than the move's copy of it.
+  const l2TxHash = "0xAB" as WithdrawalRecord["l2TxHash"]
+  const burn = (phase: WithdrawalRecord["phase"]) =>
+    ({ localId: "w1", l2TxHash, phase } as WithdrawalRecord)
 
-  it("counts a Sky burn a rescan rebuilt until the settle pass adopts it", () => {
-    const rebuilt = { ...burn("done"), skyMove: { direction: "in" } } as WithdrawalRecord
+  it.each([
+    ["Sky", { skyMove: { direction: "in" } }],
+    ["vault", { vaultMove: { holdingId: "fea-vault", nonce: "0x01" } }],
+  ])("counts a %s move's burn until a move carries it", (_rail, marker) => {
+    const rebuilt = { ...burn("done"), ...marker } as WithdrawalRecord
     expect(savingsMoving([], [rebuilt])).toBe(true)
     expect(savingsMoving([], [{ ...rebuilt, phase: "failed" }])).toBe(false)
-    const claimed = { inboxIndex: "1", amount: "1", claimed: true }
-    expect(savingsMoving([move({ deposit: claimed })], [rebuilt])).toBe(false)
+    expect(savingsMoving([move({ phase: "claimed" })], [rebuilt])).toBe(false)
+    const replayed = move({ phase: "claimed", withdrawalLocalId: undefined, replayedFrom: "0xab" })
+    expect(savingsMoving([replayed], [rebuilt])).toBe(false)
     // A plain withdrawal is no Savings move.
     expect(savingsMoving([], [burn("done")])).toBe(false)
   })

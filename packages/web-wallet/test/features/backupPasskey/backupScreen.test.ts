@@ -19,7 +19,10 @@ import type { FasterWithdrawal } from "../../../src/features/withdraw/useFasterW
 import {
   pendingRecord,
   recoveryKey,
+  selectAddStep,
   selectBackupScreen,
+  selectSheetClose,
+  type AddStep,
   type BackupScreen,
   type BackupScreenInput,
   type EntryInput,
@@ -50,7 +53,9 @@ const FACTS: EntryFacts = {
   routeLive: true,
   balance: 10n * DAI,
   fundingAmount: 2n * DAI,
+  credited: (14n * DAI) / 10n,
   chunk: { kind: "fits" },
+  fits: (amount) => amount <= 10n * DAI,
   plan: true,
   moves: 2,
   savingsMoving: false,
@@ -87,7 +92,6 @@ const select = (over: Partial<BackupScreenInput> = {}): BackupScreen =>
     deps: "ready",
     addable: true,
     laptop: false,
-    oneDevice: false,
     busy: false,
     cancelled: false,
     now: 0,
@@ -289,7 +293,7 @@ describe("selectBackupScreen, a saved rotation", () => {
     const manager = createdRecord({ backup: { ...createdRecord().backup, prfAaguid: BITWARDEN } })
     expect(at(manager, null)).toMatchObject({ savedIn: { manager: providerNameFor(BITWARDEN) } })
     expect(at(signedRecord({ phase: "funded", ...landing }))).toMatchObject({
-      paid: (6n * DAI) / 10n,
+      paid: { sent: 2n * DAI, credited: (14n * DAI) / 10n },
     })
   })
 
@@ -388,7 +392,7 @@ describe("selectBackupScreen, a saved rotation", () => {
     expect(at(done, {}, { keys: both })).toEqual({
       id: "done",
       keys: both.keys,
-      paid: (6n * DAI) / 10n,
+      paid: { sent: 2n * DAI, credited: (14n * DAI) / 10n },
     })
     expect(at(signedRecord({ phase: "done" }))).toEqual({
       id: "done",
@@ -624,6 +628,120 @@ describe("selectBackupScreen, a parked or ended rotation", () => {
   })
 })
 
+describe("selectAddStep", () => {
+  /** The driver's lane for `record`, as `at` builds it. */
+  const drive = (record: BackupRotationRecord, resume: ResumeAnswer = {}) => ({
+    record,
+    resume,
+    approving: false,
+  })
+  /**
+   * Each phase, with the screen its sheet opens on, the step Home and Settings show, and how the
+   * Passkeys sheet closes.
+   */
+  type Row = [
+    BackupRotationRecord,
+    ResumeAnswer,
+    BackupScreen["id"],
+    AddStep["kind"] | undefined,
+    ReturnType<typeof selectSheetClose>,
+  ]
+  const phases: Row[] = [
+    [createdRecord(), {}, "approve", "resume", "asks"],
+    [signedRecord(), {}, "approve", "resume", "asks"],
+    [signedRecord({ phase: "published" }), { wait: "funding" }, "approve", "resume", "asks"],
+    [signedRecord({ phase: "published", ...landing }), {}, "adding", "adding", "holds"],
+    [signedRecord({ phase: "funded", ...landing }), {}, "adding", "adding", "holds"],
+    [signedRecord({ phase: "swept", ...landing }), {}, "adding", "adding", "holds"],
+    [signedRecord({ phase: "installed" }), {}, "adding", "adding", "holds"],
+    [parked("route", landing), {}, "adding", "adding", "holds"],
+    [signedRecord({ phase: "rerooted" }), {}, "finish", "adding", "asks"],
+    [movedRecord(), { wait: "approval" }, "finish", "finish", "asks"],
+    [movedRecord(), { wait: "uses" }, "finish", "adding", "holds"],
+    [movedRecord(), { wait: "link" }, "finish", "adding", "holds"],
+    [
+      parked("move", { suspended: "moved", ...sent(5, { outcome: "swept" }) }),
+      {},
+      "finish",
+      "finish",
+      "asks",
+    ],
+    [signedRecord({ phase: "done" }), {}, "done", undefined, "closes"],
+    [signedRecord({ phase: "conflict" }), {}, "failed", undefined, "closes"],
+    [parked("route", { suspended: "signed" }), {}, "failed", undefined, "closes"],
+    [parked("stranded", sent(5, { outcome: "mined" })), {}, "recovery", undefined, "closes"],
+    [
+      signedRecord({ phase: "recovered", recovery: { txHash: word(0xab) } }),
+      {},
+      "recovery",
+      undefined,
+      "closes",
+    ],
+  ]
+
+  it("follows the screen the add's sheet opens on, for every phase", () => {
+    for (const [record, resume, screen, step, closing] of phases) {
+      expect(at(record, resume).id).toBe(screen)
+      expect(selectAddStep(record, { drive: drive(record, resume) })?.kind).toBe(step)
+      expect(selectSheetClose(record, drive(record, resume))).toBe(closing)
+    }
+  })
+
+  it("says a payment already going out, or a step the sheet calls late, is with the network", () => {
+    const paying = signedRecord({
+      phase: "published",
+      fundings: sent(5).fundings.map(({ txHash: _, ...f }) => f),
+    })
+    expect(at(paying, null)).toMatchObject({ id: "approve", sending: true })
+    expect(selectAddStep(paying, { drive: drive(paying) })).toEqual({ kind: "adding" })
+    const delayed = { kind: "adding", delayed: true }
+    expect(selectAddStep(parked("route", landing))).toEqual(delayed)
+    expect(selectAddStep(movedRecord(), { drive: drive(movedRecord(), { wait: "uses" }) })).toEqual(
+      delayed,
+    )
+  })
+
+  it("asks for the last approval only while the move waits on the user's tap", () => {
+    const record = movedRecord()
+    const approving = { ...drive(record, { wait: "approval" }), approving: true }
+    expect(selectAddStep(record, { drive: approving })).toEqual({ kind: "adding" })
+    // The driver's answer for another attempt has no say.
+    const other = drive({ ...record, attemptId: "attempt-2" }, { wait: "approval" })
+    expect(selectAddStep(record, { drive: other })).toEqual({ kind: "adding" })
+  })
+
+  it("names no step for a finished add the user left, nor while the records do not read", () => {
+    expect(selectAddStep(signedRecord({ phase: "done", dismissed: true }))).toBeUndefined()
+    for (const saved of [null, "loading", "unreadable"] as const)
+      expect(selectAddStep(saved)).toBeUndefined()
+  })
+
+  it("counts the time left the sheet shows, and none once the add is late", () => {
+    const record = signedRecord({
+      phase: "funded",
+      ...sent(0),
+      plan: { ...PLAN, takesMs: 40 * MIN },
+    })
+    const funding: BackupFundingRow = { phase: "awaiting_proven", startTime: 0, minedAt: 2 * MIN }
+    const timed = { drive: drive(record), funding, release: RELEASE }
+    const sheet = at(record, {}, { now: 5 * MIN, funding, release: RELEASE })
+    expect(sheet).toMatchObject({ id: "adding", timing: { leftMs: expect.any(Number) } })
+    expect(selectAddStep(record, { ...timed, now: 5 * MIN })).toEqual({
+      kind: "adding",
+      leftMs: sheet.id === "adding" ? sheet.timing?.leftMs : undefined,
+    })
+    expect(selectAddStep(record, { ...timed, now: 60 * MIN })).toEqual({
+      kind: "adding",
+      delayed: true,
+    })
+    // Without the clock or the release there is nothing to count.
+    expect(selectAddStep(record, timed)).toEqual({ kind: "adding" })
+    expect(selectAddStep(record, { drive: drive(record), now: 5 * MIN })).toEqual({
+      kind: "adding",
+    })
+  })
+})
+
 describe("selectBackupScreen, a step's failure", () => {
   it("keeps a closed approval on step 2 as C3, and raises an unknown one over it as C5", () => {
     const record = createdRecord()
@@ -783,16 +901,6 @@ describe("selectBackupScreen, the add", () => {
     })
   })
 
-  it("carries the passkey's one-device verdict to the key list, registered or not", () => {
-    expect(select({ oneDevice: true })).toMatchObject({ id: "keys", oneDevice: true })
-    expect(select({ entry: entry() })).toMatchObject({ id: "keys", oneDevice: false })
-    expect(select({ keys: "unverified", entry: entry(), oneDevice: true })).toMatchObject({
-      id: "keys",
-      keys: [],
-      oneDevice: true,
-    })
-  })
-
   it("walks the start screens, a phone going from A2 straight to the add", () => {
     expect(select({ entry: entry(), start: "intro" })).toEqual({
       id: "intro",
@@ -808,25 +916,48 @@ describe("selectBackupScreen, the add", () => {
     })
   })
 
-  it("quotes the add's cost on A2, and its time at the speed the pay step opens on", () => {
-    const quote = { total: DAI, fixed: DAI / 2n, network: DAI / 2n }
-    const intro = (over: Partial<BackupScreenInput> = {}) =>
-      select({ entry: entry({ facts: { ...FACTS, quote } }), start: "intro", ...over })
-    expect(intro()).toMatchObject({ id: "intro", quote })
+  it("quotes the add's cost and time on A2 at the speed the pay step opens on", () => {
+    const quote = { total: (6n * DAI) / 10n, fixed: DAI / 2n, network: DAI / 10n }
+    const funding = { sent: 2n * DAI, credited: (14n * DAI) / 10n }
+    const intro = (over: Partial<BackupScreenInput> = {}, facts: Partial<EntryFacts> = {}) =>
+      select({ entry: entry({ facts: { ...FACTS, quote, ...facts } }), start: "intro", ...over })
+    const cost = { funding, fixed: quote.fixed }
+    expect(intro()).toMatchObject({ id: "intro", cost })
     expect(intro()).not.toHaveProperty("eta")
     expect(intro({ release: RELEASE })).toMatchObject({ eta: 120 + 600 + TAIL })
-    // Faster where the offer's tip is worth it, which is what the pay step opens on.
+    // Faster where the offer's tip is worth it, its tip in the cost.
+    const tip = DAI / 10n
     const offer: FasterWithdrawal = {
-      proverTip: 1n,
+      proverTip: tip,
       standardEtaSeconds: 600,
       tippedEtaSeconds: 180,
       worstSpeedupSeconds: 420,
       measured: true,
     }
-    expect(intro({ release: RELEASE, offer })).toMatchObject({ eta: 120 + 180 + TAIL })
+    expect(intro({ release: RELEASE, offer })).toMatchObject({
+      eta: 120 + 180 + TAIL,
+      cost: { ...cost, funding: { ...funding, sent: funding.sent + tip } },
+    })
+    const standard = { eta: 120 + 600 + TAIL, cost }
     expect(intro({ release: RELEASE, offer: { ...offer, worstSpeedupSeconds: 30 } })).toMatchObject(
-      { eta: 120 + 600 + TAIL },
+      standard,
     )
+    // A balance that funds the add but not the tip on top opens the pay step on Standard.
+    const short = { fits: (amount: bigint) => amount <= funding.sent }
+    expect(intro({ release: RELEASE, offer }, short)).toMatchObject(standard)
+  })
+
+  it("shows the balance's own sheet when a short balance is all that holds the add", () => {
+    const short = { ...FACTS, balance: DAI }
+    expect(select({ entry: entry({ facts: short }), start: "intro" })).toEqual({
+      id: "lowBalance",
+      funding: { sent: 2n * DAI, credited: (14n * DAI) / 10n },
+      have: DAI,
+    })
+    const more = { ...short, withdrawalInFlight: true }
+    expect(select({ entry: entry({ facts: more }), start: "intro" })).toMatchObject({
+      id: "blocked",
+    })
   })
 
   it("raises the add's failure over the screen it started from, with nothing charged", () => {

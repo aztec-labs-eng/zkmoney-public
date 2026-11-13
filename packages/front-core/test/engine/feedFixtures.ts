@@ -1,4 +1,5 @@
 /** The feed's sources and records, as the feed tests build them. */
+import type { MoveRecord } from "../../src/engine/moveTransition"
 import type { UpgradeBatchItem } from "../../src/core/migration/upgradeActivity"
 import type { OldVersionWithdrawal } from "../../src/core/migration/OldVersionWithdrawalStorage"
 import type { WithdrawalRecord } from "../../src/core/services/bridge/types"
@@ -112,6 +113,8 @@ export function feedOf(
     oldVersionWithdrawals: OldVersionWithdrawal[]
     rotations: BackupRotationRecord[] | "unread"
     catchingUp: boolean
+    moves: MoveRecord[]
+    movesReplayed: boolean
   }> = {},
   ctx: Partial<FeedContext> = {},
 ) {
@@ -128,7 +131,8 @@ export function feedOf(
       recipients: new Set((over.upgrades ?? []).map((b) => b.recipient.toLowerCase())),
       loaded: over.upgradesLoaded ?? true,
     },
-    moves: { records: [], hydrated: true },
+    moves: { records: over.moves ?? [], loaded: true, failed: false },
+    movesReplayed: over.movesReplayed ?? true,
     oldVersionWithdrawals: over.oldVersionWithdrawals ?? [],
     processing: new Map(),
     rotations: over.rotations ?? [],

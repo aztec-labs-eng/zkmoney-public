@@ -167,6 +167,18 @@ describe("loadDepositTokens", () => {
 
     expect(symbols(tokens)).toEqual(["USD2", "TEST"])
     expect(tokens.offered.map((t) => t.symbol)).toEqual(["TEST"])
+    // An asset entry for the product row does not put it on Main.
+    const listed = await loadDepositTokens({
+      ...sky,
+      config: {
+        ...sky.config,
+        assets: [
+          { symbol: "TEST", portal: TEST_PORTAL },
+          { symbol: "USD2", portal: USD2_PORTAL },
+        ],
+      } as WebWalletConfig,
+    })
+    expect(listed.offered.map((t) => t.symbol)).toEqual(["TEST"])
     expect(tokens.settlement.symbol).toBe("TEST")
     expect((await sipaFundingTokens(sky, TEST)).map((t) => t.address)).toEqual([TEST, USD2])
     expect((await recoveryProbeTokens(sky, TEST)).map((t) => t.address)).toEqual([TEST, USD2])
@@ -214,5 +226,19 @@ describe("loadDepositTokens", () => {
 
     expect(symbols(tokens)).toEqual(["Dollar Two", "TEST"])
     expect(tokens.settlement.symbol).toBe("TEST")
+    // TEST is the fee token's row: Main offers it though no asset names it.
+    expect(tokens.offered).toEqual(tokens.options)
+  })
+
+  it("offers no row that the profile's assets leave out, but sweeps and recovers it", async () => {
+    const page = serve(
+      manifest([bridge("test", TEST, TEST_PORTAL, "a1"), bridge("usd2", USD2, USD2_PORTAL, "b2")]),
+      [{ symbol: "TEST", portal: TEST_PORTAL }],
+    )
+    const tokens = await loadDepositTokens(page)
+
+    expect(symbols(tokens)).toEqual(["TEST", "USD2"])
+    expect(tokens.offered.map((t) => t.symbol)).toEqual(["TEST"])
+    expect((await recoveryProbeTokens(page, TEST)).map((t) => t.address)).toEqual([TEST, USD2])
   })
 })

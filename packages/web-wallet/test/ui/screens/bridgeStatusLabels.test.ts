@@ -11,6 +11,7 @@ import {
   type ActivityItem,
   type SIPADepositPhase,
   type SipaDeposit,
+  type WithdrawalRecord,
 } from "@obsidion/front-core"
 import {
   depositAttribution,
@@ -22,6 +23,7 @@ import {
 } from "../../../src/ui/screens/activityView"
 import { tokenAmount, usdFigure } from "../../../src/ui/format"
 import { depositStatus } from "../../../src/ui/screens/DepositDetailModal/DepositDetailModal"
+import { backupFeeStatus } from "../../../src/ui/screens/backupFee"
 import { statusBadgeStyle } from "@obsidion/web-ds"
 
 const WITHDRAWAL_PHASE_LABEL = Object.fromEntries(
@@ -146,6 +148,27 @@ describe("WITHDRAWAL_PHASE_LABEL", () => {
     expect(WITHDRAWAL_PHASE_LABEL.done).toBeUndefined()
     expect(WITHDRAWAL_PHASE_LABEL.submitting).toBe("Pending")
     expect(WITHDRAWAL_PHASE_LABEL.failed).toBe("Failed")
+  })
+})
+
+describe("backupFeeStatus", () => {
+  const record = (phase: WithdrawalRecord["phase"]) => ({ phase })
+  const badge = (status: Parameters<typeof backupFeeStatus>[0]) =>
+    statusBadgeStyle(backupFeeStatus(status) ?? "")
+
+  it("badges a backup passkey fee in progress while it is paid or its add runs", () => {
+    expect(badge({ record: record("l2_mined") })).toBe("pending")
+    expect(badge({ record: record("done"), running: true })).toBe("pending")
+  })
+
+  it("shows nothing once the add ran, or once a landed payment's add is out of sight", () => {
+    expect(backupFeeStatus({ record: record("done"), added: true, running: true })).toBeUndefined()
+    expect(backupFeeStatus({ record: record("done") })).toBeUndefined()
+  })
+
+  it("badges a failed payment and a stopped add's recovery", () => {
+    expect(badge({ record: record("failed") })).toBe("failed")
+    expect(badge({ record: record("done"), recovery: { state: "held" } })).toBeDefined()
   })
 })
 

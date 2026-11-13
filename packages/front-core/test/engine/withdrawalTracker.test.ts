@@ -18,6 +18,7 @@ import {
   type WithdrawalFinalizationReader,
 } from "@obsidion/sdk"
 
+import { predictSkyEscrowAddressLocally, SkyRoute } from "@oxide/experiments/sky/sky_savings.js"
 import { openDatabase } from "../../src/engine/database"
 import { createOperations } from "../../src/engine/operations"
 import { memoryBackend } from "../../src/engine/memoryBackend"
@@ -42,7 +43,9 @@ import {
   canSelfFinalizeWithdrawal,
   isWithdrawalDelayed,
 } from "../../src/core/services/bridge/withdrawalPhases"
+import { escrowLeg } from "../../src/core/services/bridge/escrowLeg"
 import type { WithdrawalDeployment, WithdrawalRecord } from "../../src/core/services/bridge/types"
+import { withdrawalExit } from "../../src/engine/feedRules"
 import type { OnNetwork } from "../../src/types/networkStamp"
 
 const mockFetch = vi.fn()
@@ -911,6 +914,30 @@ describe("withdrawal tracker (chain-watching)", () => {
       await tracker.syncOnce()
       await tracker.syncOnce()
       expect((await store.get("w1"))?.phase).toBe("done")
+    })
+
+    it("a Sky move's burn settles done at its release and offers no exit of its own, which its move owns", async () => {
+      const sky = {
+        recipientCommitment: `0x${"2c".repeat(32)}` as Hex,
+        recoveryCommitment: `0x${"0d".repeat(32)}` as Hex,
+        nonce: `0x${"01".repeat(32)}` as Hex,
+      }
+      const escrow = predictSkyEscrowAddressLocally(FACTORY, {
+        ...sky,
+        route: SkyRoute.Unstake,
+        relayerTip: 3n,
+      })
+      const store = await seedStore()
+      await releasedSwap(store, makeEscrowReader(), {
+        recipient: escrow,
+        skyMove: { ...sky, direction: "out", factory: FACTORY, relayerTip: "3" },
+      })
+
+      const burn = (await store.get("w1"))!
+      // The record rebuilds its escrow, so only its phase keeps the swap exit from it.
+      expect(escrowLeg(burn)).toMatchObject({ kind: "sky", escrow })
+      expect(burn.phase).toBe("done")
+      expect(withdrawalExit(burn, Date.now() + 10 * SWAP_STUCK_THRESHOLD_MS)).toBeUndefined()
     })
 
     it("an emptied, deployed escrow means the swap ran: done, with the executed tx", async () => {

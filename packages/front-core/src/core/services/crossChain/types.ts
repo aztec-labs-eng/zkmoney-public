@@ -35,6 +35,8 @@ export interface BridgeInQuote {
   fee: bigint
   /** `fee` in dollars, decimal, where the provider prices it. */
   feeUsd?: string
+  /** What the deposit bridges, and a refund returns, when the input is swapped or wrapped first. */
+  bridged?: { symbol: string; amount: bigint; decimals: number }
   fillSeconds: number
   /** ms; the bridge call reverts once mined after this. Undefined when the provider names none. */
   expiresAt?: number
@@ -98,6 +100,8 @@ export interface BridgeInRecord {
   inputDecimals: number
   outputSymbol: string
   outputDecimals: number
+  /** What the bridge carries, and a refund returns, where it is not `symbol`. Base units. */
+  bridged?: { symbol: string; amount: string; decimals: number }
   /** `signing` until the wallet returns the call's hash or the chain shows where its nonce went. */
   status: "signing" | BridgeInStatus["status"]
   fillTxHash?: Hex

@@ -38,10 +38,9 @@ import {
 } from "../core/services/paylink/creatorLinkAction"
 import { paylinkRowView, type PaylinkRowView } from "../core/services/paylink/paylinkRowView"
 import { paylinkStatusFor, type PaylinkStatusKind } from "../core/services/paylink/paylinkStatus"
-import { savingsLedger, type SavingsLedger } from "../core/services/savings/savingsBasis"
-import type { SavingsMoveRecord } from "../core/services/savings/types"
+import { assetUsd, holdingUsd } from "../core/services/holdings/holdingFigures"
+import type { HoldingPrice } from "../core/services/holdings/holdingFigures"
 import { savingsValue } from "../core/services/savings/savingsMath"
-import { savingsMoveOfWithdrawal } from "../oxide/savingsMoves"
 import {
   resolveContactByCounterparty,
   resolveContactForTx,
@@ -63,8 +62,9 @@ import { fundingKeys, isLinkFunding } from "./paylinks"
 import { normalizeTag } from "../utils/normalizeTag"
 import { isZeroAddress, validateAddress } from "../utils/validate"
 import {
-  backupAddCost,
+  backupAddRunning,
   backupAdded,
+  backupFee,
   bridgeItemTime,
   depositExitOffer,
   depositRowPayment,
@@ -72,7 +72,6 @@ import {
   isAddedBackupDeposit,
   isMoveFromPrevious,
   isWaitingAtPrevious,
-  isSavingsMoveSettled,
   isStoppedBackupDeposit,
   migrationAmounts,
   neverCreditsL2,
@@ -82,7 +81,7 @@ import {
   tagPriceOf,
   withdrawalExit,
   withdrawalIntent,
-  type BackupAddCost,
+  type BackupFee,
   type DepositOffer,
   type FundingRecovery,
   type Registrations,
@@ -90,6 +89,8 @@ import {
 } from "./feedRules"
 import type { Loaded } from "./recordSource"
 import type { RecordSet } from "./persistentStore"
+import { selectMoveState, type MoveState } from "./moveState"
+import { isMoveSettled, type MoveRecord } from "./moveTransition"
 import { fulfillingReceive, type PaymentRequest } from "./requests"
 
 /** An amount in base units at its decimals. */
@@ -123,7 +124,10 @@ export interface FeedSources {
     recipients: ReadonlySet<string>
     loaded: boolean
   }
-  moves: Loaded<SavingsMoveRecord>
+  /** The holdings' moves: each shows as one item, which its burn's withdrawal joins. */
+  moves: RecordSet<MoveRecord>
+  /** The session's move replay ran: history a fresh device rebuilds from the chain is in. */
+  movesReplayed: boolean
   /** "Withdraw to Ethereum" runs from old versions. */
   oldVersionWithdrawals: readonly OldVersionWithdrawal[]
   /** Why a deposit waits for its sweep, by lowercase address. */
@@ -152,6 +156,7 @@ export interface FeedContext {
   /** When each stored balance's read resolved, ms. */
   balanceReadAt?: { main?: number; savings?: number }
   sharePrice?: bigint
+  holdingPrices?: ReadonlyMap<string, HoldingPrice>
   /** The L1 token of Savings' row: a deposit swept on it lands in Savings. */
   savingsToken?: string
   /** Whether Savings has a row is not known yet, so no swept deposit can be placed. */
@@ -221,7 +226,7 @@ export type FeedItem = Base &
         exit?: { record: WithdrawalRecord; exit: WithdrawalExit }
         unsent: boolean
       }
-    | { kind: "savingsMove"; move: SavingsMoveRecord; burn: WithdrawalRecord }
+    | MoveFields
     | {
         kind: "withdrawal"
         record: WithdrawalRecord
@@ -232,10 +237,12 @@ export type FeedItem = Base &
         /** A burn to this wallet's registration SIPA paid for its tag. */
         registrationTag?: string
         recovery?: FundingRecovery
-        /** A backup passkey funding whose add ran, as {@link backupAdded} reads it. */
+        /** A backup passkey funding whose add finished, as {@link backupAdded} reads it. */
         added?: true
-        /** A backup passkey funding, once its deposit address credited the rest back. */
-        cost?: BackupAddCost
+        /** A backup passkey funding's fee and hold, as {@link backupFee} reads them. */
+        fee?: BackupFee
+        /** A backup passkey funding whose add still runs, as {@link backupAddRunning} reads it. */
+        running?: true
       }
     | {
         kind: "deposit"
@@ -273,10 +280,25 @@ export type FeedItem = Base &
       }
   )
 
-export interface SavingsItem extends Base {
-  move: SavingsMoveRecord
+interface MoveFields {
+  kind: "move"
+  move: MoveRecord
+  /** The burn's withdrawal: absent on a replayed move this device has no record of. */
   burn?: WithdrawalRecord
+  state: MoveState
 }
+
+/** A holding move's row. */
+export type MoveItem = Base & MoveFields
+
+/** The move row `id` names: its row id, or its burn's withdrawal id, which a notification carries. */
+export const findMoveItem = (
+  items: readonly { kind: string }[],
+  id: string,
+): MoveItem | undefined =>
+  items
+    .filter((i): i is MoveItem => i.kind === "move")
+    .find((i) => i.id === id || i.move.withdrawalLocalId === id)
 
 export interface ArrivingFunds {
   main: bigint
@@ -302,7 +324,11 @@ export interface Feed {
   arriving: ArrivingFunds
   /** The upgrade's deposit addresses are read, so `arriving` counts none of them. */
   upgradesLoaded: boolean
-  savings: { items: SavingsItem[]; hydrated: boolean; ledger?: SavingsLedger }
+  /**
+   * The Savings account's rows, direction as Savings sees it. Not hydrated on a device with no
+   * moves until the replay ran, so history never shows empty while it rebuilds.
+   */
+  savings: { items: MoveItem[]; hydrated: boolean }
   /** The exports' records; the view adds the Main token's metadata once it is read. */
   csv: Omit<ActivityCsvSources, "walletToken">
   savingsCsv: Omit<SavingsCsvSources, "walletToken">
@@ -658,34 +684,23 @@ function withdrawalItem(
   record: WithdrawalRecord,
   sources: FeedSources,
   ctx: FeedContext,
-  moves: readonly SavingsMoveRecord[],
 ): FeedItem {
   const base = { id: record.localId, ts: bridgeItemTime({ kind: "bridge.withdrawal", record }) }
-  if (record.skyMove) {
-    const move = moves.find((m) => m.withdrawalLocalId === record.localId) ?? {
-      ...savingsMoveOfWithdrawal(record)!,
-      startTime: record.startTime,
-    }
-    return {
-      ...base,
-      kind: "savingsMove",
-      direction: move.direction === "in" ? "out" : "in",
-      pending: !isSavingsMoveSettled(move, record),
-      move,
-      burn: record,
-    }
-  }
   const exit = withdrawalExit(record, sources.now)
   const recipient = sources.deposits.records.find(
     (d) => lower(d.sipaAddress) === lower(record.recipient),
   )
   const recovery = fundingRecovery(record, sources.rotations, recipient)
+  const running = backupAddRunning(record, sources.rotations, recipient)
+  const added = backupAdded(record, sources.rotations, recipient)
   return {
     ...base,
     kind: "withdrawal",
     direction: "out",
     pending:
       !WITHDRAWAL_TERMINAL_PHASES.has(record.phase) ||
+      // In progress until the add finishes, its final approval included.
+      (running && !added) ||
       recovery?.state === "sent" ||
       recovery?.state === "unread",
     record,
@@ -696,8 +711,9 @@ function withdrawalItem(
     exit,
     registrationTag: registrationTagForSipa(ctx.registrations, record.recipient, recipient),
     recovery,
-    ...(backupAdded(record, sources.rotations, recipient) ? { added: true as const } : {}),
-    cost: backupAddCost(record, recipient),
+    ...(added ? { added: true as const } : {}),
+    ...(running ? { running: true as const } : {}),
+    fee: backupFee(record, sources.rotations, recipient),
   }
 }
 
@@ -844,18 +860,21 @@ function groupItems(groups: readonly WithdrawalGroup[], now: number): FeedItem[]
 /**
  * Funds each balance is owed but does not hold yet, at what will land, so a balance never drops
  * when funds arrive. A deposit counts in the balance its row credits once its sweep fixes the net,
- * Savings' at the share price. A migration or a Savings move counts once its burn has left the
- * source, at its quote, then at its deposit once the escrow has run, until its destination's
- * balance is read after this device stored the claim. A move rebuilt from
- * a rescan has no quote and counts only from its deposit. An upgrade's own deposits never count:
- * the upgrade lock holds Home's figure until the balance holds them. A backup passkey add's move
- * counts until the balance holds each chunk.
+ * Savings' at the share price. A migration or a holding move counts once its burn has left the
+ * source, at its quote, then at its deposit once the route has run, until its destination's
+ * balance is read after the claim. A replayed move never counts: another device may have claimed
+ * its deposit into the balance already. An upgrade's own deposits never count: the upgrade lock
+ * holds Home's figure until the balance holds them. A backup passkey add's move counts until the
+ * balance holds each chunk.
  */
 export function arrivingFunds(input: {
   deposits: readonly SipaDeposit[]
   burns: readonly WithdrawalRecord[]
-  moves: readonly SavingsMoveRecord[]
+  moves: readonly MoveRecord[]
+  /** Savings' share price: a Savings deposit and a backup passkey add's shares count at it. */
   sharePrice?: bigint
+  /** Each holding's price by holding id: a move in counts at its own holding's. */
+  holdingPrices?: ReadonlyMap<string, HoldingPrice>
   savingsToken?: string
   /** A deposit is held until its row can be placed: the balance rises late, never drops. */
   savingsUnknown?: boolean
@@ -911,23 +930,26 @@ export function arrivingFunds(input: {
   }
   const burnById = new Map(burns.map((burn) => [burn.localId, burn] as const))
   for (const move of moves) {
-    const burn = burnById.get(move.withdrawalLocalId)
+    if (move.replayedFrom !== undefined) continue
     const into = move.direction === "in"
-    const storedAt = move.deposit?.claimed ? move.deposit.storedAt : undefined
+    const claimedAt = move.phase === "claimed" ? move.endTime : undefined
     const unread =
-      storedAt !== undefined && (balanceReadAt[into ? "savings" : "main"] ?? 0) < storedAt
-    if (!left(burn) || (isSavingsMoveSettled(move, burn) && !unread)) continue
-    const landed = move.deposit && BigInt(move.deposit.amount)
-    const figure =
-      landed !== undefined && (!into || sharePrice !== undefined)
-        ? into
-          ? savingsValue(landed, sharePrice!)
-          : landed
-        : move.net === undefined
-        ? 0n
-        : BigInt(move.net)
-    if (into) savings += figure
-    else main += figure
+      claimedAt !== undefined && (balanceReadAt[into ? "savings" : "main"] ?? 0) < claimedAt
+    if (isMoveSettled(move) && !unread) continue
+    const local = move.withdrawalLocalId
+    if (local !== undefined && !left(burnById.get(local))) continue
+    const landed = move.deposit?.amount
+    if (!into) {
+      main += landed ?? move.quote?.conversionOut ?? 0n
+      continue
+    }
+    // Shares, and a quote in the vault's asset: unknown until the move's own holding is priced.
+    const price = input.holdingPrices?.get(move.holdingId)
+    if (!price) continue
+    savings +=
+      landed !== undefined
+        ? holdingUsd(landed, price)
+        : assetUsd(move.quote?.conversionOut ?? 0n, price)
   }
   for (const tx of input.rows) {
     const inbound = tx.action === PaylinkActionEnum.CLAIM || tx.action === "faucet"
@@ -940,6 +962,46 @@ export function arrivingFunds(input: {
   return { main, savings }
 }
 
+const SETTLED_MOVE: ReadonlySet<MoveState["kind"]> = new Set(["done", "failed", "recovered"])
+
+/**
+ * Each move as an item with its burn's withdrawal, by local id or, on a replayed move, by hash. A
+ * dropped move never burned and shows none. `burns`: the local ids of the withdrawals the items
+ * carry.
+ */
+function moveItems(
+  moves: readonly MoveRecord[],
+  withdrawals: readonly WithdrawalRecord[],
+  now: number,
+): { items: MoveItem[]; burns: ReadonlySet<string> } {
+  const burns = new Set<string>()
+  const items = moves.flatMap((move): MoveItem[] => {
+    if (move.phase === "dropped") return []
+    const burn = withdrawals.find(
+      (r) =>
+        r.localId === move.withdrawalLocalId ||
+        (move.replayedFrom !== undefined && lower(r.l2TxHash ?? "") === lower(move.replayedFrom)),
+    )
+    if (burn) burns.add(burn.localId)
+    const state = selectMoveState(move, move.withdrawalLocalId ? burn : undefined, now)
+    return [
+      {
+        kind: "move",
+        id: `move:${move.id}`,
+        // Where the row sorts: its burn's withdrawal's end, once it has ended.
+        ts: burn ? bridgeItemTime({ kind: "bridge.withdrawal", record: burn }) : move.startTime,
+        // Into a holding is out of the balance.
+        direction: move.direction === "in" ? "out" : "in",
+        pending: !SETTLED_MOVE.has(state.kind),
+        move,
+        ...(burn ? { burn } : {}),
+        state,
+      },
+    ]
+  })
+  return { items, burns }
+}
+
 /** Every source merged into the feed. */
 export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
   const { now } = sources
@@ -949,6 +1011,7 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
   const deposits = sources.deposits.records
   const withdrawals = sources.withdrawals.records
   const moves = sources.moves.records
+  const holdingMoves = moveItems(moves, withdrawals, now)
   const groups = withdrawalGroupsOf(withdrawals)
   const upgradeRuns = upgradeRunsOf(bridge)
   const views = bridge.filter((item): item is DepositView => item.kind === "bridge.sipaDeposit")
@@ -999,11 +1062,17 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
     ...groupItems(groups, now),
     ...bridgeInItems(sources),
     ...bridge.flatMap((item): FeedItem[] => {
-      if (item.kind === "bridge.withdrawal")
-        return item.record.groupId ? [] : [withdrawalItem(item.record, sources, ctx, moves)]
+      if (item.kind === "bridge.withdrawal") {
+        const { record } = item
+        if (record.groupId || holdingMoves.burns.has(record.localId)) return []
+        // A move's burn no move here carries yet: the move replay rebuilds it.
+        if (record.skyMove || record.vaultMove) return []
+        return [withdrawalItem(record, sources, ctx)]
+      }
       if (item.kind === "bridge.sipaDeposit") return depositItems(item, sources, ctx, hide)
       return []
     }),
+    ...holdingMoves.items,
     ...(registration && !burnFunded.has(lower(registration.sipaAddress))
       ? [
           {
@@ -1020,16 +1089,7 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
     .sort((a, b) => b.ts - a.ts)
 
   const burns = new Map(withdrawals.map((record) => [record.localId, record] as const))
-  const savingsItems = moves.map(
-    (move): SavingsItem => ({
-      id: move.withdrawalLocalId,
-      ts: move.startTime,
-      direction: move.direction,
-      pending: !isSavingsMoveSettled(move, burns.get(move.withdrawalLocalId)),
-      move,
-      burn: burns.get(move.withdrawalLocalId),
-    }),
-  )
+  const movesRead = sources.moves.loaded && !sources.moves.failed
   return {
     items,
     bridge,
@@ -1048,6 +1108,7 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
       sources.upgrades.loaded &&
       sources.withdrawals.hydrated &&
       sources.bridgeIns.hydrated &&
+      movesRead &&
       (ctx.contacts.hydrated || ctx.contacts.failed) &&
       !sources.catchingUp,
     requestsUnavailable: ctx.contacts.failed,
@@ -1057,6 +1118,7 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
       burns: withdrawals,
       moves,
       sharePrice: ctx.sharePrice,
+      holdingPrices: ctx.holdingPrices,
       savingsToken: ctx.savingsToken,
       savingsUnknown: ctx.savingsUnknown,
       rows,
@@ -1068,9 +1130,12 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
     }),
     upgradesLoaded: sources.upgrades.loaded,
     savings: {
-      items: savingsItems,
-      hydrated: sources.moves.hydrated,
-      ledger: sources.moves.hydrated ? savingsLedger([...moves], burns) : undefined,
+      // Savings is the Sky holdings', each moved through its escrow.
+      items: holdingMoves.items
+        .filter((item) => item.move.rail === "skyEscrow")
+        .map((item) => ({ ...item, direction: item.move.direction }))
+        .sort((a, b) => b.ts - a.ts),
+      hydrated: movesRead && (moves.length > 0 || sources.movesReplayed),
     },
     csv: {
       transactions: rows,

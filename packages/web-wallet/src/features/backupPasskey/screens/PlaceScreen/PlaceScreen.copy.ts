@@ -1,3 +1,3 @@
 export default {
-  save: "Save backup passkey",
+  add: "Add backup passkey",
 } as const

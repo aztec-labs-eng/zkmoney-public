@@ -63,10 +63,14 @@ export function testnetProfile(): any {
 }
 
 /** A fetch double answering `status` with `document`. */
+/** Answers the profile URL with `document`, and its features URL with none. */
 export function serve(document: unknown, status = 200): typeof fetch {
-  return (async () => ({
-    ok: status >= 200 && status <= 299,
-    status,
-    json: async () => document,
-  })) as unknown as typeof fetch
+  return (async (input: RequestInfo | URL) => {
+    const features = String(input).includes("/features/")
+    return {
+      ok: !features && status >= 200 && status <= 299,
+      status: features ? 404 : status,
+      json: async () => document,
+    }
+  }) as unknown as typeof fetch
 }

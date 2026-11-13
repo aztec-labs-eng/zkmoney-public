@@ -146,6 +146,12 @@ export const costCopy = {
   returned: "Returned to your balance",
 }
 
+// Proposed: the part of the funding that comes back, on the intro and the pay step.
+export const holdCopy = {
+  label: "Temporary hold",
+  value: "{amount}, returned when active",
+} as const
+
 // Proposed: new copy for a Savings move held while an add has yet to switch the account.
 export const savingsWaitsCopy = {
   title: "Finish adding your backup passkey",

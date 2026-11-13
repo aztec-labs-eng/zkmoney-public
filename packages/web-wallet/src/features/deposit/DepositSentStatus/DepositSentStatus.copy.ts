@@ -2,12 +2,12 @@ export default {
   label: "Deposit status",
   sending: {
     title: "Sending your {coin}",
-    line: "{amount} from {wallet} to your private funds.",
+    line: "{amount} from {wallet} to your private balance.",
     payeeLine: "{amount} from {wallet} to @{payee}.",
   },
   yourWallet: "your wallet",
   arriving: {
-    line: "Your {amount} is confirmed on {network} and arriving as {landing}.",
+    line: "Your {amount} is confirmed and arriving as {landing}.",
   },
   failed: {
     title: "Deposit didn't complete",

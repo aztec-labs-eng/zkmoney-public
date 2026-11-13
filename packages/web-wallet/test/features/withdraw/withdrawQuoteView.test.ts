@@ -190,6 +190,60 @@ describe("selectWithdrawQuote", () => {
     })
   })
 
+  it("warns on a contract recipient on any route, and lets it through", () => {
+    const amount = dai("100")
+    const s = typed("100", {
+      route: { chainId: BASE, coin: "USDC" },
+      bridge: {
+        key: bridgeKey({ chainId: BASE, token: "USDC", amount }),
+        answer: { quote: bridgeQuote("99.4") },
+      },
+    })
+    const answered = { bridge: { status: "answered" as const } }
+    const toWallet = selectWithdrawQuote(s, quotes(answered), { wallet: wallet() })
+    expect(toWallet.valid).toBe(true)
+    const toContract = selectWithdrawQuote(s, quotes({ ...answered, contract: true }), {
+      wallet: wallet(),
+    })
+    expect(toContract.onContract).toBe(true)
+    expect(toContract.valid).toBe(true)
+
+    const onL1 = selectWithdrawQuote(
+      typed("20"),
+      quotes({ contract: true, swap: quoted("0.1", dai("20")) }),
+      { wallet: wallet() },
+    )
+    expect(onL1.onContract).toBe(true)
+    expect(onL1.valid).toBe(true)
+  })
+
+  it("estimates the whole trip: the release, plus the bridge chain's time on a bridge-out", () => {
+    const eta = { eta: { standardSeconds: 1800 } }
+    const l1 = selectWithdrawQuote(
+      typed("20"),
+      quotes({ ...eta, swap: quoted("0.1", dai("20")) }),
+      {
+        wallet: wallet(),
+      },
+    )
+    expect(l1.etaMinutes).toBe(30)
+    expect(l1.plan()?.etaMinutes).toBe(30)
+
+    const amount = dai("100")
+    const s = typed("100", {
+      route: { chainId: BASE, coin: "USDC" },
+      bridge: {
+        key: bridgeKey({ chainId: BASE, token: "USDC", amount }),
+        answer: { quote: bridgeQuote("99.4") },
+      },
+    })
+    const bridged = selectWithdrawQuote(s, quotes({ ...eta, bridge: { status: "answered" } }), {
+      wallet: wallet(),
+    })
+    expect(bridged.etaMinutes).toBe(30 + ROUTE.chain.etaMinutes)
+    expect(bridged.plan()?.etaMinutes).toBe(bridged.etaMinutes)
+  })
+
   it("names no bridge choice until the answer is priced at the tip the burn carries", () => {
     const amount = dai("100")
     const quote = bridgeQuote("99.4")

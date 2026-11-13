@@ -28,7 +28,7 @@ import {
   type SwapOnWithdrawPlan,
   type SwapSimulation,
   type TokenService,
-  type WithdrawalExecutorKind,
+  type WithdrawalExecutor,
   type WithdrawalOptions,
 } from "@obsidion/sdk"
 import {
@@ -73,6 +73,8 @@ import { withdrawalExecutorFee } from "./withdrawalFee"
 import type { PageChain } from "../../session/pageChain"
 import { sponsorshipErrorCopy } from "../allowance/sponsorshipError"
 
+const RESCAN_BACKOFF = { baseMs: 30_000, maxMs: 10 * 60_000 }
+
 /** Progress stages the modal's proving view renders. */
 export type WithdrawStage = "building" | "proving" | "submitting"
 
@@ -95,16 +97,18 @@ export interface RescanToken {
   tokenService: Pick<TokenService, "fetchTokenInformation" | "getTokenContract">
   /** The deployment the token belongs to, stamped on its rebuilt records; Main's live one when absent. */
   tuple?: OxideEnvTuple
-  /** The kind of each executor the token's burns name; plain when absent. */
-  executorKind?: (executor: Address) => WithdrawalExecutorKind
+  /** Reads the terms of an executor the token's burns name; as a plain executor's when absent. */
+  readExecutor?: (executor: Address) => Promise<WithdrawalExecutor>
   /** What the console calls this scan; the token's own symbol when absent. */
   label?: string
-  /** `executorKind` may not know every executor: the pass runs, then fails, so a later call scans again. */
+  /** The scan may not read every executor: the pass runs, then fails, so a later call scans again. */
   partial?: boolean
 }
 
 /** What a session's rescans read and write beside the wallet and account each call names. */
-export interface RescanDeps extends Pick<WithdrawalRescanDeps, "keep" | "chainName"> {
+export interface RescanDeps
+  extends Pick<WithdrawalRescanDeps, "keep" | "chainName">,
+    Pick<Parameters<typeof createWithdrawEventSource>[0], "onSighted"> {
   store: Withdrawals
   /** Main's deployment, for a token that names none. */
   deployment(): Promise<OxideEnvTuple>
@@ -165,7 +169,11 @@ export function rescanWithdrawals(deps: RescanDeps, scan = rescanToken) {
   }
 }
 
-/** Rebuilds Main's withdrawals once per session; not retried, as the Savings replay runs it again. */
+/**
+ * Rebuilds the withdrawals of Main and of each token `shares` names, once per session. A fresh
+ * device gets a move out's burn from its share token, which the move's finalize by hand needs. A
+ * failed pass retries, scanning only the tokens that failed.
+ */
 export function withdrawalRescan(
   needs: {
     wallet: Service<ObsidionWallet>
@@ -173,16 +181,17 @@ export function withdrawalRescan(
     token: Service<TokenService>
   },
   rescan: ReturnType<typeof rescanWithdrawals>,
+  shares: (account: ObsidionAccount) => Promise<RescanToken[]>,
 ): Task {
   return task("withdrawalRescan", {
     needs,
     after: { firstBalance: true, depositsReplayed: { whenCatchingUp: 0 } },
     every: "once",
+    backoff: RESCAN_BACKOFF,
     async run({ wallet, account, token, signal }) {
       const owner = account.getAddress().toString()
-      await within(rescan(wallet, owner, [{ tokenService: token }]), "withdrawalRescan", {
-        signal,
-      })
+      const tokens = [{ tokenService: token }, ...(await shares(account))]
+      await within(rescan(wallet, owner, tokens), "withdrawalRescan", { signal })
     },
   })
 }
@@ -191,7 +200,12 @@ async function rescanToken(
   deps: RescanDeps,
   wallet: ObsidionWallet,
   owner: string,
-  { tokenService, tuple, label, executorKind = () => "plain" }: RescanToken,
+  {
+    tokenService,
+    tuple,
+    label,
+    readExecutor = (address) => deps.readExecutor(address, "plain").read(),
+  }: RescanToken,
   forget: () => void,
 ): Promise<WithdrawalRecord[]> {
   const token = await tokenService.fetchTokenInformation()
@@ -209,13 +223,11 @@ async function rescanToken(
       accountAddress: owner,
       // Every executor the account's burns name, not only the one the bridge lists today.
       readExecutor: (address) =>
-        deps
-          .readExecutor(address, executorKind(address))
-          .read()
-          .catch((err: unknown) => {
-            forget()
-            throw err
-          }),
+        readExecutor(address).catch((err: unknown) => {
+          forget()
+          throw err
+        }),
+      onSighted: deps.onSighted,
     }),
     store: deps.store,
     keep: deps.keep,

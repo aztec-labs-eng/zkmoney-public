@@ -7,6 +7,7 @@ import { bestEffort, WalletError } from "./errors"
 import { task, within, type Task } from "./runtime"
 import type { SipaDeposit, SipaDeposits } from "./sipaDeposits"
 import { derived } from "./store"
+import { rescale } from "../utils/rescale"
 
 /** Reads a deposit's funding transaction on L1. Throws when the read fails. */
 export interface FillReader {
@@ -30,11 +31,6 @@ export interface BridgeInRebuildDeps {
 }
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
-
-/** `amount` at `from` decimals, at `to` decimals. */
-function rescale(amount: bigint, from: number, to: number): bigint {
-  return to >= from ? amount * 10n ** BigInt(to - from) : amount / 10n ** BigInt(from - to)
-}
 
 /**
  * Reads whether a replayed deposit's funding was a bridge fill, stamps the answer once, and

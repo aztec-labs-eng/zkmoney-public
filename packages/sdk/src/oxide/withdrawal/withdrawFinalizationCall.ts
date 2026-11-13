@@ -18,6 +18,7 @@ import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { TxHash } from "@aztec-labs/stdlib/tx"
 
 import { OxidePortalAbi } from "@oxide/l1-contracts/artifacts.js"
+import type { WithdrawArgs } from "@oxide/l1-contracts/oxide_portal.js"
 import { resolveTxCheckpointArchive } from "@oxide/oxide-client/archive_ref.js"
 import { buildWithdrawalFinalizationCalldata } from "@oxide/oxide-client/atlatl/withdrawal_finalization.js"
 import { EnclaveUnavailable } from "@oxide/oxide-client/errors.js"
@@ -178,4 +179,20 @@ export async function buildWithdrawFinalizationCall(
     throw new Error("Enclave finalization withdrawal ID does not match the burn's withdrawal.")
   }
   return { to: l1Portal, data, withdrawalId }
+}
+
+/**
+ * The burn's release arguments, as its finalization call carries them: what the portal's
+ * `withdraw` and a `MultiStepExecutor.recover` take. Refuses as `buildWithdrawFinalizationCall`.
+ */
+export async function buildBurnReleaseArgs(
+  deps: WithdrawFinalizationDeps,
+  args: WithdrawFinalizationArgs,
+): Promise<WithdrawArgs> {
+  const call = decodeFunctionData({
+    abi: OxidePortalAbi,
+    data: (await buildWithdrawFinalizationCall(deps, args)).data,
+  })
+  if (call.functionName !== "withdraw") throw new Error("the finalization call is not a withdraw")
+  return call.args[0]
 }

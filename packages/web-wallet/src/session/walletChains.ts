@@ -1,8 +1,8 @@
 /**
- * The chains a connected L1 wallet may sign on: the active L1, then the profile bridge's chains.
+ * The chains a connected L1 wallet may sign on: the active L1, then the Across bridge's chains.
  */
 import { defineChain, http, type Chain } from "viem"
-import type { ConfigBridge, ConfigBridgeChain } from "@obsidion/config-client"
+import type { AcrossChain, AcrossBridge } from "@obsidion/config-client"
 import { l1ChainFor, type WebWalletConfig } from "../config/env"
 
 /** Chains whose gas token is not ETH; a wallet adding the chain is told its native currency. */
@@ -25,7 +25,7 @@ const NATIVE: Record<number, { name: string; symbol: string }> = {
   5042002: { name: "USDC", symbol: "USDC" },
 }
 
-export function bridgeChainFor(chain: ConfigBridgeChain): Chain {
+export function bridgeChainFor(chain: AcrossChain): Chain {
   return defineChain({
     id: chain.chainId,
     name: chain.name,
@@ -37,20 +37,17 @@ export function bridgeChainFor(chain: ConfigBridgeChain): Chain {
   })
 }
 
-/** The one bridge `config` offers, when this build speaks its provider. */
-export function profileBridge(
-  config: Pick<WebWalletConfig, "bridge">,
-): Extract<ConfigBridge, { provider: "across" }> | undefined {
-  const { bridge } = config
-  return bridge?.provider === "across" ? bridge : undefined
+/** The config's Across bridge. The wallet implements no other bridge provider. */
+export function acrossBridge(config: Pick<WebWalletConfig, "features">): AcrossBridge | undefined {
+  return config.features.across
 }
 
 /** Every chain a connected wallet may be asked to sign on: the L1, then the bridge's. */
-export function walletChains(config: Pick<WebWalletConfig, "l1ChainId" | "bridge">): {
+export function walletChains(config: Pick<WebWalletConfig, "l1ChainId" | "features">): {
   chains: [Chain, ...Chain[]]
   transports: Record<number, ReturnType<typeof http>>
 } {
-  const bridge = (profileBridge(config)?.chains ?? []).map((chain) => ({
+  const bridge = (acrossBridge(config)?.chains ?? []).map((chain) => ({
     chain: bridgeChainFor(chain),
     rpc: chain.rpcUrl,
   }))

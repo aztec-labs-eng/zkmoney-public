@@ -13,6 +13,7 @@ import {
   readDepositSubsidyConfig,
   readSweepRouteLiveness,
 } from "../../../src/services/sipa/sipaIntents.js"
+import { getLogs, type LogFilter } from "../../utils/memoryLogs.js"
 
 const addr = (tag: string) => `0x${tag.padStart(40, "0")}` as Address
 const FACTORY = addr("fac")
@@ -168,10 +169,10 @@ describe("readBlessedImplementations", () => {
       createPublicClient({
         transport: custom(
           {
-            request: async ({ method }: { method: string }) => {
+            request: async ({ method, params }: { method: string; params?: unknown }) => {
               if (method === "eth_call") throw failure
               if (method === "eth_blockNumber") return "0x64"
-              if (method === "eth_getLogs") return []
+              if (method === "eth_getLogs") return getLogs([], (params as [LogFilter])[0])
               throw new Error(`unexpected ${method}`)
             },
           },

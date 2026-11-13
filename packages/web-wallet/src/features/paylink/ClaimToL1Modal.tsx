@@ -676,7 +676,14 @@ export function ClaimToL1Modal({
         )}
       </div>
       <hr className="ww-divider" />
-      {phase === "confirm" && <SpeedRow choice={speedChoice} outcome={speedOutcome} />}
+      {phase === "confirm" && (
+        <SpeedRow
+          choice={speedChoice}
+          outcome={speedOutcome}
+          // A bridge's ETA is the whole trip: the release, then the bridge's leg.
+          afterSeconds={offered ? offered.chain.etaMinutes * 60 : undefined}
+        />
+      )}
       <div className="ww-deposit__fact">
         <span>Network fee</span>
         <b>{fee ? usdFigure(fee) : "$--"}</b>

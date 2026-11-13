@@ -4,23 +4,31 @@
 import { describe, expect, it } from "vitest"
 import { memoryStore, type QueryState } from "@obsidion/front-core"
 import { upgradePricing } from "../../../../src/features/migration/upgradeRunAccount"
-import type { ChainSavingsPrice } from "../../../../src/features/savings/savingsTasks"
+import type { SavingsPrice } from "../../../../src/session/pageChain"
 import { sandboxConfig } from "../../../support/seedBootConfig"
 
 type Tuple = { token: string; underlying?: string }
 const DAI = `0x${"da".repeat(20)}`
 const USDS = `0x${"5d".repeat(20)}`
 const ready = <T>(value: T): QueryState<T> => ({ status: "ready", value, refreshing: false })
+/** A Savings price read on the holding whose vault asset is `asset`. */
+const priced = (sharePrice: bigint, readAt: number, asset: string) =>
+  ({
+    sharePrice,
+    shareDecimals: 18,
+    readAt,
+    holding: { held: { underlying: asset } },
+  } as SavingsPrice)
 
 async function pricing() {
   const config = await sandboxConfig()
   const tuple = memoryStore<QueryState<Tuple>>({ status: "pending" })
-  const price = memoryStore<QueryState<ChainSavingsPrice | null>>({ status: "pending" })
-  // The chain holds the pinned tuple alone: the pricing reads nothing but its inputs.
-  const store = upgradePricing(
-    { config, chain: { oxideTuple: tuple.readonly } as never },
-    price.readonly,
-  )
+  const price = memoryStore<QueryState<SavingsPrice | null>>({ status: "pending" })
+  // The chain holds the pinned tuple and the price alone: the pricing reads nothing but its inputs.
+  const store = upgradePricing({
+    config,
+    chain: { oxideTuple: tuple.readonly, savingsPrice: price.readonly } as never,
+  })
   store.subscribe(() => {})
   return { config, tuple, price, store }
 }
@@ -39,14 +47,14 @@ describe("upgradePricing", () => {
   it("prices Main in the pinned underlying, Savings in the asset its price was read on", async () => {
     const { config, tuple, price, store } = await pricing()
     tuple.set(ready({ token: `0x${"aa".repeat(20)}`, underlying: DAI }))
-    price.set(ready({ sharePrice: 2n, readAt: 1, asset: USDS }))
+    price.set(ready(priced(2n, 1, USDS)))
     expect(store.get()).toMatchObject({ mainToken: DAI, savingsToken: USDS, sharePrice: 2n })
     const main = `migration/${config.oxideProfile.portal.toLowerCase()}/1`
     expect(store.get().runToken?.(main)).toBe(DAI)
     expect(store.get().runToken?.("migration/0xsavings/1")).toBe(USDS)
-    // A price read on another Savings tuple brings its asset.
+    // A price read on another Savings holding brings its asset.
     const other = `0x${"0f".repeat(20)}`
-    price.set(ready({ sharePrice: 3n, readAt: 2, asset: other }))
+    price.set(ready(priced(3n, 2, other)))
     expect(store.get()).toMatchObject({ savingsToken: other, sharePrice: 3n })
   })
 

@@ -16,11 +16,11 @@ import {
   refundProgress,
   sweepGone,
   type AllowanceSnapshot,
-  type BackupAddQuote,
   type BackupAddRelease,
   type BackupFunding,
   type BackupFundingRow,
   type BackupFundingQuote,
+  type BackupFundingSplit,
   type BackupRotationPhase,
   type BackupRotationPlan,
   type BackupRotationRecord,
@@ -107,15 +107,13 @@ export interface BackupScreenInput {
   /** When the funding is released; read only while a screen shows the add's time. */
   release?: BackupAddRelease
   /**
-   * The faster option, read while the start screens show: the intro's time is for the speed the pay
-   * step opens on.
+   * The faster option, read while the start screens show: the intro's figures are for the speed the
+   * pay step opens on.
    */
   offer?: FasterWithdrawal
   /** A new add may start from this build. */
   addable: boolean
   laptop: boolean
-  /** The session passkey lives on one device, which the key list warns about. */
-  oneDevice: boolean
   /** How far into the start screens the user went. */
   start?: "intro" | "place"
   picked?: BackupAddChoice
@@ -217,6 +215,12 @@ export type BackupRead = "keys" | "records" | "deps" | "entry"
 /** Where the new backup was saved, as far as its creation said. */
 export type BackupSaved = { securityKey: true } | { manager: string }
 
+/** The intro's cost: the funding, and the fixed part of its fee. */
+export interface IntroCost {
+  funding: BackupFundingSplit
+  fixed: bigint
+}
+
 /** The add's whole wait on the network from paying, in seconds, at either speed. */
 export interface BackupEtas {
   standard: number
@@ -235,7 +239,7 @@ export interface Tracked {
   approver?: string
   savedIn?: BackupSaved
   /** What the add charged, once a funding went out. */
-  paid?: bigint
+  paid?: BackupFundingSplit
   /** How long ago the driver last read the chain for the attempt in full. */
   checkedAgoMs?: number
   busy: boolean
@@ -251,23 +255,25 @@ export type BackupScreen =
    * the key list, which waits on the read.
    */
   | { id: "loading"; rotation: boolean; cancelled?: boolean }
-  /** A1: the key list and its add. `oneDevice` warns and lists the backup as missing. */
+  /** A1: the key list, the backup missing from it, and its add. */
   | {
       id: "keys"
       keys: readonly BackupKey[]
       add: BackupAddState
       place?: BackupAddOptions
       device?: UserAgentInfo
-      oneDevice: boolean
       busy: boolean
       cancelled: boolean
     }
-  /** A2: before the add starts. `picker` when A3 follows; without it Continue starts the add. */
+  /**
+   * A2: before the add starts, its cost and wait at the speed the pay step opens on. `picker` when
+   * A3 follows; without it Continue starts the add.
+   */
   | {
       id: "intro"
       links: number
-      quote?: BackupAddQuote
-      /** The add's wait in seconds at the speed the pay step opens on, once the release is read. */
+      cost?: IntroCost
+      /** In seconds, once the release is read. */
       eta?: number
       picker: boolean
       device?: UserAgentInfo
@@ -277,6 +283,8 @@ export type BackupScreen =
   | { id: "place"; place: BackupAddOptions; device?: UserAgentInfo; busy: boolean }
   /** B1: what holds the add. */
   | { id: "blocked"; blocks: readonly EntryBlock[] }
+  /** B1 when a short balance is all that holds the add: the funding it needs, and the balance. */
+  | { id: "lowBalance"; funding: BackupFundingSplit; have: bigint }
   /** B2: entered from A1, or raised over the step a missing route stopped. */
   | { id: "unavailable"; under?: BackupScreen; failure?: BackupFailure }
   /** B3: a read failed. `cancelled` as on the key list, which the read stopped. */
@@ -316,7 +324,7 @@ export type BackupScreen =
       id: "done"
       keys: readonly BackupKey[]
       unlisted?: { savedIn?: BackupSaved }
-      paid?: bigint
+      paid?: BackupFundingSplit
       failure?: BackupFailure
       /** As `BackupProgress.relanding`. */
       relanding?: true
@@ -376,6 +384,8 @@ export interface BackupActions {
   /** Asks the driver about the record again now. */
   check(): void
   cancel(): void
+  /** A Cancel button's: asks before `cancel` drops the saved attempt. */
+  askCancel(): void
   recover(): void
   /** Ends a finished attempt and reads the keys again. */
   finish(): void
@@ -401,7 +411,9 @@ const UNREGISTERED_FACTS: EntryFacts = {
   routeLive: true,
   balance: 0n,
   fundingAmount: 0n,
+  credited: 0n,
   chunk: { kind: "fits" },
+  fits: () => false,
   plan: true,
   moves: 0,
   savingsMoving: false,
@@ -515,30 +527,53 @@ function startScreen(
       add,
       ...(place && { place }),
       ...(device && { device }),
-      oneDevice: input.oneDevice,
       busy: input.busy,
       cancelled: input.cancelled,
     }
   if (add.kind === "unreadable") return { id: "unreadable", read: "entry" }
   if (add.kind === "blocked") {
-    if (add.screen === "blocked") return { id: "blocked", blocks: add.blocks }
+    if (add.screen === "blocked") return blockedScreen(add.blocks)
     if (add.screen === "unavailable") return { id: "unavailable" }
     return { id: "firstPasskey", keys: rowsOf(keys) }
   }
   if (input.start === "place" && place)
     return { id: "place", place, ...(device && { device }), busy: input.busy }
-  const facts = input.entry?.facts
-  const quote = typeof facts === "object" ? facts.quote : undefined
-  const eta = introEta(input)
+  const facts = typeof input.entry?.facts === "object" ? input.entry.facts : undefined
+  const tip = facts ? openingTip(input, facts) : 0n
+  const cost: IntroCost | undefined = facts?.quote && {
+    funding: { sent: facts.fundingAmount + tip, credited: facts.credited },
+    fixed: facts.quote.fixed,
+  }
+  const etas = addEtas(input)
+  const eta = etas && (tip > 0n ? etas.tipped : etas.standard)
   return {
     id: "intro",
     links: add.links,
-    ...(quote && { quote }),
+    ...(cost && { cost }),
     ...(eta !== undefined && { eta }),
     picker: place !== undefined,
     ...(device && { device }),
     busy: input.busy,
   }
+}
+
+/** B1, or its balance sheet when a short balance is all that holds the add. */
+function blockedScreen(blocks: readonly EntryBlock[]): BackupScreen {
+  const open = blocks.filter((block): block is OpenEntryBlock => !block.done)
+  const only = open.length === 1 ? open[0] : undefined
+  return only?.id === "balance"
+    ? { id: "lowBalance", funding: { sent: only.need, credited: only.hold }, have: only.have }
+    : { id: "blocked", blocks }
+}
+
+/**
+ * The tip the pay step opens on: the offer's, where it is worth it and one transfer funds the add
+ * with it; none for Standard. The pay step decides the same way from its own reads.
+ */
+function openingTip({ offer }: BackupScreenInput, facts: EntryFacts): bigint {
+  return offer && fasterIsWorthIt(offer) && facts.fits(facts.fundingAmount + offer.proverTip)
+    ? offer.proverTip
+    : 0n
 }
 
 function addState(
@@ -597,6 +632,12 @@ function placeOf({ entry, picked }: BackupScreenInput): BackupAddOptions | undef
 
 type Context = Pick<Tracked, "busy" | "checking" | "canCancel">
 
+/** What a saved record's screen reads besides the record and the driver; without `now`, no time. */
+type RecordInput = Pick<
+  BackupScreenInput,
+  "keys" | "tokens" | "release" | "funding" | "fit" | "emptyUnder" | "busy"
+> & { now?: number }
+
 /** What the driver answered for this attempt; an answer for another attempt is not shown. */
 type Answer = {
   wait?: FlowWait
@@ -607,6 +648,105 @@ type Answer = {
   checkedAt?: number
 }
 
+const driveOf = (record: BackupRotationRecord, drive?: RotationDrive) =>
+  drive?.record.attemptId === record.attemptId ? drive : undefined
+
+function answerOf(record: BackupRotationRecord, drive?: RotationDrive): Answer {
+  const resume = drive?.resume
+  return {
+    ...(resume?.wait && { wait: resume.wait }),
+    answered: resume !== undefined || drive?.checkedAt !== undefined,
+    approving: drive?.approving ?? false,
+    // Only once the driver answers `declined`: an earlier chunk in flight comes first.
+    declined: moveDeclined(record) && resume?.wait === "declined",
+    ...(drive?.checkedAt !== undefined && { checkedAt: drive.checkedAt }),
+  }
+}
+
+/**
+ * A saved add on its tracker, for Home's card and Settings' row: waiting at Approve or Pay, on the
+ * network (`delayed` once the sheet says so), or on the last approval.
+ */
+export type AddStep =
+  | { kind: "resume" }
+  | { kind: "adding"; leftMs?: number; delayed?: true }
+  | { kind: "finish" }
+
+/** What a step reads; the time left needs all of it. */
+export interface AddStepInput {
+  drive?: RotationDrive
+  funding?: BackupFundingRow
+  release?: BackupAddRelease
+  now?: number
+}
+
+/** The saved add's screen as its sheet reads it before any tap; none without one, or dismissed. */
+function savedScreen(saved: BackupRotationState, input: AddStepInput): RotationScreen | undefined {
+  if (saved === null || typeof saved !== "object" || dismissed(saved)) return undefined
+  const answer = answerOf(saved, driveOf(saved, input.drive))
+  const idle: Context = { busy: false, checking: false, canCancel: false }
+  return recordScreen(saved, { keys: undefined, ...input, busy: false }, answer, idle)
+}
+
+/**
+ * The step the saved add's sheet opens on, read through the sheet's own screen; none once the add
+ * ended or stopped off the tracker.
+ */
+export function selectAddStep(
+  saved: BackupRotationState,
+  input: AddStepInput = {},
+): AddStep | undefined {
+  const screen = savedScreen(saved, input)
+  switch (screen?.id) {
+    case "approve":
+      // A payment whose prompt or proof is out goes on without the user.
+      return screen.sending ? { kind: "adding" } : { kind: "resume" }
+    case "adding":
+      if (screen.delay) return { kind: "adding", delayed: true }
+      return screen.timing ? { kind: "adding", leftMs: screen.timing.leftMs } : { kind: "adding" }
+    case "finish":
+      if (screen.ask && !screen.approving) return { kind: "finish" }
+      return screen.delay ? { kind: "adding", delayed: true } : { kind: "adding" }
+    default:
+      return undefined
+  }
+}
+
+/**
+ * The prompts step 4 still asks for. Paylinks are taken back before the move, whose parts are
+ * counted only once it is planned.
+ */
+export function promptsLeft({ refunds, moved, out = 0 }: BackupProgress): number | "several" {
+  if (refunds) return "several"
+  return moved ? moved.total - moved.included - out : 1
+}
+
+/** Whether the step offers Close, as what it waits on goes on without the sheet. */
+export function offersClose(screen: BackupScreen): boolean {
+  if (screen.id === "adding") return true
+  if (screen.id !== "finish") return false
+  if (screen.delay && !screen.ask) return true
+  if (screen.ask || screen.approving || screen.declined || screen.paused || screen.failure)
+    return false
+  const left = promptsLeft(screen.progress)
+  // A paylink waiting to expire can take long, so that wait keeps Close.
+  return screen.linkExpiring || (left !== "several" && left <= 0)
+}
+
+/**
+ * How the Passkeys sheet closes over the saved add. On the add's tracker a click outside does
+ * nothing (`holds`), and the close button asks first (`asks`) unless the step offers Close.
+ */
+export function selectSheetClose(
+  saved: BackupRotationState,
+  drive?: RotationDrive,
+): "closes" | "holds" | "asks" {
+  const screen = savedScreen(saved, { drive })
+  if (screen?.id !== "approve" && screen?.id !== "adding" && screen?.id !== "finish")
+    return "closes"
+  return offersClose(screen) ? "holds" : "asks"
+}
+
 function rotationScreen(record: BackupRotationRecord, input: BackupScreenInput): BackupScreen {
   // Without a wallet neither the flow nor the key read runs; the key read's sheet has the retry.
   if (input.deps === "none")
@@ -615,16 +755,9 @@ function rotationScreen(record: BackupRotationRecord, input: BackupScreenInput):
       : { id: "loading", rotation: false }
   if (input.deps === "failed") return { id: "unreadable", read: "deps" }
   if (input.deps === "building") return { id: "loading", rotation: true }
-  const drive = input.drive?.record.attemptId === record.attemptId ? input.drive : undefined
+  const drive = driveOf(record, input.drive)
   const resume = drive?.resume
-  const answer: Answer = {
-    ...(resume?.wait && { wait: resume.wait }),
-    answered: resume !== undefined || drive?.checkedAt !== undefined,
-    approving: drive?.approving ?? false,
-    // Only once the driver answers `declined`: an earlier chunk in flight comes first.
-    declined: moveDeclined(record) && resume?.wait === "declined",
-    ...(drive?.checkedAt !== undefined && { checkedAt: drive.checkedAt }),
-  }
+  const answer = answerOf(record, drive)
   const context: Context = {
     busy: input.busy,
     checking: record.phase !== "created" && (resume === undefined || drive?.rechecking === true),
@@ -670,7 +803,7 @@ function raise(
 
 function recordScreen(
   record: BackupRotationRecord,
-  input: BackupScreenInput,
+  input: RecordInput,
   answer: Answer,
   context: Context,
 ): RotationScreen {
@@ -690,9 +823,10 @@ function recordScreen(
     ...(savedIn && { savedIn }),
     ...paid,
     // The clock is floored to its tick, so a check within the tick reads as now.
-    ...(answer.checkedAt !== undefined && {
-      checkedAgoMs: Math.max(0, input.now - answer.checkedAt),
-    }),
+    ...(answer.checkedAt !== undefined &&
+      input.now !== undefined && {
+        checkedAgoMs: Math.max(0, input.now - answer.checkedAt),
+      }),
     ...context,
   })
   const waiting = (phase: TrackedPhase): Extract<BackupScreen, { id: "adding" }> => ({
@@ -779,7 +913,7 @@ function finish(
 function recoveryScreen(
   record: BackupRotationRecord,
   state: RecoveryState,
-  input: BackupScreenInput,
+  input: RecordInput,
 ): RotationScreen {
   const recoveryTx = state !== "held" ? record.recovery?.txHash : undefined
   return {
@@ -809,14 +943,14 @@ function savedOf({ backup }: BackupRotationRecord): BackupSaved | undefined {
  */
 function timingOf(
   record: BackupRotationRecord,
-  input: BackupScreenInput,
+  { now, release, funding }: RecordInput,
   answered: boolean,
 ): { timing?: BackupTiming; delay?: BackupDelay } {
-  const quoted = backupAddTiming(record, input.now)
+  if (now === undefined) return {}
+  const quoted = backupAddTiming(record, now)
   if (!quoted) return {}
   const eta =
-    input.release &&
-    backupAddEta(record, input.funding, input.release, input.now, { tipped: tipped(record.plan) })
+    release && backupAddEta(record, funding, release, now, { tipped: tipped(record.plan) })
   return {
     ...(eta?.remaining && { timing: { leftMs: eta.seconds * 1000 } }),
     ...(quoted.delayed && answered && { delay: "late" as const }),
@@ -830,22 +964,16 @@ const tipped = (plan?: BackupRotationPlan) => BigInt(plan?.proverTip ?? 0) > 0n
  * A send's wait at either speed, from the release read for it; none until read. An earlier funding's
  * row has no say: it may have failed, or carry the tip of a speed no longer chosen.
  */
-function addEtas({ release, now }: BackupScreenInput): BackupEtas | undefined {
-  if (!release) return undefined
+function addEtas({ release, now }: Pick<RecordInput, "release" | "now">): BackupEtas | undefined {
+  if (!release || now === undefined) return undefined
   // Without a row there is always a wait to quote.
   const at = (tipped: boolean) => backupAddEta(undefined, undefined, release, now, { tipped })!
   return { standard: at(false).seconds, tipped: at(true).seconds }
 }
 
-/** The intro's time: at the speed the pay step opens on, Faster where the offer is worth it. */
-function introEta(input: BackupScreenInput): number | undefined {
-  const etas = addEtas(input)
-  return etas && (input.offer && fasterIsWorthIt(input.offer) ? etas.tipped : etas.standard)
-}
-
 const hexKey = (hex: string) => hex.toLowerCase().replace(/^0x/, "")
 
-function payFacts(plan: BackupRotationPlan, input: BackupScreenInput): BackupPayFacts {
+function payFacts(plan: BackupRotationPlan, input: RecordInput): BackupPayFacts {
   const eta = addEtas(input)
   return {
     ...backupFundingQuote(plan),

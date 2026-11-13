@@ -62,9 +62,14 @@ export interface SideEffects {
 
 /** Every MessageDelivery.onchain_* note-delivery and event log is 16 fields. */
 const DELIVERY_LOG_LENGTH = SUBSCRIPTION_NOTE_LOG_EMITTED_LENGTH
-/** The recovery chunk events a wallet withdrawal emits: one, plus one for an escrow's memo
+/** The recovery chunk events a plain wallet withdrawal emits: one, plus one for an escrow's memo
  * (`withdrawalMemo.ts`). */
-const WITHDRAWAL_RECOVERY_CHUNKS = 2
+export const WITHDRAWAL_RECOVERY_CHUNKS = 2
+/**
+ * The most recovery chunks a sponsored withdrawal may emit, which its per-call budget is priced at:
+ * a vault move's route takes up to five, and one more leaves room for a longer step.
+ */
+export const MAX_WITHDRAWAL_RECOVERY_CHUNKS = 6
 /** TEEMetadata: 4 pubkey limbs, the anchor block hash and the signer's registration leaf index. */
 export const TEE_METADATA_FIELDS = 6
 
@@ -393,17 +398,20 @@ export function worstTransferMarginal(): ClaimFpcMeasuredTx {
 
 /** The burn's own emissions beside the spend: the L2->L1 message and its recovery chunk events,
  * delivered to the withdrawer. */
-const withdrawEffects = (): SideEffects =>
+const withdrawEffects = (recoveryChunks = WITHDRAWAL_RECOVERY_CHUNKS): SideEffects =>
   mergeEffects(
     { ...NO_EFFECTS, l2ToL1Msgs: 1 },
-    ...Array.from({ length: WITHDRAWAL_RECOVERY_CHUNKS }, () => eventEffects(1)),
+    ...Array.from({ length: recoveryChunks }, () => eventEffects(1)),
   )
 
-/** Worst-case oxide_token.withdraw marginal: a ladder spend with a change note only, and the
- * burn's emissions. */
-export function worstWithdrawMarginal(): ClaimFpcMeasuredTx {
+/** Worst-case oxide_token.withdraw marginal of a burn emitting `recoveryChunks` recovery chunks: a
+ * ladder spend with a change note only, and the burn's emissions. */
+export function worstWithdrawMarginal(recoveryChunks: number): ClaimFpcMeasuredTx {
+  if (!Number.isInteger(recoveryChunks) || recoveryChunks < 1) {
+    throw new RangeError(`a withdrawal emits at least one recovery chunk, not ${recoveryChunks}`)
+  }
   return publicSideEffectGas(
-    mergeEffects(spendEffects({ recipientNote: false }), withdrawEffects()),
+    mergeEffects(spendEffects({ recipientNote: false }), withdrawEffects(recoveryChunks)),
   )
 }
 

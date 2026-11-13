@@ -3,7 +3,7 @@ import { createPace } from "@obsidion/core/cadence"
 import { StrictMode, act, useState, useSyncExternalStore } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { TxStatus } from "@aztec-labs/stdlib/tx"
-import { DEFAULT_DECIMALS, L1_SETTLED_DEPTH } from "@obsidion/core/constants"
+import { L1_SETTLED_DEPTH } from "@obsidion/core/constants"
 import {
   type BackupAddRelease,
   type BackupRotations,
@@ -12,7 +12,6 @@ import {
   queries,
   type BackupRotationRecord,
 } from "@obsidion/front-core"
-import { formatUnits } from "viem"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("@obsidion/web-ds", async (importOriginal) => ({
@@ -70,7 +69,12 @@ vi.mock("../../../src/features/deposit/DepositExitModal/DepositExitModal", () =>
 
 import { BackupPasskeyScreens } from "../../../src/features/backupPasskey/BackupPasskeyHost/BackupPasskeyHost"
 import { startBackupAdd } from "../../../src/features/backupPasskey/backupPasskeyAdd"
-import { panelCopy, recoveryCopy } from "../../../src/features/backupPasskey/backupPasskeyCopy"
+import {
+  holdCopy,
+  panelCopy,
+  recoveryCopy,
+} from "../../../src/features/backupPasskey/backupPasskeyCopy"
+import trackerCopy from "../../../src/features/backupPasskey/screens/AddTracker/AddTracker.copy"
 import approveCopy from "../../../src/features/backupPasskey/screens/ApproveScreen/ApproveScreen.copy"
 import { BackupStandIn } from "../../../src/features/backupPasskey/BackupPasskeyPanel"
 import type { BackupActions } from "../../../src/features/backupPasskey/backupScreen"
@@ -86,7 +90,6 @@ import { EmptyDepositError } from "../../../src/features/deposit/depositReadErro
 import type { BackupFlowDeps } from "../../../src/features/backupPasskey/backupPasskeyRuntime"
 import { getRotationDriver } from "../../../src/features/backupPasskey/rotationDrive"
 import { closeSession } from "../../../src/session/session"
-import { usdFigure } from "../../../src/ui/format"
 import { openTestSession } from "../../support/session"
 import { balancesOf } from "../../support/balances"
 import {
@@ -210,7 +213,11 @@ function drive(made: Made, pollMs: number) {
 }
 
 /** Main's balance as the session shows it; the Fund step reads its fit again when it moves. */
-const SHOWN_BALANCE = balancesOf({ main: 3n * 10n ** 18n, readThisSession: true }).view.get()
+const SHOWN_BALANCE = balancesOf({
+  main: 3n * 10n ** 18n,
+  readThisSession: true,
+  known: true,
+}).view.get()
 const mainBalance = memoryStore(SHOWN_BALANCE)
 /** The pace the faster option re-quotes on: a wake quotes again at once. */
 const offerPace = createPace()
@@ -224,7 +231,7 @@ const RELEASE: BackupAddRelease = {
 const released = memoryStore({ status: "ready", value: RELEASE, refreshing: false } as const)
 const openSession = (made: Made) =>
   openTestSession({
-    config: { l1ChainId: 31337 } as never,
+    config: { l1ChainId: 31337, features: {} } as never,
     // A built wallet: the Fund step's Speed row quotes once it is.
     wallet: {},
     balances: { view: mainBalance.readonly, records: balancesOf().records },
@@ -312,6 +319,8 @@ describe("BackupPasskeyScreens", () => {
     expect(button("Try again")).toBeDefined()
     expect(button("Cancel")).toBeDefined()
     await click("Cancel")
+    expect(await made.store.get(OWNER)).not.toBeNull()
+    await click("backup-cancel-confirm")
     expect(await made.store.get(OWNER)).toBeNull()
     expect(container.querySelector('[data-testid="backup-cancelled"]')).not.toBeNull()
   })
@@ -341,7 +350,7 @@ describe("BackupPasskeyScreens", () => {
     })
     await flush(3)
     expect(fundButton()).toBeNull()
-    expect(current()).toContain("Waiting for the network")
+    expect(current()).toContain(trackerCopy.waiting)
     expect(button("Cancel")).toBeUndefined()
   })
 
@@ -380,7 +389,7 @@ describe("BackupPasskeyScreens", () => {
     sweep.mockResolvedValue(undefined)
     await flush(3)
     expect(current()).not.toContain(panelCopy.unverifiable)
-    expect(current()).toContain("Waiting for the network")
+    expect(current()).toContain(trackerCopy.waiting)
   })
 
   it("recovers a stranded funding, ends the attempt at recovered once final, and lets a new add start", async () => {
@@ -611,11 +620,14 @@ describe("the pay step's speed", () => {
   }
   const TIPPED = { fundingAmount: (2n * DAI + TIP).toString(), proverTip: TIP.toString() }
   const UNTIPPED = { fundingAmount: (2n * DAI).toString() }
-  const usd = (atomic: bigint) => usdFigure(formatUnits(atomic, DEFAULT_DECIMALS))
-  /** The cost over the plan's 2 DAI funding and the 1.4 DAI that comes back, with `tip` on top. */
-  const cost = (tip: bigint) => usd(2n * DAI + tip - BigInt(PLAN.credited))
-  /** The Withdrawal fee in the cost's breakdown, over the plan's 1.8 DAI deposit. */
-  const withdrawalFee = (tip: bigint) => usd(2n * DAI + tip - BigInt(PLAN.deposited))
+  /**
+   * The figures over the plan's 2 DAI funding, its 1.8 DAI deposit and the 1.4 DAI that comes back,
+   * at either speed.
+   */
+  const figures = {
+    standard: { fee: "$0.60", withdrawalFee: "$0.20", total: "$2.00" },
+    faster: { fee: "$1.00", withdrawalFee: "$0.60", total: "$2.40" },
+  }
   /** The whole wait at a speed: the landing, the release, two relayer pickups, then the settle. */
   const wait = (releaseSeconds: number) => {
     const tail = (2 * 2 + Number(L1_SETTLED_DEPTH)) * RELEASE.l1SlotSeconds
@@ -656,10 +668,18 @@ describe("the pay step's speed", () => {
   it("opens on Faster, prices the cost and the time with the tip, and sends it inside the funding", async () => {
     const made = await payStep({ faster: OFFER })
     expect(speed()?.textContent).toBe(speedCopy.faster)
-    expect(fact(approveCopy.pay.cost)).toBe(cost(TIP))
-    expect(breakdown()).toContain(withdrawalFee(TIP))
+    expect(fact(approveCopy.pay.from)).toBe(
+      fmt(approveCopy.pay.accountBalance, { balance: "$3.00" }),
+    )
+    expect(fact(approveCopy.pay.fee)).toBe(figures.faster.fee)
+    expect(breakdown()).toContain(figures.faster.withdrawalFee)
+    expect(fact(holdCopy.label)).toBe(fmt(holdCopy.value, { amount: "$1.40" }))
+    expect(fact(approveCopy.pay.total)).toBe(figures.faster.total)
     expect(fact(approveCopy.pay.time)).toBe(time.faster)
-    expect(fundButton()!.textContent).toBe(fmt(approveCopy.pay.pay, { amount: cost(TIP) }))
+    // The button names what leaves the balance, the hold included.
+    expect(fundButton()!.textContent).toBe(
+      fmt(approveCopy.pay.pay, { amount: figures.faster.total }),
+    )
     expect(fundButton()!.disabled).toBe(false)
     const stored = await pay(made)
     expect(sentPlan(made)).toMatchObject(TIPPED)
@@ -673,18 +693,37 @@ describe("the pay step's speed", () => {
     const made = await payStep({ faster: OFFER })
     await pickSpeed("standard")
     expect(speed()?.textContent).toBe(speedCopy.standard)
-    expect(fact(approveCopy.pay.cost)).toBe(cost(0n))
+    expect(fact(approveCopy.pay.fee)).toBe(figures.standard.fee)
+    expect(fact(approveCopy.pay.total)).toBe(figures.standard.total)
+    expect(fundButton()!.textContent).toBe(
+      fmt(approveCopy.pay.pay, { amount: figures.standard.total }),
+    )
     expect(fact(approveCopy.pay.time)).toBe(time.standard)
     const stored = await pay(made)
     expect(sentPlan(made)).toMatchObject(UNTIPPED)
     expect(stored.proverTip).toBeUndefined()
   })
 
+  it("prices Standard without the tip a send that never went out saved in the plan", async () => {
+    const made = await mount(signedRecord({ phase: "published", plan: { ...PLAN, ...TIPPED } }), {
+      world: { cap: 5n * DAI, faster: OFFER },
+    })
+    await flush(3)
+    await pickSpeed("standard")
+    expect(fact(approveCopy.pay.fee)).toBe(figures.standard.fee)
+    expect(fact(approveCopy.pay.total)).toBe(figures.standard.total)
+    expect(fundButton()!.textContent).toBe(
+      fmt(approveCopy.pay.pay, { amount: figures.standard.total }),
+    )
+    await pay(made)
+    expect(sentPlan(made)).toMatchObject(UNTIPPED)
+  })
+
   it("refuses Faster when one transfer cannot carry the funding and the tip, and sends none", async () => {
     // The cap equals the untipped funding, so the tip on top never fits.
     const made = await payStep({ faster: OFFER, cap: 2n * DAI })
     expect(speed()?.textContent).toBe(speedCopy.standard)
-    expect(fact(approveCopy.pay.cost)).toBe(cost(0n))
+    expect(fact(approveCopy.pay.fee)).toBe(figures.standard.fee)
     expect(fact(approveCopy.pay.time)).toBe(time.standard)
     const [standard, blocked] = await speedOptions()
     expect(standard!.textContent).toContain(etaLabel(OFFER.standardEtaSeconds))
@@ -718,7 +757,7 @@ describe("the pay step's speed", () => {
     await flush(3)
     await pickSpeed("faster")
     expect(speed()?.textContent).toBe(speedCopy.faster)
-    expect(fact(approveCopy.pay.cost)).toBe(cost(TIP))
+    expect(fact(approveCopy.pay.fee)).toBe(figures.faster.fee)
     const stored = await pay(made)
     expect(sentPlan(made)).toMatchObject(TIPPED)
     expect(stored).toMatchObject(TIPPED)
@@ -728,7 +767,7 @@ describe("the pay step's speed", () => {
     const made = await payStep({ faster: { ...OFFER, worstSpeedupSeconds: 30 } })
     expect(speed()?.textContent).toBe(speedCopy.faster)
     expect(speed()?.disabled).toBe(true)
-    expect(fact(approveCopy.pay.cost)).toBe(cost(0n))
+    expect(fact(approveCopy.pay.fee)).toBe(figures.standard.fee)
     expect(fact(approveCopy.pay.time)).toBe(time.standard)
     const stored = await pay(made)
     expect(sentPlan(made)).toMatchObject(UNTIPPED)
@@ -746,22 +785,22 @@ describe("the pay step's speed", () => {
     await flush(3)
     expect(container.querySelector('[aria-busy="true"]')?.textContent).toContain(speedCopy.checking)
     expect(fundButton()!.disabled).toBe(true)
-    expect(fact(approveCopy.pay.cost)).toBe(cost(0n))
+    expect(fact(approveCopy.pay.fee)).toBe(figures.standard.fee)
     await act(async () => answer())
     await flush()
     expect(fundButton()!.disabled).toBe(false)
     expect(speed()?.textContent).toBe(speedCopy.faster)
-    expect(fact(approveCopy.pay.cost)).toBe(cost(TIP))
+    expect(fact(approveCopy.pay.fee)).toBe(figures.faster.fee)
   })
 
   it("drops the tip with the offer once Faster was chosen", async () => {
     const made = await payStep({ faster: OFFER })
-    expect(fact(approveCopy.pay.cost)).toBe(cost(TIP))
+    expect(fact(approveCopy.pay.fee)).toBe(figures.faster.fee)
     made.world.faster = undefined
     await act(async () => offerPace.wake())
     await flush()
     expect(speed()).toBeNull()
-    expect(fact(approveCopy.pay.cost)).toBe(cost(0n))
+    expect(fact(approveCopy.pay.fee)).toBe(figures.standard.fee)
     expect(fact(approveCopy.pay.time)).toBe(time.standard)
     const stored = await pay(made)
     expect(sentPlan(made)).toMatchObject(UNTIPPED)
@@ -824,7 +863,7 @@ describe("the pay step's speed", () => {
     expect(fundButton()!.disabled).toBe(true)
     expect(speed()?.textContent).toBe(speedCopy.faster)
     expect(speed()?.disabled).toBe(true)
-    expect(fact(approveCopy.pay.cost)).toBe(cost(TIP))
+    expect(fact(approveCopy.pay.fee)).toBe(figures.faster.fee)
     expect(fact(approveCopy.pay.time)).toBe(time.faster)
     await release()
     await untilPhase(made.store, "funded")

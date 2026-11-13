@@ -12,6 +12,7 @@ export default {
   main: "Main Account",
   savings: "Savings",
   feeNotCovered: "The amount does not cover the L1 fee ({fee}).",
+  quoteChanged: "Fees went up since your review: {fee} now. Nothing was sent.",
   label: "Move funds",
   close: "Close",
   title: {

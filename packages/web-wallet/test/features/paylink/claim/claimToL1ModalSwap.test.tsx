@@ -258,7 +258,7 @@ describe("ClaimToL1Modal email swap speed", () => {
   it("burns the tip its leg was planned with when the offer re-quotes", async () => {
     await confirmSheet("25", "email", "USDC")
     planSwap.mockResolvedValueOnce(tippedLeg as never)
-    await chooseSpeed("Faster")
+    await chooseSpeed("Fast")
     faster.offer = { ...faster.offer!, proverTip: TIP * 2n }
     await renderSheet("25", "email")
     expect(planSwap).toHaveBeenCalledTimes(2)

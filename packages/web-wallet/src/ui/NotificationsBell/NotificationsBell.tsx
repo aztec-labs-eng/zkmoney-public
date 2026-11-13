@@ -16,7 +16,7 @@ import {
 import copy from "../notifications.copy"
 import { notificationText } from "../notificationText"
 import { useSession } from "../../session/session"
-import { profileBridge } from "../../session/walletChains"
+import { acrossBridge } from "../../session/walletChains"
 import { PhoneIcon } from "../PhoneIcon"
 import { usePhoneLayout } from "../usePhoneLayout"
 import styles from "./NotificationsBell.module.css"
@@ -79,7 +79,7 @@ export function NotificationsBell({
 }) {
   const byRoute = useRouteOpener()
   const opener = openEntry ?? byRoute
-  const bridge = profileBridge(useSession().page.config)
+  const bridge = acrossBridge(useSession().page.config)
   const [open, setOpen] = useNotificationsPanelOpen()
   const anchorRef = useRef<HTMLDivElement>(null)
   const { entries, state, hydrated, unreadCount, opened, markAllRead } = useNotificationList(scope)

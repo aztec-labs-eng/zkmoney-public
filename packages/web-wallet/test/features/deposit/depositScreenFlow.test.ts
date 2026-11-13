@@ -167,6 +167,21 @@ describe("the deposit modal's sheet", () => {
     ).toBe("fund")
   })
 
+  it("follows the sender a modal from a saved wallet changes to, and drops it for another account", () => {
+    const { flow } = world()
+    flow.entry({ intent: "wallet", saved: { address: ACCOUNT, name: "Main" } as SavedL1Wallet })
+    flow.sender(SAVED)
+    expect(flow.state.get().entry).toEqual({ intent: "wallet", saved: SAVED })
+    flow.sender(undefined)
+    expect(flow.state.get().entry).toEqual({ intent: "wallet", saved: undefined })
+  })
+
+  it("opens nothing when the sender changes with no modal open", () => {
+    const { flow } = world()
+    flow.sender(SAVED)
+    expect(flow.state.get().entry).toBeUndefined()
+  })
+
   it("shows a sent deposit over everything, and one close event closes the modal and its sheets", () => {
     const { flow } = world()
     flow.entry({ intent: "wallet" })

@@ -4,7 +4,12 @@
  * the read drops the import, and the next boot tries again; the writes hold the session lock, so no
  * switch lands between them.
  */
-import { importHistoricActivity, importHistoricContacts, task } from "@obsidion/front-core"
+import {
+  importHistoricActivity,
+  importHistoricContacts,
+  savingsHoldingRef,
+  task,
+} from "@obsidion/front-core"
 import type {
   Contacts,
   HistoricActivityImported,
@@ -26,7 +31,7 @@ export interface HistoricSource {
 }
 
 type ImportSession = Pick<SessionDeps, "device" | "namespace" | "sessionLock"> &
-  Pick<Session, "transfers" | "sipaDeposits" | "withdrawals" | "savingsMoves">
+  Pick<Session, "transfers" | "sipaDeposits" | "withdrawals" | "moves" | "page">
 
 /** This browser's retired databases, or `from` in their place. */
 export function importHistoricActivityOnce(
@@ -37,19 +42,28 @@ export function importHistoricActivityOnce(
   const memo = `${from?.key ?? ""}\n${storageId}`
   let run = imports.get(memo)
   if (!run) {
-    run = importHistoricActivity({
-      storage: webStorage,
-      key: from?.key,
-      readOtherDatabases: from
-        ? async (read) => [read(await from.read())]
-        : (read) => webStorage.readOtherDatabases(read),
-      transactions: session.transfers,
-      sipaDeposits: session.sipaDeposits,
-      withdrawals: session.withdrawals,
-      savingsMoves: session.savingsMoves,
-      ownsStorage: () => stillCommitted(session),
-      holdSession: session.sessionLock,
-    })
+    run = (async () => {
+      // A retired move counts in the current Sky holding's ledger: the upgrade carried its shares.
+      const sky = savingsHoldingRef(
+        await session.page.chain.holdings.read(),
+        session.page.config.holdings,
+      )
+      return importHistoricActivity({
+        storage: webStorage,
+        key: from?.key,
+        readOtherDatabases: from
+          ? async (read) => [read(await from.read())]
+          : (read) => webStorage.readOtherDatabases(read),
+        transactions: session.transfers,
+        sipaDeposits: session.sipaDeposits,
+        withdrawals: session.withdrawals,
+        moves: session.moves,
+        ...(sky ? { skyHolding: sky } : {}),
+        now: session.page.now,
+        ownsStorage: () => stillCommitted(session),
+        holdSession: session.sessionLock,
+      })
+    })()
     imports.set(memo, run)
     run.catch(() => {
       if (imports.get(memo) === run) imports.delete(memo)

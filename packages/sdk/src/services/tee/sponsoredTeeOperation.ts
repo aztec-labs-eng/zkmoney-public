@@ -27,6 +27,7 @@ import { createLogger } from "@aztec-labs/foundation/log"
 import { buildSeedCapsule } from "@oxide/oxide-client/capsules.js"
 import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
 import type { WithdrawalFinalizationData } from "@oxide/oxide-lib/withdrawal_finalization_data.js"
+import { withdrawalRecoveryChunks } from "../../oxide/withdrawal/plainWithdrawal.js"
 import type { PlainWithdrawalContext } from "../../oxide/withdrawal/plainWithdrawal.js"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import type {
@@ -265,8 +266,14 @@ export async function buildSponsoredTeeOperation(
     return { payload: finalizedPayload, gasDelta: signed.gasDelta }
   }
 
-  // Priced as sent: the finalized batch appends `publish_da`.
-  const fee = deps.claimFpcSponsoredFee(args.policy, [...innerCalls, { name: "publish_da" }])
+  // Priced as sent: each burn declares the recovery chunks it emits, and the finalized batch
+  // appends `publish_da`.
+  const firstOp = args.accountCall ? 1 : 0
+  const priced = innerCalls.map((call, i) => {
+    const op = operations[i - firstOp]
+    return op?.kind === "withdraw" ? { ...call, recoveryChunks: withdrawalRecoveryChunks(op) } : call
+  })
+  const fee = deps.claimFpcSponsoredFee(args.policy, [...priced, { name: "publish_da" }])
 
   return { payload, sendOpts: { additionalScopes, finalize, fee } }
 }

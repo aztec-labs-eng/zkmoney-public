@@ -41,7 +41,7 @@ import {
   DEMO_SCENARIOS,
   type DemoScenario,
 } from "./demoFlag"
-import { profileBridge } from "../session/walletChains"
+import { acrossBridge } from "../session/walletChains"
 import {
   activityDeposits,
   demoBridgeIns,
@@ -144,7 +144,7 @@ async function seedWithdrawals(session: Session, records: WithdrawalRecord[]): P
 }
 
 async function seedBridgeIns(session: Session, now: number): Promise<void> {
-  const chains = (profileBridge(session.page.config)?.chains ?? []).map((c) => c.chainId)
+  const chains = (acrossBridge(session.page.config)?.chains ?? []).map((c) => c.chainId)
   if (!chains.length) return
   const { bridgeIns } = session
   for (const record of demoBridgeIns(now, chains)) await bridgeIns.rebuild(record)

@@ -19,7 +19,9 @@ import { activeNamespace, closeSession, switchSession } from "../../../src/sessi
 import { pageSessionDeps } from "../../../src/app/sessionDeps"
 import { closeWalletStore, openWalletStore } from "../../../src/platform/storage/walletStorage"
 import { WEB_STORAGE_PREFIX, webStorage } from "../../../src/platform/storage/WebStorageAdapter"
+import { assignReads } from "../../support/fakeReads"
 import { testWalletDbs } from "../../support/fakeWalletDb"
+import { holdingsOf } from "../../support/holdings"
 import { sessions } from "../../../../front-core/test/engine/taskTable"
 
 const dbs = testWalletDbs()
@@ -98,7 +100,9 @@ describe("importHistoricActivityOnce", () => {
 
   it("carries the account's rows from the retired rollup's database into this one, once", async () => {
     await activate("acct1")
-    const session = switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
+    const page = testPage()
+    assignReads(page.chain, { holdings: async () => holdingsOf() })
+    const session = switchSession(activeNamespace(testCore().device), pageSessionDeps(page))
     const old = dbs.db(OLD_ROLLUP).state
     old.set(scoped("acct1", TRANSACTIONS_STORAGE_KEY), JSON.stringify([row("0xA1")]))
     old.set(scoped("acct1", CURSOR), "10")

@@ -174,13 +174,19 @@ export function backupAddEta(
   }
 }
 
-/** What the add charged: the plan's fees, once a funding went out. */
+/** A funding of the add, in base units: what leaves the balance, and the part that comes back. */
+export interface BackupFundingSplit {
+  sent: bigint
+  credited: bigint
+}
+
+/** What the add charged: the plan's funding, its fees being what does not come back. */
 export function backupAddCharged(
   record: Pick<BackupRotationRecord, "plan" | "fundings">,
-): bigint | undefined {
+): BackupFundingSplit | undefined {
   const { plan } = record
   if (!plan || !charged(record)) return undefined
-  return BigInt(plan.fundingAmount) - BigInt(plan.credited)
+  return { sent: BigInt(plan.fundingAmount), credited: BigInt(plan.credited) }
 }
 
 /** What the move sent to the two-key account, by token: every send included and not reverted. */

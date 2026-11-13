@@ -15,14 +15,21 @@ export const sandboxConfig = async () => (await sandboxBoot()).config
 export const testnetConfig = async () =>
   (await boot(testnetProfile(), "https://cdn.zk.money/profiles/v5/current.json")).config
 
-/** The testnet profile's config with `bridge` as its version's bridge block. */
-export const bridgeConfig = async (bridge: unknown) => {
-  const profile = testnetProfile()
-  profile.versions[profile.current].bridge = bridge
-  return (await boot(profile, "https://cdn.zk.money/profiles/v5/current.json")).config
-}
+/** The testnet profile's config with `across` as its features document's Across bridge. */
+export const bridgeConfig = async (across: unknown) =>
+  (await boot(testnetProfile(), "https://cdn.zk.money/profiles/v5/current.json", { across })).config
 
-async function boot(profile: { profileId: string; network: string }, profileUrl: string) {
+async function boot(
+  profile: { profileId: string; network: string },
+  profileUrl: string,
+  features: Record<string, unknown> = {},
+) {
+  const document = {
+    schemaVersion: "1",
+    profileId: profile.profileId,
+    network: profile.network,
+    features,
+  }
   const { resolveBootConfig } = await import("../../src/config/env")
   return resolveBootConfig({
     env: {
@@ -30,8 +37,8 @@ async function boot(profile: { profileId: string; network: string }, profileUrl:
       VITE_CONFIG_PROFILE_URL: profileUrl,
       VITE_CONFIG_EXPECTED_PROFILE_ID: profile.profileId,
     },
-    fetchImpl: (async () =>
-      new Response(JSON.stringify(profile), {
+    fetchImpl: (async (input: RequestInfo | URL) =>
+      new Response(JSON.stringify(String(input).includes("/features/") ? document : profile), {
         status: 200,
         headers: { "content-type": "application/json" },
       })) as unknown as typeof fetch,

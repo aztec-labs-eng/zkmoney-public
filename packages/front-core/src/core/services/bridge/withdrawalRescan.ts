@@ -70,8 +70,7 @@ export async function rebuildWithdrawals(deps: WithdrawalRescanDeps): Promise<Wi
     .filter((event, i) => !held[i] && (deps.keep?.(event) ?? true))
     .sort((a, b) => a.blockNumber - b.blockNumber)
   // Rebuilt rows join an in-progress chain catch-up so they land behind the activity skeleton.
-  const end =
-    missing.length && syncCatchUp.status.get() ? syncCatchUp.begin() : undefined
+  const end = missing.length && syncCatchUp.status.get() ? syncCatchUp.begin() : undefined
   const created: WithdrawalRecord[] = []
   try {
     for (const event of missing) {

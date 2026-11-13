@@ -1,0 +1,17 @@
+.icon {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  overflow: hidden;
+  border-radius: 50%;
+}
+/* The 44px tile, scaled to the icon and cut to its circle. */
+.tile {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: scale(var(--brand-scale));
+  transform-origin: top left;
+  border-radius: 0;
+  box-shadow: none;
+}

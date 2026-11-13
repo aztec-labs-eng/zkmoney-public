@@ -17,7 +17,7 @@ import {
 import { WebPasskeyIdentityMap } from "../../../src/platform/auth/WebPasskeyIdentityMap"
 import { createBackupNudges, memoryBackend, openDatabase } from "@obsidion/front-core"
 import { balancesOf } from "../../support/balances"
-import { OWNER, signedRecord, testRotations } from "../../support/backupAdd"
+import { OWNER, sent, signedRecord, testRotations } from "../../support/backupAdd"
 import { seedDeviceKeys, testCore } from "../../support/page"
 import { openTestSession } from "../../support/session"
 
@@ -91,6 +91,25 @@ describe("BackupNudge", () => {
     open(backend)
     await show()
     expect(card()).toBeNull()
+  })
+
+  it("shows a saved add's card at its step, which can't be put off", async () => {
+    await signIn()
+    const saved = [
+      [signedRecord(), "resume"],
+      [signedRecord({ phase: "funded", ...sent() }), "adding"],
+    ] as const
+    for (const [record, kind] of saved) {
+      const backend = memoryBackend()
+      await testRotations(backend).put(record)
+      open(backend)
+      await show()
+      expect(card()?.getAttribute("data-kind")).toBe(kind)
+      expect(card()?.querySelector(".zkm-nudge-card__dismiss")).toBeNull()
+      // Only the step's title is announced, never the network card's countdown.
+      expect(card()?.getAttribute("aria-live")).toBeNull()
+      expect(card()?.querySelectorAll("[aria-live]")).toHaveLength(1)
+    }
   })
 
   async function dismiss() {

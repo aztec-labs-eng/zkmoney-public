@@ -20,6 +20,29 @@
       "action": "screenshot",
       "file": "b1-blocked.png",
       "state": "B1: a withdrawal in flight holds the add"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=blocked-balance"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=blocked]"
+    },
+    {
+      "action": "screenshot",
+      "file": "b1-blocked-balance.png",
+      "state": "B1: a withdrawal in flight and a short balance hold the add"
     }
   ],
   "finalScreenshot": false

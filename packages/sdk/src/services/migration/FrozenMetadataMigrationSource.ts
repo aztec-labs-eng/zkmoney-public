@@ -1,4 +1,5 @@
 import { NO_FROM } from "@aztec-labs/aztec.js/account"
+import type { FunctionCall } from "@aztec-labs/stdlib/abi"
 import { TxHash, TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
 import { broadcastL1Operation } from "@oxide/oxide-client/broadcaster_calls.js"
 import { EthAddress } from "@aztec-labs/aztec.js/addresses"
@@ -376,19 +377,31 @@ export const MIGRATION_RESEND_AFTER_MS = 2 * 60 * 60 * 1000
 /** The most times a batch's broadcast is sent again. */
 export const MAX_MIGRATION_RESENDS = 3
 
+/** The most times a batch's announcement is sent alone. */
+export const MAX_MIGRATION_ANNOUNCEMENTS = 5
+
 type CarrierState = "pending" | "failed" | "included"
+
+type Receipt = { status?: TxStatus; executionResult?: TxExecutionResult }
 
 /**
  * A carrier's state from its receipt. A dropped carrier never landed; a reverted one broadcast
  * nothing.
  */
-function carrierState(receipt: {
-  status?: TxStatus
-  executionResult?: TxExecutionResult
-}): CarrierState {
+function carrierState(receipt: Receipt): CarrierState {
   if (receipt.status === TxStatus.DROPPED || receipt.executionResult === TxExecutionResult.REVERTED)
     return "failed"
   return receipt.executionResult === undefined ? "pending" : "included"
+}
+
+/** Whether a transaction succeeded in a block that is on L1. A proposed block can still be dropped. */
+function onL1(receipt: Receipt): boolean {
+  return (
+    receipt.executionResult === TxExecutionResult.SUCCESS &&
+    (receipt.status === TxStatus.CHECKPOINTED ||
+      receipt.status === TxStatus.PROVEN ||
+      receipt.status === TxStatus.FINALIZED)
+  )
 }
 
 /** `operation` in the form a batch record saves. */
@@ -537,6 +550,25 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
 
   private async allSettled(): Promise<boolean> {
     for (const { batch } of await this.remaining()) if (!(await this.settled(batch))) return false
+    return true
+  }
+
+  private receipt(hash: string) {
+    return this.o.wallet.node.getTxReceipt(TxHash.fromString(hash))
+  }
+
+  /**
+   * Every sent batch's announcement is on L1, in its carrier or in the transaction that carried it
+   * alone. Saves each one it finds there.
+   */
+  private async allAnnounced(): Promise<boolean> {
+    for (const { id, batch } of await this.remaining()) {
+      if (!batch.broadcastTx || batch.announced) continue
+      let landed = onL1(await this.receipt(batch.broadcastTx))
+      if (!landed && batch.announcementTx) landed = onL1(await this.receipt(batch.announcementTx))
+      if (!landed) return false
+      await this.o.batches.set(id, { ...batch, announced: true })
+    }
     return true
   }
 
@@ -921,17 +953,16 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
    * `gate`.
    */
   async recoverRemaining(signal?: AbortSignal, gate?: MigrationSendGate): Promise<void> {
-    const o = this.o
-    // L1 refund evidence first: a refunded batch's carrier landed, whatever its receipt says now.
+    // L1 refund evidence first: a refunded batch's carrier is not sent again.
     await this.reconcileBatches()
     await this.resendDueBatches(signal, true, gate)
     await this.assertNoNewFunds()
     for (const { id, batch } of await this.remaining()) {
       if (batch.broadcastTx) {
-        // A carrier not yet included may still spend the note the next send needs, even once its
-        // batch is refunded: wait for it.
-        const receipt = await o.wallet.node.getTxReceipt(TxHash.fromString(batch.broadcastTx))
-        if (carrierState(receipt) === "pending") return
+        // A transaction not yet included may still spend the note the next send needs, even once
+        // its batch is refunded: wait for it.
+        const { carrier, announcement } = await this.sentStates(batch)
+        if (carrier === "pending" || announcement === "pending") return
         continue
       }
       signal?.throwIfAborted()
@@ -967,37 +998,50 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
     return last !== undefined && Date.now() - last >= MIGRATION_RESEND_AFTER_MS
   }
 
+  /** The states of a sent batch's carrier and, until it is announced, of its lone announcement. */
+  private async sentStates(
+    batch: MigrationFundingBatch,
+  ): Promise<{ carrier: CarrierState; announcement?: CarrierState }> {
+    return {
+      carrier: carrierState(await this.receipt(batch.broadcastTx!)),
+      ...(batch.announcementTx && !batch.announced
+        ? { announcement: carrierState(await this.receipt(batch.announcementTx)) }
+        : {}),
+    }
+  }
+
   /**
    * Send again, in order, each sent batch that {@link resendDue} selects, and a failed one again at
    * once while it has sends left. Call it after the reconcile, which marks a batch whose refund
-   * nullifier is spent. It sends nothing while any carrier is not yet included, a refunded batch's
-   * too, since a send now may spend the note that carrier needs. `rebuild` lets a batch sent before
-   * operations were saved prove its operation again; without it, such a batch is not sent again.
-   * Without `rebuild`, or once a failed carrier has no send left, a subsidy that would not pay stops
-   * the pass with no error, and a later pass tries again. Returns whether a failed carrier, whose
-   * refund never ran, is never sent again.
+   * nullifier is spent. A refunded batch whose carrier failed gets its announcement alone, sent
+   * again while it fails, up to {@link MAX_MIGRATION_ANNOUNCEMENTS} times: the relayer runs a refund
+   * from a block that can still be dropped, and the carrier is not sent again. It sends nothing
+   * while any of these transactions is not yet included, a refunded batch's too, since a send now
+   * may spend the note that one needs. `rebuild` lets a batch sent before operations were saved
+   * prove its operation again; without it, such a batch is not sent again. Without `rebuild`, or
+   * once a failed carrier has no send left, a subsidy that would not pay stops the pass with no
+   * error, and a later pass tries again. Returns whether a failed carrier, whose refund never ran,
+   * or a refunded batch's announcement is never sent again.
    */
   private async resendDueBatches(
     signal: AbortSignal | undefined,
     rebuild: boolean,
     gate: MigrationSendGate | undefined,
   ): Promise<boolean> {
-    const o = this.o
     const sent = (await this.remaining()).filter(({ batch }) => batch.broadcastTx)
     const exhausted = (batch: MigrationFundingBatch, state: CarrierState) =>
       state === "failed" && !batch.refunded && !batch.received && !this.resendDue(batch, true)
-    const states: CarrierState[] = []
+    const states: Awaited<ReturnType<FrozenMetadataMigrationSource["sentStates"]>>[] = []
     let stuck = false
     for (const { batch } of sent) {
-      const receipt = await o.wallet.node.getTxReceipt(TxHash.fromString(batch.broadcastTx!))
-      const state = carrierState(receipt)
-      if (state === "pending") return false
-      states.push(state)
-      stuck ||= exhausted(batch, state)
+      const read = await this.sentStates(batch)
+      if (read.carrier === "pending" || read.announcement === "pending") return false
+      states.push(read)
+      stuck ||= exhausted(batch, read.carrier)
     }
     for (const [i, { id, batch: first }] of sent.entries()) {
       let batch: MigrationFundingBatch = first
-      let state = states[i]!
+      let state = states[i]!.carrier
       while (this.resendDue(batch, state === "failed") && (rebuild || batch.operation)) {
         signal?.throwIfAborted()
         let carrier
@@ -1024,27 +1068,80 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
         if (state === "pending") return false
       }
       stuck ||= exhausted(batch, state)
+      const unannounced =
+        !batch.announced &&
+        state === "failed" &&
+        (batch.refunded || batch.received) &&
+        states[i]!.announcement !== "included"
+      if (!unannounced) continue
+      if ((batch.announcements ?? 0) >= MAX_MIGRATION_ANNOUNCEMENTS) {
+        stuck = true
+        continue
+      }
+      signal?.throwIfAborted()
+      if ((await this.announce(id, batch, signal, gate)) === "pending") return false
     }
     return stuck
   }
 
   /**
-   * Sends a batch's carrier under recurring sponsorship and saves its hash with `update`. The send
-   * and the save of its hash run inside `gate`, as the operation that `gate` names. Returns the
-   * saved batch and its carrier's state: a send that fails once its hash is saved is read from its
-   * receipt, not thrown.
+   * Sends a batch's carrier under recurring sponsorship and saves its hash with `update`. Returns
+   * the saved batch and its carrier's state.
    */
   private async send(
     id: string,
     batch: MigrationFundingBatch,
-    innerCalls: Awaited<ReturnType<FrozenMetadataMigrationSource["carrier"]>>["calls"],
+    innerCalls: FunctionCall[],
     signal: AbortSignal | undefined,
     update: Partial<MigrationFundingBatch>,
-    gate: MigrationSendGate = (step) => step(),
+    gate?: MigrationSendGate,
   ): Promise<{ batch: MigrationFundingBatch; state: CarrierState }> {
+    let saved = batch
+    const save = async (hash: string) => {
+      const next = { ...batch, ...update, broadcastTx: hash }
+      await this.o.batches.set(id, next)
+      saved = next
+    }
+    return { state: await this.sponsored(innerCalls, signal, save, gate), batch: saved }
+  }
+
+  /** Sends a batch's announcement alone and saves its hash. Returns the transaction's state. */
+  private async announce(
+    id: string,
+    batch: MigrationFundingBatch,
+    signal: AbortSignal | undefined,
+    gate: MigrationSendGate | undefined,
+  ): Promise<CarrierState> {
+    const { day, nonce, recipientCommitment } = batch.direct!
+    const save = (hash: string) =>
+      this.o.batches.set(id, {
+        ...batch,
+        announcementTx: hash,
+        announcements: (batch.announcements ?? 0) + 1,
+      })
+    return this.sponsored(
+      await migrationDirectAnnouncementCalls(this.account, day, nonce, recipientCommitment),
+      signal,
+      save,
+      gate,
+    )
+  }
+
+  /**
+   * Sends `innerCalls` under recurring sponsorship. `save` persists the transaction's hash before
+   * it is submitted. The send and the save run inside `gate`, as the operation that `gate` names.
+   * Returns the transaction's state: a send that fails once its hash is saved is read from its
+   * receipt, not thrown.
+   */
+  private async sponsored(
+    innerCalls: FunctionCall[],
+    signal: AbortSignal | undefined,
+    save: (hash: string) => Promise<void>,
+    gate: MigrationSendGate = (step) => step(),
+  ): Promise<CarrierState> {
     const o = this.o
     const payload = await buildClaimSponsorPayload({ ...o.registered, innerCalls })
-    let saved = undefined as MigrationFundingBatch | undefined
+    let sent = undefined as string | undefined
     try {
       await gate(async (operationId, opSent) => {
         // A send cancelled while it waited its turn never starts.
@@ -1057,21 +1154,20 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
           operationId,
           onTxHash: async (hash) => {
             signal?.throwIfAborted()
-            const next = { ...batch, ...update, broadcastTx: hash }
-            await o.batches.set(id, next)
-            saved = next
+            await save(hash)
+            sent = hash
             // The batch holds the hash, so the operation is safe to reload over.
             await opSent?.(hash)
           },
         })
       })
     } catch (error) {
-      if (!saved || signal?.aborted) throw error
-      const receipt = await o.wallet.node.getTxReceipt(TxHash.fromString(saved.broadcastTx!))
+      if (!sent || signal?.aborted) throw error
+      const receipt = await this.receipt(sent)
       signal?.throwIfAborted()
-      return { batch: saved, state: carrierState(receipt) }
+      return carrierState(receipt)
     }
-    return { batch: saved ?? batch, state: "included" }
+    return "included"
   }
 
   /**
@@ -1103,17 +1199,18 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
 
   /**
    * Bring every sent batch up to date from chain evidence, then send again each broadcast that is
-   * due ({@link resendDue}), byte for byte as first sent. A re-send asks no approval: a batch with
-   * no saved operation is not sent again here. A failed carrier with no send left stops the run for
-   * the user. Funds that reach the source once every batch settled wait for the user's approval. A
-   * cancelled `signal` stops it before a send records a new hash. Each send runs inside `gate`.
+   * due ({@link resendDue}), byte for byte as first sent, and the announcement of each refunded
+   * batch whose carrier failed. A re-send asks no approval: a batch with no saved operation is not
+   * sent again here. A failed carrier or announcement with no send left stops the run for the user.
+   * Funds that reach the source once every batch settled wait for the user's approval. A cancelled
+   * `signal` stops it before a send records a new hash. Each send runs inside `gate`.
    */
   async reconcileRemaining(signal?: AbortSignal, gate?: MigrationSendGate): Promise<void> {
     await this.reconcileBatches()
     if (await this.resendDueBatches(signal, false, gate))
       throw new MigrationHaltedError(
         "reverted",
-        "A remaining-funds broadcast failed on every send; its saved refund requires attention",
+        "A remaining-funds broadcast or announcement failed on every send; its batch requires attention",
       )
     await this.assertNoNewFunds()
   }
@@ -1146,9 +1243,12 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
     return (await this.remaining()).every(({ batch }) => !!batch.broadcastTx)
   }
 
-  /** Complete once every planned batch settled and a fresh scan finds no batch to move. */
+  /**
+   * Complete once every planned batch settled, its announcement is on L1, and a fresh scan finds
+   * no batch to move.
+   */
   async remainingComplete(): Promise<boolean> {
-    if (!(await this.allSettled())) return false
+    if (!(await this.allSettled()) || !(await this.allAnnounced())) return false
     return !(await this.movable(true))
   }
 }

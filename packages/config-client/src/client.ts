@@ -9,6 +9,7 @@ import {
   isVersionSchemaMarker,
   parseConfigProfile,
 } from "./schema.js"
+import { DocumentFetchError, fetchJsonDocument, withoutUnknownKeys } from "./wire.js"
 
 /**
  * A consumer's baked config shrinks to {profileUrl, version?}. Every failure is typed and fatal —
@@ -45,26 +46,6 @@ export interface FetchProfileOptions {
 /** Long enough for a cold CDN edge on a slow phone; short enough that a hang reaches the retry UI. */
 export const DEFAULT_PROFILE_FETCH_TIMEOUT_MS = 15_000
 
-/** Drop only the keys a `strictObject` rejected (paths from zod); every other issue still fails. */
-type UnrecognizedKeys = Extract<z.ZodError["issues"][number], { code: "unrecognized_keys" }>
-
-const isUnrecognizedKeys = (issue: z.ZodError["issues"][number]): issue is UnrecognizedKeys =>
-  issue.code === "unrecognized_keys"
-
-function withoutUnknownKeys(data: unknown, error: z.ZodError): unknown | undefined {
-  if (!error.issues.every(isUnrecognizedKeys)) return undefined
-  const pruned = structuredClone(data)
-  for (const issue of error.issues.filter(isUnrecognizedKeys)) {
-    let target = pruned as Record<string, unknown> | undefined
-    for (const step of issue.path) {
-      target = target?.[step as string] as Record<string, unknown> | undefined
-    }
-    if (!target) continue
-    for (const key of issue.keys) delete target[key]
-  }
-  return pruned
-}
-
 /**
  * Unknown keys are pruned and the document re-parsed, so a published field addition cannot brick
  * binaries that cannot update; every other violation stays fatal. `parseConfigProfile` stays
@@ -80,9 +61,6 @@ function parseWireProfile(data: unknown): ConfigProfile {
     return parseConfigProfile(pruned)
   }
 }
-
-/** A 4xx is the server answering; every other non-OK status (5xx, 0, out of range) is silence. */
-const isClientError = (status: number) => status >= 400 && status <= 499
 
 /**
  * The acceptance rulebook for a document however it arrived — fetched, or baked into a bundle at
@@ -127,42 +105,12 @@ export async function fetchConfigProfile(
   const now = options.now ?? (() => new Date())
   const timeoutMs = options.timeoutMs ?? DEFAULT_PROFILE_FETCH_TIMEOUT_MS
 
-  // The deadline covers the BODY too: headers-then-stall is the same hang, and aborting rejects
-  // a pending `json()` like a pending fetch.
-  const controller = new AbortController()
-  const expiry = setTimeout(() => controller.abort(), timeoutMs)
-  const timedOut = (e: unknown) =>
-    controller.signal.aborted ? `no complete response within ${timeoutMs}ms` : (e as Error).message
-
   let data: unknown
   try {
-    const response = await fetchImpl(profileUrl, {
-      headers: { accept: "application/json" },
-      signal: controller.signal,
-    })
-    // A 404 is fatal by design: a torn-down profile must not degrade to cached config.
-    if (response.status === 404) {
-      throw new ConfigProfileError("NOT_FOUND", `profile not found at ${profileUrl}`)
-    }
-    if (!response.ok) {
-      throw new ConfigProfileError(
-        isClientError(response.status) ? "HTTP_ERROR" : "UNREACHABLE",
-        `profile fetch returned ${response.status} for ${profileUrl}`,
-      )
-    }
-    try {
-      data = await response.json()
-    } catch (e) {
-      // Abort is checked first: a body cut off by the deadline can surface as a SyntaxError.
-      // Only a fully received body that is not JSON is invalid; a terminated stream is unreachable.
-      if (controller.signal.aborted || !(e instanceof SyntaxError)) throw e
-      throw new ConfigProfileError("INVALID_PROFILE", `profile is not JSON: ${e.message}`)
-    }
+    data = await fetchJsonDocument(profileUrl, "profile", { fetchImpl, timeoutMs })
   } catch (e) {
-    if (e instanceof ConfigProfileError) throw e
-    throw new ConfigProfileError("UNREACHABLE", `profile fetch failed: ${timedOut(e)}`)
-  } finally {
-    clearTimeout(expiry)
+    if (!(e instanceof DocumentFetchError)) throw e
+    throw new ConfigProfileError(e.code === "NOT_JSON" ? "INVALID_PROFILE" : e.code, e.message)
   }
 
   return parseServedProfile(data, { now })

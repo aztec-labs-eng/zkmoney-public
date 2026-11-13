@@ -7,7 +7,7 @@ const L1_BALANCE_REFRESH_MS = 15_000
 
 type Key = [account: Address, token: Address | undefined]
 
-/** A wallet's L1 balance of a token; no token means the manifest token. */
+/** A wallet's L1 balance of a token; no token means the manifest token, the zero address ETH. */
 export type L1Balances = Query<Key, L1TokenBalance>
 
 /** The L1 balances the deposit form caps its amount at, read again while subscribed. */

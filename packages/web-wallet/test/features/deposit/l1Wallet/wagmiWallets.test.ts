@@ -60,7 +60,7 @@ const params: Params = { projectId: "project" }
 
 describe("wagmiConfig wallet groups", () => {
   it("lists Rabby by name in Popular, between MetaMask and WalletConnect", () => {
-    wagmiConfig({ l1ChainId: 1, l1RpcUrl: "http://l1.test" } as WebWalletConfig)
+    wagmiConfig({ l1ChainId: 1, l1RpcUrl: "http://l1.test", features: {} } as WebWalletConfig)
     expect(getDefaultConfig).toHaveBeenCalledTimes(1)
     const args = vi.mocked(getDefaultConfig).mock.calls[0][0] as unknown as Args
     const popular = args.wallets.find((g) => g.groupName === "Popular")

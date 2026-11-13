@@ -393,7 +393,7 @@ function RotationStandIn({
   const busy = "busy" in screen && screen.busy
   const checking = "checking" in screen && screen.checking
   const canCancel = "canCancel" in screen && screen.canCancel
-  const cancel = <SecondaryButton label={panelCopy.cancel} onClick={actions.cancel} disabled={busy} />
+  const cancel = <SecondaryButton label={panelCopy.cancel} onClick={actions.askCancel} disabled={busy} />
   const tryAgain = (
     <PrimaryGradientButton
       title={panelCopy.tryAgain}
@@ -431,7 +431,7 @@ function RotationStandIn({
     )
   } else if (screen.id === "approve" && screen.pay) {
     body = (
-      <FundScreen pay={screen.pay} busy={busy} onFund={actions.fund} onCancel={actions.cancel} />
+      <FundScreen pay={screen.pay} busy={busy} onFund={actions.fund} onCancel={actions.askCancel} />
     )
   } else if (screen.id === "approve" && screen.progress.stage === "pay") {
     errorInline = true
@@ -579,6 +579,7 @@ export function BackupStandIn({
     case "unavailable":
     case "firstPasskey":
     case "blocked":
+    case "lowBalance":
       return null
   }
 }

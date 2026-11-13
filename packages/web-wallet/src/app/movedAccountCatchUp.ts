@@ -1,7 +1,7 @@
 /**
- * A session opened from its cached key catches up with a backup passkey added on another device:
- * once per session it asks the tag's user record whether the wallet moved to a two-key account and,
- * when it did, adopts that account and reloads the page into it.
+ * A session catches up with a backup passkey added on another device: from its first balance on,
+ * and for as long as it is open, it asks the tag's user record whether the wallet moved to a
+ * two-key account and, when it did, adopts that account and reloads the page into it.
  */
 import {
   MAX_PASSKEY_CANDIDATES,
@@ -88,9 +88,16 @@ export const liveCatchUpDeps: CatchUpDeps = {
   reload: reloadIfSessionSwitched,
 }
 
+/** How often an open session asks again, shown and hidden. */
+const RECHECK_MS = 60_000
+const RECHECK_HIDDEN_MS = 5 * 60_000
+
 /**
- * Runs once per session, after the first balance; a failed read tries again with backoff. The
- * adding device's own rotation, loaded or still loading, holds it off: that device switches itself.
+ * Runs after the first balance, then every minute while shown, every five while hidden, and at
+ * once on show, so a session left open while a backup is added elsewhere follows the move. Hiding
+ * never aborts a run, which may be past its commit. A failed read backs off. The adding device's
+ * own rotation, loaded or still loading, holds it off: that device switches itself. The catalog is
+ * read once per wallet; a recheck reads only the chain's record and keys.
  */
 export function movedAccountCatchUp(
   needs: {
@@ -101,13 +108,28 @@ export function movedAccountCatchUp(
   },
   deps: CatchUpDeps = liveCatchUpDeps,
 ): Task {
+  let read:
+    | { wallet: ObsidionWallet; contractService: ContractService; generations: OxideIdentityDeps }
+    | undefined
+  const checkDeps: CatchUpDeps = {
+    ...deps,
+    generations: async (wallet, contractService, page) => {
+      if (read?.wallet === wallet && read.contractService === contractService)
+        return read.generations
+      const generations = await deps.generations(wallet, contractService, page)
+      // An incomplete catalog proves nothing: the next check reads it again.
+      if (!generations.catalogIncomplete) read = { wallet, contractService, generations }
+      return generations
+    },
+  }
   return task("movedAccountCatchUp", {
     needs: { wallet: needs.wallet, account: needs.account, contractService: needs.contractService },
     after: { firstBalance: true },
-    every: "once",
+    every: RECHECK_MS,
+    whenHidden: RECHECK_HIDDEN_MS,
     backoff: { baseMs: 10_000, maxMs: 5 * 60_000 },
     run: ({ wallet, contractService, signal }) =>
-      catchUpMovedAccount(needs.session, wallet, contractService, signal, deps),
+      catchUpMovedAccount(needs.session, wallet, contractService, signal, checkDeps),
   })
 }
 

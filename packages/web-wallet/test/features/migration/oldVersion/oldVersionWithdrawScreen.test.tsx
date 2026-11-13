@@ -141,7 +141,7 @@ const { closeSession } = await import("../../../../src/session/session")
 beforeEach(async () => {
   openTestSession({
     primed: { tuple: { withdrawalSubsidy: "0xsubsidy" } as never },
-    savingsHolding: memoryStore({ position: { sharePrice: 105n * 10n ** 16n } }).readonly,
+    savingsLine: memoryStore({ price: { sharePrice: 105n * 10n ** 16n } }).readonly,
   })
   await setIdentity({ handle: "brave-otter-42" })
 })

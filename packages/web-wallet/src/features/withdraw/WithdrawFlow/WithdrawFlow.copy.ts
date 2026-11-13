@@ -108,6 +108,10 @@ export default {
       title: "This address is a contract",
       body: "ETH arrives as a plain transfer, which a contract can reject. Pick USDC or USDT, or a different address.",
     },
+    contractRisk: {
+      title: "This address is a contract",
+      body: "Sending funds to a smart contract can result in permanent loss. Before continuing, make sure the contract supports {token} on {network} and lets you access it.",
+    },
   },
   picker: {
     title: "Withdraw funds",
@@ -148,7 +152,6 @@ export default {
     standard: "Standard",
     fast: "Fast",
     speed: "{speed} · {eta}",
-    network: "Ethereum",
     confirm: "Withdraw privately",
     connecting: "Connecting…",
     feeChanged: "The fee changed. Check the new amounts before confirming.",
@@ -158,6 +161,9 @@ export default {
     title: "Withdrawing to {chain}",
     releasing: "Releasing to {chain}",
     chip: "Releasing",
+    /** The release landed and the bridge's leg runs. */
+    bridging: "Bridging to {chain}",
+    bridgeChip: "Bridging",
     chipAbout: "{chip} · about {minutes} min",
     line: "{amount} is leaving zk.money privately to {name}.",
     onItsWay: "{amount} is on its way to {name}.",
@@ -181,7 +187,7 @@ export default {
     bridge:
       "The withdrawal went through, but the bridge to {chain} didn't fill. Your funds are waiting on Ethereum.",
     swap: "The withdrawal went through, but the swap didn't run. Your funds are waiting on Ethereum.",
-    failedLine: "The proof expired before it was included · no fee charged",
+    failedLine: "The transaction wasn't included · no fee charged",
     bridgeLine:
       "The route expired before it filled · no bridge fee charged. Recover the funds from Activity.",
     swapLine: "Recover the funds from Activity.",

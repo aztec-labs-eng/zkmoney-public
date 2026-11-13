@@ -173,7 +173,7 @@ const h = vi.hoisted(() => ({
 
 const pageChain = {
   otherManifestSources: answered([]),
-  savingsTuple: answered(null),
+  holdings: answered({ holdings: [], rejected: [] }),
 }
 /** The session the probe runs in. */
 const session = {

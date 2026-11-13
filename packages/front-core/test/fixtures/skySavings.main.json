@@ -1,0 +1,207 @@
+{
+  "about": "Sky savings as main's wallet reads them: resolveSkySavings and readSkySavings' check that Main is the pinned bridge (origin/main 21c2a313eb), on each manifest with each bridge's portal pinned. `staging` and `prod` are the oxideReleases.v6 fixtures; a variant replaces the features of prod's deployment.",
+  "variants": {
+    "twoSkyFeatures": {
+      "fea-sky-v6": {
+        "project": "sky",
+        "bridges": {
+          "dai": "brg-dai-v6",
+          "sUsds": "brg-susds-v6"
+        },
+        "contracts": {
+          "skyEscrowFactory": "0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09",
+          "skyEscrowFactoryImplementation": "0xb61d97faf96ec8de617aaf54f4764d01cfd25b8b",
+          "skyWithdrawalExecutor": "0xfe0b2b24cca52d1680103e258985a5aca33742d5",
+          "skyWithdrawalExecutorSubsidy": "0xacb0900f218d5c4d0590dc82bab0fdfaa2459f35"
+        },
+        "variables": {
+          "skyDaiAddress": "0x6b175474e89094c44da98b954eedeac495271d0f",
+          "skyDaiCodeHash": "0x4e36f96ee1667a663dfaac57c4d185a0e369a3a217e0079d49620f34f85d1ac7",
+          "skyDaiUsdsAddress": "0x3225737a9bbb6473cb4a45b7244aca2befdb276a",
+          "skyDaiUsdsCodeHash": "0x33081b81d984b67f4030e6b6997c819a7d06e514fca11cf13bee083948a33103",
+          "skySUsdsCodeHash": "0xa55c01da656c715cec222ea8fbd63256eb3ca6cbb7236071f2bcbff927f6e35b",
+          "skyUsdsAddress": "0xdc035d45d973e3ec169d2276ddab16f1e407384f",
+          "skyUsdsCodeHash": "0x13670c37dbba93ae2e7a2538198c3048a60f5fbd567e29ba8b45eed10e3e29f5",
+          "withdrawalPriceFeedAddress": "0x5f4ec3df9cbd43714fe2740f5e3616155c5b8419",
+          "withdrawalPriceFeedCodeHash": "0x4b79b5c8aee6da0f7b393e8b53e6265ef7320a1d16184c65bd3841b5aa3d700d"
+        }
+      },
+      "fea-sky-v7": {
+        "project": "sky",
+        "bridges": {
+          "dai": "brg-dai-v6",
+          "sUsds": "brg-susds-v6"
+        },
+        "contracts": {
+          "skyEscrowFactory": "0x00000000000000000000000000000000000000f7",
+          "skyEscrowFactoryImplementation": "0xb61d97faf96ec8de617aaf54f4764d01cfd25b8b",
+          "skyWithdrawalExecutor": "0x00000000000000000000000000000000000000e7",
+          "skyWithdrawalExecutorSubsidy": "0xacb0900f218d5c4d0590dc82bab0fdfaa2459f35"
+        },
+        "variables": {
+          "skyDaiAddress": "0x6b175474e89094c44da98b954eedeac495271d0f",
+          "skyDaiCodeHash": "0x4e36f96ee1667a663dfaac57c4d185a0e369a3a217e0079d49620f34f85d1ac7",
+          "skyDaiUsdsAddress": "0x3225737a9bbb6473cb4a45b7244aca2befdb276a",
+          "skyDaiUsdsCodeHash": "0x33081b81d984b67f4030e6b6997c819a7d06e514fca11cf13bee083948a33103",
+          "skySUsdsCodeHash": "0xa55c01da656c715cec222ea8fbd63256eb3ca6cbb7236071f2bcbff927f6e35b",
+          "skyUsdsAddress": "0xdc035d45d973e3ec169d2276ddab16f1e407384f",
+          "skyUsdsCodeHash": "0x13670c37dbba93ae2e7a2538198c3048a60f5fbd567e29ba8b45eed10e3e29f5",
+          "withdrawalPriceFeedAddress": "0x5f4ec3df9cbd43714fe2740f5e3616155c5b8419",
+          "withdrawalPriceFeedCodeHash": "0x4b79b5c8aee6da0f7b393e8b53e6265ef7320a1d16184c65bd3841b5aa3d700d"
+        }
+      }
+    },
+    "firstSkyFeatureUnusable": {
+      "fea-sky-v5": {
+        "project": "sky",
+        "bridges": {
+          "dai": "brg-dai-v6",
+          "sUsds": "brg-susds-v6"
+        },
+        "contracts": {
+          "skyEscrowFactory": "0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09"
+        },
+        "variables": {
+          "skyDaiAddress": "0x6b175474e89094c44da98b954eedeac495271d0f",
+          "skyDaiCodeHash": "0x4e36f96ee1667a663dfaac57c4d185a0e369a3a217e0079d49620f34f85d1ac7",
+          "skyDaiUsdsAddress": "0x3225737a9bbb6473cb4a45b7244aca2befdb276a",
+          "skyDaiUsdsCodeHash": "0x33081b81d984b67f4030e6b6997c819a7d06e514fca11cf13bee083948a33103",
+          "skySUsdsCodeHash": "0xa55c01da656c715cec222ea8fbd63256eb3ca6cbb7236071f2bcbff927f6e35b",
+          "skyUsdsAddress": "0xdc035d45d973e3ec169d2276ddab16f1e407384f",
+          "skyUsdsCodeHash": "0x13670c37dbba93ae2e7a2538198c3048a60f5fbd567e29ba8b45eed10e3e29f5",
+          "withdrawalPriceFeedAddress": "0x5f4ec3df9cbd43714fe2740f5e3616155c5b8419",
+          "withdrawalPriceFeedCodeHash": "0x4b79b5c8aee6da0f7b393e8b53e6265ef7320a1d16184c65bd3841b5aa3d700d"
+        }
+      },
+      "fea-sky-v6": {
+        "project": "sky",
+        "bridges": {
+          "dai": "brg-dai-v6",
+          "sUsds": "brg-susds-v6"
+        },
+        "contracts": {
+          "skyEscrowFactory": "0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09",
+          "skyEscrowFactoryImplementation": "0xb61d97faf96ec8de617aaf54f4764d01cfd25b8b",
+          "skyWithdrawalExecutor": "0xfe0b2b24cca52d1680103e258985a5aca33742d5",
+          "skyWithdrawalExecutorSubsidy": "0xacb0900f218d5c4d0590dc82bab0fdfaa2459f35"
+        },
+        "variables": {
+          "skyDaiAddress": "0x6b175474e89094c44da98b954eedeac495271d0f",
+          "skyDaiCodeHash": "0x4e36f96ee1667a663dfaac57c4d185a0e369a3a217e0079d49620f34f85d1ac7",
+          "skyDaiUsdsAddress": "0x3225737a9bbb6473cb4a45b7244aca2befdb276a",
+          "skyDaiUsdsCodeHash": "0x33081b81d984b67f4030e6b6997c819a7d06e514fca11cf13bee083948a33103",
+          "skySUsdsCodeHash": "0xa55c01da656c715cec222ea8fbd63256eb3ca6cbb7236071f2bcbff927f6e35b",
+          "skyUsdsAddress": "0xdc035d45d973e3ec169d2276ddab16f1e407384f",
+          "skyUsdsCodeHash": "0x13670c37dbba93ae2e7a2538198c3048a60f5fbd567e29ba8b45eed10e3e29f5",
+          "withdrawalPriceFeedAddress": "0x5f4ec3df9cbd43714fe2740f5e3616155c5b8419",
+          "withdrawalPriceFeedCodeHash": "0x4b79b5c8aee6da0f7b393e8b53e6265ef7320a1d16184c65bd3841b5aa3d700d"
+        }
+      }
+    },
+    "vaultFeatureAlone": {
+      "fea-multistep-v6": {
+        "project": "multistep",
+        "bridges": {},
+        "contracts": {
+          "multiStepExecutor": "0x00000000000000000000000000000000000000e8"
+        }
+      }
+    }
+  },
+  "cases": [
+    {
+      "manifest": "staging",
+      "portal": "0xd4a284652f5bB2D3884cc3dE2fd2D328BcCbaEd0",
+      "sky": null
+    },
+    {
+      "manifest": "staging",
+      "portal": "0x1e0CdF24D1a3668EB2e1d066D8a8C9d527d44Def",
+      "sky": {
+        "main": "0x1e0CdF24D1a3668EB2e1d066D8a8C9d527d44Def",
+        "savings": "0xd4a284652f5bB2D3884cc3dE2fd2D328BcCbaEd0",
+        "factory": "0x2ea5953b23cd10b90f478def418a805b94ec5577",
+        "executor": "0x0cd7c278d808b27a13b9e1ffeddd75635aebcf6e",
+        "dai": "0x6b9ef1a089feeff90695ac7cf19be39f4b8a0334",
+        "sUsds": "0xa080c6e954dc90f64ba6bfeea9033e8bdf29e16e"
+      }
+    },
+    {
+      "manifest": "staging",
+      "portal": "0x0edc24A5fd47ACC1f5380fc6CcBe8f471bbFFa87",
+      "sky": null
+    },
+    {
+      "manifest": "staging",
+      "portal": "0x92b3BD276633a4D6f68663356Af80f91c28EFba5",
+      "sky": {
+        "main": "0x92b3BD276633a4D6f68663356Af80f91c28EFba5",
+        "savings": "0x0edc24A5fd47ACC1f5380fc6CcBe8f471bbFFa87",
+        "factory": "0x339accbbd2fa27f50a3429a5dac6f914279792fb",
+        "executor": "0x150ce5313e4aa90cb2c50720dc2a74725173a5ec",
+        "dai": "0x6b9ef1a089feeff90695ac7cf19be39f4b8a0334",
+        "sUsds": "0xa080c6e954dc90f64ba6bfeea9033e8bdf29e16e"
+      }
+    },
+    {
+      "manifest": "prod",
+      "portal": "0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042",
+      "sky": {
+        "main": "0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042",
+        "savings": "0x2EbFEE284bABf94869FAC44BC85eDb3C34e536D8",
+        "factory": "0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09",
+        "executor": "0xfe0b2b24cca52d1680103e258985a5aca33742d5",
+        "dai": "0x6b175474e89094c44da98b954eedeac495271d0f",
+        "sUsds": "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd"
+      }
+    },
+    {
+      "manifest": "prod",
+      "portal": "0x2EbFEE284bABf94869FAC44BC85eDb3C34e536D8",
+      "sky": null
+    },
+    {
+      "manifest": "prod",
+      "variant": "twoSkyFeatures",
+      "portal": "0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042",
+      "sky": {
+        "main": "0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042",
+        "savings": "0x2EbFEE284bABf94869FAC44BC85eDb3C34e536D8",
+        "factory": "0x7f890e5df3b4165d1ce4e9a42e97c44f1d7dcc09",
+        "executor": "0xfe0b2b24cca52d1680103e258985a5aca33742d5",
+        "dai": "0x6b175474e89094c44da98b954eedeac495271d0f",
+        "sUsds": "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd"
+      }
+    },
+    {
+      "manifest": "prod",
+      "variant": "twoSkyFeatures",
+      "portal": "0x2EbFEE284bABf94869FAC44BC85eDb3C34e536D8",
+      "sky": null
+    },
+    {
+      "manifest": "prod",
+      "variant": "firstSkyFeatureUnusable",
+      "portal": "0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042",
+      "sky": null
+    },
+    {
+      "manifest": "prod",
+      "variant": "firstSkyFeatureUnusable",
+      "portal": "0x2EbFEE284bABf94869FAC44BC85eDb3C34e536D8",
+      "sky": null
+    },
+    {
+      "manifest": "prod",
+      "variant": "vaultFeatureAlone",
+      "portal": "0xCB99C58Fe81Ae6b2cB4835e46F7b703745879042",
+      "sky": null
+    },
+    {
+      "manifest": "prod",
+      "variant": "vaultFeatureAlone",
+      "portal": "0x2EbFEE284bABf94869FAC44BC85eDb3C34e536D8",
+      "sky": null
+    }
+  ]
+}

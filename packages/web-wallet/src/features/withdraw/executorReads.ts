@@ -2,6 +2,7 @@ import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
   L1SwapEscrowReader,
   L1WithdrawalFinalizationReader,
+  readExecutorPortal,
   readExecutorSubsidy,
   readWithdrawalExecutor,
   SwapOnWithdrawSimulator,
@@ -11,10 +12,8 @@ import {
 import {
   keyedService,
   findBlockAtTime,
-  readSkyFactoryPortals,
   resolveWithdrawalWiring,
   type QueryFactory,
-  type SkyFactoryPortals,
   type TrackerRails,
 } from "@obsidion/front-core"
 import type { Address, Hex, PublicClient } from "viem"
@@ -79,11 +78,11 @@ export function withdrawalReads(client: () => PublicClient, query: QueryFactory)
     ),
     withdrawalExecutorAt: (address: Address, kind: WithdrawalExecutorKind = "plain") =>
       executors(address, kind),
+    executorPortalAt: query<[Address], Address>("executorPortal", {
+      load: (address) => readExecutorPortal(client(), address),
+    }),
     executorSubsidyAt: query<[Address], Address>("executorSubsidy", {
       load: (address) => readExecutorSubsidy(client(), address),
-    }),
-    skyFactoryPortalsAt: query<[Address], SkyFactoryPortals>("skyFactoryPortals", {
-      load: (factory) => readSkyFactoryPortals(client(), factory),
     }),
   }
 }

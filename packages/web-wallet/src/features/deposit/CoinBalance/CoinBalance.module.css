@@ -1,0 +1,19 @@
+/* A coin's balance at its picker row's right: the amount over its dollar value. */
+.balance {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+/* Quieter than the row's token name. */
+.balance b {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+.balance small {
+  min-height: 16px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-muted);
+}

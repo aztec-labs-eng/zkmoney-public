@@ -135,11 +135,14 @@ export function transferScan(deps: TransferScanDeps): TransferScan {
 
 type SavingsToken = { tokenService: BalanceReader & { tokenAddress: { toString(): string } } }
 
-/** Savings' token, looked up after the first balance; from then on its shares are read beside Main's. */
+/**
+ * The holdings' share tokens, looked up after the first balance; from then on their shares are read
+ * beside Main's.
+ */
 export function savingsLookup<W, A>(deps: {
   wallet: Service<W>
   account: Service<A>
-  lookup(wallet: W, account: A): Promise<SavingsToken | undefined>
+  lookup(wallet: W, account: A): Promise<readonly SavingsToken[]>
   scan: Pick<TransferScan, "alsoRead" | "refreshBalance">
 }): Task {
   return task("savingsLookup", {
@@ -149,8 +152,10 @@ export function savingsLookup<W, A>(deps: {
     backoff: { baseMs: SAVINGS_LOOKUP_RETRY_MS, maxMs: SAVINGS_LOOKUP_RETRY_MS },
     async run({ wallet, account, signal }) {
       const found = await within(deps.lookup(wallet, account), "savingsLookup", { signal })
-      if (!found) return
-      deps.scan.alsoRead(found.tokenService.tokenAddress.toString(), found.tokenService)
+      if (found.length === 0) return
+      for (const { tokenService } of found) {
+        deps.scan.alsoRead(tokenService.tokenAddress.toString(), tokenService)
+      }
       await within(deps.scan.refreshBalance(), "refreshBalance", { signal })
     },
   })

@@ -104,9 +104,6 @@
   color: var(--accent-gold);
   font-weight: 700;
 }
-.ww-upgrade__keep-open-bar {
-  padding-top: 12px;
-}
 .ww-banner--upgrade .ww-banner__cta {
   align-self: flex-start;
   margin-top: 10px;

@@ -3,14 +3,10 @@
  * the cents while the page shows it, with as many digits as it takes to see it move. Ported from
  * Harry's #2198 (`EARN_ESTIMATE_TICK_MS`, `splitTicking`).
  */
-import {
-  memoryStore,
-  projectValueAtomic,
-  useStore,
-  type SavingsPosition,
-} from "@obsidion/front-core"
+import { memoryStore, projectValueAtomic, useStore } from "@obsidion/front-core"
 import { usdAtomicFloor } from "../../ui/format"
 import { useSession } from "../../session/session"
+import type { SavingsPosition } from "./savingsLine"
 
 /** Tick while funded with a rate: the micro-cent estimate moves, so must the figure. */
 export const SAVINGS_ESTIMATE_TICK_MS = 120
@@ -50,7 +46,7 @@ export interface SavingsEstimate {
 
 /** Whether the figure moves: `enabled`, funded, and a rate to carry it at. */
 export const ticking = (position: SavingsPosition | null, enabled: boolean): boolean =>
-  !!position && enabled && position.shares > 0n && (position.apy ?? 0) > 0
+  !!position && enabled && position.shares > 0n && (position.rate ?? 0n) > 0n
 
 /** The figure at `now`: carried at the rate while it ticks; else as read. */
 export function selectSavingsEstimate(
@@ -62,7 +58,7 @@ export function selectSavingsEstimate(
   const moving = ticking(position, enabled)
   return {
     value: moving
-      ? projectValueAtomic(position.value, position.readAt, now, position.apy!)
+      ? projectValueAtomic(position.value, position.readAt, now, position.rate!)
       : position.value,
     ticking: moving,
   }

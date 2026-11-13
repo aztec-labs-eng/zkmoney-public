@@ -1870,7 +1870,10 @@ dialog.ww-modal-overlay[data-closing] {
      declared later in the file and would silently drop the home-indicator inset. They opt into
      their own base via --sheet-pad-bottom. */
   .ww-modal.ww-modal {
-    padding-bottom: calc(var(--sheet-pad-bottom, var(--space-24)) + var(--ww-safe-area-bottom));
+    --sheet-actions-inset: calc(
+      var(--sheet-pad-bottom, var(--space-24)) + var(--ww-safe-area-bottom)
+    );
+    padding-bottom: var(--sheet-actions-inset);
   }
   /* A sheet on the bottom edge rounds only its top corners, whatever radius its own class sets. */
   .ww-modal-overlay:not(.ww-modal-overlay--page)
@@ -2349,6 +2352,8 @@ dialog.ww-modal-overlay[data-closing] {
   --modal-pad-y: 40px;
   --modal-pad-x: 64px;
   --sheet-pad-bottom: var(--modal-pad-y);
+  /* SheetShell's actions cover the bottom padding while the card scrolls. */
+  --sheet-actions-inset: var(--sheet-pad-bottom);
   width: min(500px, calc(100vw - 32px));
   padding: var(--modal-pad-y) var(--modal-pad-x);
   overflow-x: hidden;
@@ -4430,20 +4435,21 @@ dialog.ww-modal-overlay[data-closing] {
   color: var(--text-primary);
   text-decoration: underline;
 }
-/* Entry banners of the deposit and withdraw pages: the glow names the kind of move. */
+/* Entry banners of the deposit and withdraw pages. */
 .ww-method-banners {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
+  gap: 10px;
   width: 100%;
 }
-/* Phone: the banners scroll sideways from the gutter to the screen edge, the next one peeking in. */
+/* Phone: the banners scroll sideways from the gutter to the screen edge, the next one peeking in.
+   The row clips its overflow, so 2px above, taken back by the margin, keeps a raised card whole. */
 @media (max-width: 640px) {
   .ww-method-banners {
     display: flex;
     width: auto;
-    margin: 0 calc(-24px - var(--ww-safe-area-right)) 0 calc(-24px - var(--ww-safe-area-left));
-    padding: 0 calc(24px + var(--ww-safe-area-right)) 0 calc(24px + var(--ww-safe-area-left));
+    margin: -2px calc(-24px - var(--ww-safe-area-right)) 0 calc(-24px - var(--ww-safe-area-left));
+    padding: 2px calc(24px + var(--ww-safe-area-right)) 0 calc(24px + var(--ww-safe-area-left));
     overflow-x: auto;
     scroll-padding-left: calc(24px + var(--ww-safe-area-left));
     scroll-snap-type: x mandatory;
@@ -4741,6 +4747,42 @@ dialog.ww-modal-overlay[data-closing] {
 }
 .ww-sheet__fact > span {
   flex-shrink: 0;
+}
+/* Facts most readers skip, folded under a summary row inside the facts card. The padding grows the
+   tap target; the margin keeps the row in the card's rhythm. */
+.ww-sheet__more summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 24px;
+  padding: 8px 0;
+  margin: -8px 0;
+  font-weight: 600;
+  color: var(--text-primary);
+  list-style: none;
+  cursor: pointer;
+}
+.ww-sheet__more summary::-webkit-details-marker {
+  display: none;
+}
+.ww-sheet__more summary:focus-visible {
+  outline: 2px solid var(--blue-400);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.ww-sheet__more-chevron {
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+.ww-sheet__more[open] .ww-sheet__more-chevron {
+  transform: rotate(180deg);
+}
+.ww-sheet__more-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
 }
 .ww-ens-name {
   max-width: 180px;
@@ -5518,6 +5560,13 @@ details[open] .ww-withdraw__warning-chevron {
 }
 .ww-phone-steps__tiprow .ww-tiprow__tip p + p {
   margin-top: 6px;
+}
+/* Beside a sheet link in a picker card: the row spans the card so the tip, padding and all, can. */
+.ww-phone-steps__tiprow--link {
+  align-self: stretch;
+}
+.ww-phone-steps__tiprow--link .ww-tiprow__tip {
+  box-sizing: border-box;
 }
 /* A sentence to act on in the browser's prompt: plain text, so it reads without a press. */
 .ww-phone-steps__note {

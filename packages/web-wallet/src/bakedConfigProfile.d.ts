@@ -6,3 +6,9 @@ declare module "virtual:baked-config-profile" {
   const bakedProfile: unknown
   export default bakedProfile
 }
+
+declare module "virtual:baked-features" {
+  /** The features document baked at build time, or undefined when there was none to bake. */
+  const bakedFeatures: unknown
+  export default bakedFeatures
+}

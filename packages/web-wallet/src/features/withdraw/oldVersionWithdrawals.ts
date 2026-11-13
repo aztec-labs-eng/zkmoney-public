@@ -8,15 +8,13 @@ import type { Address, Hex, PublicClient } from "viem"
 import {
   OldVersionWithdrawalStorage,
   SWAP_STUCK_THRESHOLD_MS,
-  bestEffort,
-  noteRefundedSavingsMoves,
   type BroadcastTxState,
   type OldVersionWithdrawal,
-  type SavingsMoves,
 } from "@obsidion/front-core"
 import type { WebWalletConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
+import type { RefundedMoves } from "../deposit/recovery/refundedMoves"
 
 // eslint-disable-next-line no-restricted-syntax -- debt
 let store: OldVersionWithdrawalStorage | undefined
@@ -81,17 +79,13 @@ async function refundTx(client: PublicClient, portal: Address, ids: string[], fr
 
 type RefundedDeposits = NonNullable<OldVersionWithdrawal["refunds"][number]["deposits"]>
 
-/** The moves' `recovered` marks only label rows: the refund's record is saved first, whatever they do. */
-const noteRecovered = (...args: Parameters<typeof noteRefundedSavingsMoves>) =>
-  bestEffort("unknown", noteRefundedSavingsMoves(...args))
-
 /**
  * Reads which refunds of `id` ran on L1, and with `l2State` which broadcasts L2 dropped, and saves
  * them into the latest copy of the record. Resolves to the record as saved.
  */
 export async function settleOldVersionWithdrawal(
   config: WebWalletConfig,
-  moves: SavingsMoves,
+  moves: RefundedMoves,
   id: string,
   l2State?: (txHash: string) => Promise<BroadcastTxState>,
 ) {
@@ -130,7 +124,7 @@ export async function settleOldVersionWithdrawal(
     }),
   )
   for (const { deposits, l1TxHash } of ran)
-    await noteRecovered(moves, deposits, record.to as Address, l1TxHash)
+    await moves.note(deposits, record.to as Address, l1TxHash)
   return next
 }
 
@@ -148,7 +142,7 @@ function withPhase(record: OldVersionWithdrawal): OldVersionWithdrawal {
  * the record anymore, since the offer skips one that does, so no refund joins it after this.
  */
 export async function noteSelfRefunded(
-  moves: SavingsMoves,
+  moves: RefundedMoves,
   id: string,
   refund: OldVersionWithdrawal["refunds"][number],
   l1TxHash: Hex,
@@ -165,6 +159,6 @@ export async function noteSelfRefunded(
       ),
     }),
   )
-  if (to) await noteRecovered(moves, refund.deposits ?? [], to, l1TxHash)
+  if (to) await moves.note(refund.deposits ?? [], to, l1TxHash)
   return next
 }

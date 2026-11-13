@@ -1,4 +1,9 @@
-import type { ConfigBridgeChain } from "@obsidion/config-client"
+import {
+  acrossEscrowFactory,
+  acrossExit,
+  type AcrossChain,
+  type AcrossExit,
+} from "@obsidion/config-client"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
@@ -18,68 +23,69 @@ import {
 import type { Address, PublicClient } from "viem"
 import type { WebWalletConfig } from "../../config/env"
 import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
-import { profileBridge } from "../../session/walletChains"
+import { acrossBridge } from "../../session/walletChains"
 import type { PageFacts } from "../../session/pageChain"
 import { fillReader } from "../deposit/bridgeChains"
 import { SWAP_QUOTE_MAX_AGE_MS, SWAP_QUOTE_REFRESH_MS } from "./swapQuotes"
 import { withdrawalExecutor } from "./withdrawalFee"
 
-type BridgeConfig = Pick<WebWalletConfig, "bridge">
+type BridgeConfig = Pick<WebWalletConfig, "features">
 
 /** A chain a withdrawal of L2 `l2Token` can land on, the bridge that carries it, and the tokens it delivers there. */
 export interface BridgeOutChain {
   provider: BridgeOutProviderId
   l2Token: string
-  chain: ConfigBridgeChain
+  chain: AcrossChain
   tokens: { symbol: BridgeOutToken; address: Address }[]
 }
 
 /** The bridge-out providers a page can build, in the order their routes list. */
 export const BRIDGE_OUT_PROVIDERS: readonly BridgeOutProviderId[] = ["across"]
 
-/** Oxide's Across escrow factory: the pinned manifest's, else the profile's. */
-export function acrossEscrowFactory(
-  config: BridgeConfig,
-  tuple: Pick<OxideEnvTuple, "acrossBridgeEscrowFactory">,
-): Address | undefined {
-  const bridge = profileBridge(config)
-  if (bridge?.provider !== "across") return undefined
-  return (tuple.acrossBridgeEscrowFactory ?? bridge.escrowFactory) as Address | undefined
+/** The page's Across exit: `across`'s `exit` role in the pinned deployment. */
+export async function readAcrossExit({
+  config,
+  chain,
+}: PageFacts): Promise<AcrossExit | undefined> {
+  const across = acrossBridge(config)
+  if (!across?.oxide.exit) return undefined
+  return acrossExit(across, (await chain.oxideDeployment.read()).deployment)
 }
 
-export const requireAcrossEscrowFactory = (config: BridgeConfig, tuple: OxideEnvTuple): Address => {
-  const factory = acrossEscrowFactory(config, tuple)
+export const requireAcrossEscrowFactory = (
+  exit: AcrossExit | undefined,
+  tuple: OxideEnvTuple,
+): Address => {
+  const factory = acrossEscrowFactory(exit, tuple) as Address | undefined
   if (!factory)
     throw new WalletError("config.invalid", "No Across escrow factory for this deployment")
   return factory
 }
 
 /**
- * The profile's destinations Across can serve from `tuple`'s escrow: none without an escrow
- * factory, and only the tokens oxide's route table delivers to that chain.
+ * The Across destinations a burn from `tuple` can reach: none without an escrow factory for it
+ * (`acrossEscrowFactory`), and only the tokens oxide's route table delivers to that chain.
  */
 export function bridgeOutChains(
   config: BridgeConfig,
-  tuple: Pick<OxideEnvTuple, "acrossBridgeEscrowFactory" | "l2Token">,
+  exit: AcrossExit | undefined,
+  tuple: Pick<OxideEnvTuple, "bridgeId" | "acrossBridgeEscrowFactory" | "l2Token">,
 ): BridgeOutChain[] {
-  const bridge = profileBridge(config)
-  if (!bridge || bridge.provider !== "across" || !acrossEscrowFactory(config, tuple)) return []
+  const bridge = acrossBridge(config)
+  if (!bridge || !acrossEscrowFactory(exit, tuple)) return []
   return bridge.chains
     .map((chain) => ({
       provider: "across" as const,
       l2Token: tuple.l2Token,
       chain,
-      tokens: chain.out
+      tokens: (chain.out ?? [])
         .filter((token) => acrossBridgeRoute(token.symbol, chain.chainId))
         .map((token) => ({ symbol: token.symbol, address: token.address as Address })),
     }))
     .filter((route) => route.tokens.length > 0)
 }
 
-const acrossApiUrl = (config: BridgeConfig) => {
-  const bridge = profileBridge(config)
-  return bridge?.provider === "across" ? bridge.apiUrl : undefined
-}
+const acrossApiUrl = (config: BridgeConfig) => acrossBridge(config)?.apiUrl
 
 /** Any address will do: the simulation only prices the relayer's run. */
 const QUOTE_SENDER = `0x${"5e".repeat(20)}` as Address
@@ -158,7 +164,10 @@ export async function quoteBridgeOut(
   const quote = await price(
     l1PublicClient(config),
     {
-      acrossBridgeEscrowFactory: requireAcrossEscrowFactory(config, tuple),
+      acrossBridgeEscrowFactory: requireAcrossEscrowFactory(
+        await readAcrossExit({ config, chain }),
+        tuple,
+      ),
       operationExecutor: requireTupleField(tuple, "operationExecutor") as Address,
       dai: requireTupleField(tuple, "token") as Address,
       withdrawalSubsidy: requireTupleField(tuple, "withdrawalSubsidy") as Address,
@@ -232,7 +241,8 @@ export function acrossBridgeOut(
   const { config } = facts
   return {
     id: "across",
-    routes: async (token) => bridgeOutChains(config, await deps.tupleOf(token)),
+    routes: async (token) =>
+      bridgeOutChains(config, await readAcrossExit(facts), await deps.tupleOf(token)),
     quote: async (ask) => quoteBridgeOut(facts, await deps.tupleOf(ask.l2Token), ask, deps.price),
     async status(executeTxHash) {
       const status = await fetchAcrossDepositStatus(executeTxHash, {
@@ -242,7 +252,7 @@ export function acrossBridgeOut(
       return status && { status: "pending" }
     },
     fill: async (chainId, fillTxHash, recipient) =>
-      profileBridge(config)?.chains.some((c) => c.chainId === chainId)
+      acrossBridge(config)?.chains.some((c) => c.chainId === chainId)
         ? (await fillReader(deps.client(chainId)).fill(fillTxHash, recipient))?.value
         : undefined,
   }

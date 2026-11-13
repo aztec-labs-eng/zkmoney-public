@@ -1,8 +1,10 @@
 /**
  * The memo a wallet withdrawal carries in its recovery data (oxide's `WithdrawOperation.recoveryMemo`), encrypted to
  * the owner. The recovery data names the L1 address the burn pays, but for a swap, a Sky savings move or a bridge-out
- * that is an escrow, so the memo carries what the escrow address commits to. A fresh device then rebuilds the record,
- * and with it the escrow's run and recovery, from chain alone. A direct withdrawal carries an empty memo.
+ * that is an escrow, so the memo carries what the escrow address commits to. A vault move's burn pays the
+ * `MultiStepExecutor`, so its memo carries only the nonce its claim and recovery secrets derive from. A fresh device
+ * then rebuilds the record, and with it the escrow's run and recovery, from chain alone. A direct withdrawal carries
+ * an empty memo.
  *
  *   byte 0      format version (0x01)
  *   then        [type: u8][len: u8][value: len bytes] entries —
@@ -11,13 +13,15 @@
  *               0x06 escrow nonce (32 bytes), 0x07 swap daiForGas, 0x08 swap minEthForGas, 0x09 Sky route
  *               (1 byte, the escrow's `SkyRoute`), 0x0a Sky recipient commitment (32 bytes), 0x0b bridge
  *               provider (1 byte, 1 = Across), 0x0c destination chain id, 0x0d bridge output token (1 byte,
- *               1 = USDC, 2 = USDT), 0x0e bridge fee, 0x0f bridge min received. A bridge-out's recipient
+ *               1 = USDC, 2 = USDT), 0x0e bridge fee, 0x0f bridge min received, 0x10 vault move nonce
+ *               (32 bytes). A bridge-out's recipient
  *               is 0x02. Amounts and the chain id are uint256 in their fewest big-endian bytes; the gas
  *               entries are written only when nonzero.
  *
- * Decoding is total: any input yields a (possibly empty) memo, never a throw. An escrow is reported only when its
- * kind entry (0x01, 0x09 or 0x0b) is the only one and every entry it needs is present and well-formed. The values are what the wallet asserted at burn time;
- * `withdrawEventSource.ts` checks them against the escrow the burn paid before a reader trusts them.
+ * Decoding is total: any input yields a (possibly empty) memo, never a throw. A memo is reported only when its kind
+ * entry (0x01, 0x09, 0x0b or 0x10) is the only one and every entry it needs is present and well-formed. The values
+ * are what the wallet asserted at burn time; `withdrawEventSource.ts` checks an escrow's against the escrow the burn
+ * paid, and `moveBurns.ts` a vault move's against the route the burn ran, before a reader trusts them.
  */
 
 import { getAddress, isAddress, isAddressEqual, type Address, type Hex } from "viem"
@@ -50,6 +54,27 @@ const TYPE_BRIDGE_CHAIN = 0x0c
 const TYPE_BRIDGE_TOKEN = 0x0d
 const TYPE_BRIDGE_FEE = 0x0e
 const TYPE_BRIDGE_MIN_RECEIVED = 0x0f
+const TYPE_VAULT_MOVE_NONCE = 0x10
+
+/** Every entry's type byte, as the format above lists them. */
+export const WITHDRAWAL_MEMO_TAGS = {
+  swapRoute: TYPE_SWAP_ROUTE,
+  swapRecipient: TYPE_SWAP_RECIPIENT,
+  escrowFactory: TYPE_ESCROW_FACTORY,
+  recoveryCommitment: TYPE_RECOVERY_COMMITMENT,
+  relayerTip: TYPE_RELAYER_TIP,
+  escrowNonce: TYPE_ESCROW_NONCE,
+  daiForGas: TYPE_DAI_FOR_GAS,
+  minEthForGas: TYPE_MIN_ETH_FOR_GAS,
+  skyRoute: TYPE_SKY_ROUTE,
+  recipientCommitment: TYPE_RECIPIENT_COMMITMENT,
+  bridgeProvider: TYPE_BRIDGE_PROVIDER,
+  bridgeChain: TYPE_BRIDGE_CHAIN,
+  bridgeToken: TYPE_BRIDGE_TOKEN,
+  bridgeFee: TYPE_BRIDGE_FEE,
+  bridgeMinReceived: TYPE_BRIDGE_MIN_RECEIVED,
+  vaultMoveNonce: TYPE_VAULT_MOVE_NONCE,
+} as const
 
 const BRIDGE_PROVIDERS = { across: 1 } as const satisfies Record<BridgeOutProviderId, number>
 const BRIDGE_TOKENS = { USDC: 1, USDT: 2 } as const satisfies Record<BridgeOutToken, number>
@@ -107,20 +132,29 @@ export interface BridgeWithdrawalMemo {
   nonce: Hex
 }
 
+/** A vault move's: its claim and recovery secrets derive from `nonce`. */
+export interface VaultMoveWithdrawalMemo {
+  nonce: Hex
+}
+
 /** The escrow a burn pays, as the send names it. */
 export type EscrowMemo =
   | { swap: SwapWithdrawalMemo }
   | { sky: SkyWithdrawalMemo }
   | { bridge: BridgeWithdrawalMemo }
 
-/** A decoded memo: at most one escrow. */
+/** What a burn's memo names: one escrow, or one vault move. */
+export type BurnMemo = EscrowMemo | { vaultMove: VaultMoveWithdrawalMemo }
+
+/** A decoded memo: at most one escrow or vault move. */
 export interface WithdrawalMemo {
   swap?: SwapWithdrawalMemo
   sky?: SkyWithdrawalMemo
   bridge?: BridgeWithdrawalMemo
+  vaultMove?: VaultMoveWithdrawalMemo
 }
 
-export function encodeWithdrawalMemo(memo: EscrowMemo): Buffer {
+export function encodeWithdrawalMemo(memo: BurnMemo): Buffer {
   const entries: Buffer[] = []
   const put = (type: number, value: Buffer) => {
     entries.push(Buffer.from([type, value.length]), value)
@@ -166,13 +200,20 @@ export function encodeWithdrawalMemo(memo: EscrowMemo): Buffer {
     put(TYPE_RELAYER_TIP, uintBytes(bridge.relayerTip))
     put(TYPE_ESCROW_NONCE, hexBytes(bridge.nonce, WORD_LEN, "nonce"))
   }
+  if ("vaultMove" in memo) {
+    put(TYPE_VAULT_MOVE_NONCE, hexBytes(memo.vaultMove.nonce, WORD_LEN, "vault move nonce"))
+  }
   return Buffer.concat([Buffer.from([VERSION]), ...entries])
 }
+
+/** The kind entries of an escrow's memo. */
+const ESCROW_KIND_TYPES = [TYPE_SWAP_ROUTE, TYPE_SKY_ROUTE, TYPE_BRIDGE_PROVIDER]
 
 /**
  * A wrong version, a truncated entry, a duplicate (the first wins) or a malformed value never throws. A swap missing
  * an entry, naming the zero address or a zero recovery commitment, or naming a route no output maps to decodes as no
- * swap. A Sky move and a bridge-out likewise, and two kind entries decode as no escrow.
+ * swap. A Sky move and a bridge-out likewise, and two kind entries decode as nothing. A vault move nonce decodes only
+ * as 32 bytes with no other kind entry, well formed or not.
  */
 export function decodeWithdrawalMemo(memo: Buffer): WithdrawalMemo {
   if (memo[0] !== VERSION) return {}
@@ -206,6 +247,13 @@ export function decodeWithdrawalMemo(memo: Buffer): WithdrawalMemo {
       : undefined
   const skyRoute = value(TYPE_SKY_ROUTE, 1)?.[0]
   const provider = value(TYPE_BRIDGE_PROVIDER, 1)?.[0]
+  const moveNonce = values.get(TYPE_VAULT_MOVE_NONCE)
+  if (moveNonce) {
+    const alone = ESCROW_KIND_TYPES.every((type) => !values.has(type))
+    return alone && moveNonce.length === WORD_LEN
+      ? { vaultMove: { nonce: `0x${moveNonce.toString("hex")}` } }
+      : {}
+  }
   const kinds = [route, skyRoute, provider].filter((kind) => kind !== undefined)
   if (kinds.length !== 1 || !escrow) return {}
   const recipient = nonZeroAddress(value(TYPE_SWAP_RECIPIENT, ADDRESS_LEN))

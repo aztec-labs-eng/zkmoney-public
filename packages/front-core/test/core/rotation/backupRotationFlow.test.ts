@@ -197,7 +197,11 @@ describe("the happy path", () => {
 
     const rerooted = await rerootRotation(deps, swept)
     expect(rerooted.phase).toBe("rerooted")
-    expect(rerooted.reroot).toEqual({ switched: true, rebound: true })
+    expect(rerooted.reroot).toEqual({
+      switched: true,
+      rebound: true,
+      oneKeyBalances: [{ token: "tok", amount: `${3n * DAI}` }],
+    })
 
     const first = await moveRotation(deps, rerooted)
     expect(first.wait).toBe("chunk")

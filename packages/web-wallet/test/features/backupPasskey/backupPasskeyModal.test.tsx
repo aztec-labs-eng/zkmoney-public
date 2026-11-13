@@ -115,7 +115,7 @@ import {
 import { RotationRouteNotLiveError } from "@obsidion/sdk"
 import unreadableCopy from "../../../src/features/backupPasskey/screens/UnreadableScreen/UnreadableScreen.copy"
 import type { RegistrationPending } from "../../../src/features/registration/registrationRail"
-import trackerCopy from "../../../src/features/backupPasskey/screens/AddTracker/AddTracker.copy"
+import approveCopy from "../../../src/features/backupPasskey/screens/ApproveScreen/ApproveScreen.copy"
 import {
   WebPasskeyIdentityMap,
   type AuthenticatorRecord,
@@ -135,7 +135,6 @@ import type { Session } from "../../../src/session/session"
 import introCopy from "../../../src/features/backupPasskey/screens/IntroScreen/IntroScreen.copy"
 import keysCopy from "../../../src/features/backupPasskey/screens/KeysScreen/KeysScreen.copy"
 import { fmt } from "../../../src/lib/fmt"
-import { usdAtomic } from "../../../src/ui/format"
 const { PasskeysModal } = await import("../../../src/ui/PasskeysModal")
 const { PasskeysSheet } = await import("../../../src/ui/PasskeysSheet/PasskeysSheet")
 
@@ -166,7 +165,9 @@ const FACTS = {
   routeLive: true,
   balance: 10n * DAI,
   fundingAmount: 2n * DAI,
+  credited: (14n * DAI) / 10n,
   chunk: { kind: "fits" },
+  fits: () => true,
   plan: true,
   moves: 2,
   savingsMoving: false,
@@ -235,7 +236,7 @@ async function recordPasskey(oneDevice: boolean) {
 }
 /** The `key` hero's mark; the `warning` hero draws an icon alone. */
 const keyHero = () => container.querySelector(".zkm-sheet-shell__key")
-/** A1's key rows, and those marked added; a missing row draws an icon alone. */
+/** A1's key rows, and those marked added. */
 const rows = () => container.querySelectorAll(".zkm-key-status-row")
 const added = () => container.querySelectorAll(".zkm-key-status-row__added")
 
@@ -346,22 +347,31 @@ describe("the Passkeys modal's start screens", () => {
     expect(h.addInputs).toMatchObject([{ choice: "key" }])
   })
 
-  it("lists a synced key without the missing backup, and still offers the add", async () => {
+  it("lists a synced key with the backup missing too, and still offers the add", async () => {
     await recordPasskey(false)
     await mount()
-    expect(rows()).toHaveLength(1)
+    expect(rows()).toHaveLength(2)
     expect(added()).toHaveLength(1)
-    expect(keyHero()).not.toBeNull()
+    expect(keyHero()).toBeNull()
     await walkTo("intro")
     expect(proceed()).not.toBeNull()
   })
 
-  it("quotes the cost on A2, and the time once the release is read", async () => {
-    const quote = { total: (7n * DAI) / 10n, fixed: DAI / 2n, network: DAI / 5n }
-    h.facts = { ...FACTS, quote }
+  it("goes back from A2 to the key list", async () => {
+    await recordPasskey(false)
     await mount()
     await walkTo("intro")
-    expect(text()).toContain(fmt(introCopy.costValue, { amount: usdAtomic(quote.total) }))
+    await act(async () => byTestId("backup-back")!.click())
+    expect(proceed()).toBeNull()
+    expect(start()).not.toBeNull()
+  })
+
+  it("quotes the cost on A2, and the time once the release is read", async () => {
+    const quote = { total: (7n * DAI) / 10n, fixed: DAI / 2n, network: DAI / 5n }
+    h.facts = { ...FACTS, fundingAmount: (21n * DAI) / 10n, quote }
+    await mount()
+    await walkTo("intro")
+    expect(text()).toContain(fmt(introCopy.costValue, { amount: "$0.70" }))
     // A minute to land, a 10 minute release, then two relayer pickups and the sweep's settle.
     const value = {
       landingSeconds: 60,
@@ -561,9 +571,7 @@ describe("the Passkeys modal's add entry", () => {
     expect(text()).not.toContain(unreadableCopy.title.keys)
     expect(panel()).not.toBeNull()
     expect(start()).toBeNull()
-    expect(approveButton()?.textContent).toBe(
-      fmt(trackerCopy.approve, { approver: trackerCopy.yourPasskey }),
-    )
+    expect(approveButton()?.textContent).toBe(approveCopy.confirm)
   })
 
   it("shows the pending panel when the account does not verify", async () => {
@@ -845,5 +853,99 @@ describe("the network's sheet raised over a step", () => {
     await act(async () => close!.click())
     await flush()
     expect(approveButton()).not.toBeNull()
+  })
+})
+
+describe("leaving a saved add", () => {
+  const overlay = () => container.querySelector<HTMLDialogElement>("dialog.ww-modal-overlay")!
+  /** The Passkeys sheet's own close button, not the leave sheet's. */
+  const closeButton = () =>
+    overlay().querySelector<HTMLButtonElement>(":scope > .ww-modal > .ww-modal__close button")!
+  const clickOutside = () => act(async () => overlay().click())
+  const tap = async (button: HTMLButtonElement | null) => {
+    await act(async () => button!.click())
+    await flush()
+  }
+
+  it("closes on a click outside before the backup is saved", async () => {
+    await mount()
+    await clickOutside()
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it("stays open on a click outside once it is saved, and asks before the close button leaves", async () => {
+    await rotations.put(createdRecord())
+    await mount()
+    await flush(2)
+    await clickOutside()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(byTestId("backup-leave-confirm")).toBeNull()
+
+    await tap(closeButton())
+    expect(onClose).not.toHaveBeenCalled()
+    await tap(byTestId("backup-stay"))
+    expect(byTestId("backup-leave-confirm")).toBeNull()
+    expect(approveButton()).not.toBeNull()
+
+    // Backing out of leaving leaves Cancel asking as before.
+    await tap(byTestId("backup-cancel"))
+    expect(byTestId("backup-cancel-confirm")).not.toBeNull()
+    await tap(byTestId("backup-stay"))
+
+    await tap(closeButton())
+    await tap(byTestId("backup-leave-confirm"))
+    expect(onClose).toHaveBeenCalledTimes(1)
+    expect((await rotations.get(OWNER))?.phase).toBe("created")
+  })
+
+  it("closes at once from a step that offers Close, and from a finished add", async () => {
+    await rotations.put(signedRecord({ phase: "funded", ...sent(Date.now()) }))
+    await mount()
+    await flush(2)
+    await clickOutside()
+    expect(onClose).not.toHaveBeenCalled()
+    await tap(closeButton())
+    expect(byTestId("backup-leave-confirm")).toBeNull()
+    expect(onClose).toHaveBeenCalledTimes(1)
+
+    await reopen()
+    await rotations.put(signedRecord({ phase: "done" }))
+    await flush(2)
+    await clickOutside()
+    expect(onClose).toHaveBeenCalledTimes(2)
+  })
+
+  it("asks before a failed sheet's Cancel, unless dropping the attempt is its only way on", async () => {
+    const parked = (attention: "route" | "corrupt") =>
+      signedRecord({ phase: "attention", attention, suspended: "signed" })
+    await rotations.put(parked("route"))
+    await mount()
+    await flush(2)
+    await tap(byTestId("backup-failed-cancel"))
+    expect(byTestId("backup-cancel-confirm")).not.toBeNull()
+    expect(await rotations.get(OWNER)).not.toBeNull()
+
+    await reopen()
+    await rotations.put(parked("corrupt"))
+    await flush(2)
+    await tap(byTestId("backup-failed-cancel"))
+    await flush(2)
+    expect(byTestId("backup-cancel-confirm")).toBeNull()
+    expect(await rotations.get(OWNER)).toBeNull()
+  })
+
+  it("asks before Cancel drops the saved attempt", async () => {
+    await rotations.put(createdRecord())
+    await mount()
+    await flush(2)
+    await tap(byTestId("backup-cancel"))
+    await tap(byTestId("backup-stay"))
+    expect(await rotations.get(OWNER)).not.toBeNull()
+
+    await tap(byTestId("backup-cancel"))
+    await tap(byTestId("backup-cancel-confirm"))
+    await flush(2)
+    expect(await rotations.get(OWNER)).toBeNull()
+    expect(onClose).not.toHaveBeenCalled()
   })
 })

@@ -2,7 +2,7 @@
 import { DEFAULT_DECIMALS, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { QueryState } from "@obsidion/front-core"
 import type { BridgeOutToken } from "@obsidion/sdk"
-import type { ConfigBridgeChain } from "@obsidion/config-client"
+import type { AcrossChain } from "@obsidion/config-client"
 import {
   bridgeOutDecimals,
   type BridgeOutAnswer,
@@ -69,7 +69,7 @@ export function claimBridgeChoice(
   bridge: ClaimBridge,
   proverTip: bigint,
 ):
-  | { chain: ConfigBridgeChain; token: BridgeOutToken; quote: BridgeOutPriced; proverTip: bigint }
+  | { chain: AcrossChain; token: BridgeOutToken; quote: BridgeOutPriced; proverTip: bigint }
   | undefined {
   const { quote } = bridge
   if (quote?.proverTip !== proverTip) return undefined

@@ -1,21 +1,23 @@
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import type {
+  DeploymentHoldings,
+  Holding,
   OxideDeployment,
   OxideDeploymentTable,
   PinnedOxideDeployment,
+  SkyEscrowHolding,
 } from "@obsidion/core/oxide"
 import type {
   DeploymentScans,
   EnsClient,
   EnsNames,
   OriginChain,
+  HoldingPrice,
   PortalCapacityKey,
   RegistryTagResolution,
   QueryEntry,
   Service,
-  SkyFactoryPortals,
   SipaRecordRoute,
-  SkySavings,
   BridgeOutTracking,
   TrackerRails,
 } from "@obsidion/front-core"
@@ -33,6 +35,12 @@ import type { Address, Chain, Hex, PublicClient, Transport } from "viem"
 import type { webBroadcasterArtifact } from "../config/classArtifacts"
 import type { WebWalletConfig } from "../config/env"
 import type { OxideEnv } from "../config/oxideTuple"
+
+/** A Sky holding's price, with the holding. */
+export type SavingsPrice = HoldingPrice & { holding: SkyEscrowHolding }
+
+/** A Sky holding's price read: its price, or `failed` when its read failed with no earlier one. */
+export type SavingsPriceRead = SavingsPrice | { holding: SkyEscrowHolding; failed: true }
 
 /**
  * The page's manifest and chain reads, queries built once per page over its config: every session
@@ -94,6 +102,8 @@ export interface PageChain {
   activeWithdrawalExecutor: QueryEntry<WithdrawalExecutor>
   /** The plain withdrawal executor of the deployment a paylink in `token` was made on. */
   paylinkExecutor(token: string): QueryEntry<WithdrawalExecutor>
+  /** The portal the withdrawal executor at `address` serves. */
+  executorPortalAt(address: Address): QueryEntry<Address>
   /** The withdrawal subsidy the executor at `address` created. */
   executorSubsidyAt(address: Address): QueryEntry<Address>
   /** The public client of a bridge chain the profile lists, one per chain; another throws. */
@@ -106,18 +116,24 @@ export interface PageChain {
   withdrawalRails(): Service<TrackerRails | null>
   /** The swap-on-withdraw simulator over `tuple`'s escrow factory, executor and token. */
   swapSimulator(tuple: OxideEnvTuple): Service<SwapOnWithdrawSimulator>
-  /** The portals a Sky escrow factory's escrows deposit into. */
-  skyFactoryPortalsAt(factory: Address): QueryEntry<SkyFactoryPortals>
   /** The co-signer of `token`'s deployment. */
   teeSignerOfToken(token: string): Promise<RegisteredTeeSigner>
   /** The co-signer of `fleet` for `portal`'s domain: one per fleet and domain. */
   connectFleetSigner(fleet: string, portal: Hex): Service<RegisteredTeeSigner>
-  /** Sky savings on the pinned deployment; null where it names none. */
-  skySavings: QueryEntry<SkySavings | null>
-  /** The Savings bridge; null where the pinned deployment has none. */
-  savingsTuple: QueryEntry<OxideEnvTuple | null>
-  /** The ERC-4626 vault the Savings bridge at `portal` holds. */
-  savingsVault(portal: Address): QueryEntry<Address>
+  /** The pinned deployment's holdings. */
+  holdings: QueryEntry<DeploymentHoldings>
+  /** A holding's share price and rate, read on L1. */
+  holdingPrice(holding: Pick<Holding, "held">): QueryEntry<HoldingPrice>
+  /**
+   * Savings' price: the profile's Sky holding's, else the deployment's first Sky holding's, which
+   * old versions' Savings shares are worth. Null where the deployment has none.
+   */
+  savingsPrice: QueryEntry<SavingsPrice | null>
+  /**
+   * Each Sky holding's price, the profile's first, each read on its own: a holding whose read fails
+   * keeps its earlier price, or reads `failed`, and the others keep theirs.
+   */
+  savingsPrices: QueryEntry<readonly SavingsPriceRead[]>
   broadcasterArtifact: ReturnType<typeof webBroadcasterArtifact>
   /** `tag`'s Registry resolution; a read once it settles reads again. */
   tagResolution(tag: string): QueryEntry<RegistryTagResolution>

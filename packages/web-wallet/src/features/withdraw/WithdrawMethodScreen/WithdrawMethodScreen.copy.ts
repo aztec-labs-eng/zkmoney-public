@@ -1,12 +1,12 @@
 export default {
   title: "Withdraw",
   fresh: {
-    title: "Withdraw to a fresh address",
-    body: "Exit to a new Ethereum address with no history. Add gas simultaneously.",
+    title: "To an Ethereum address",
+    body: "Send to an address and add gas simultaneously.",
   },
   bridge: {
-    title: "Bridge out privately",
-    body: "Exit to another chain. Choose the token and the network it lands on.",
+    title: "To your app, card or wallet",
+    body: "Ether.fi, Hyperliquid and more.",
   },
   etherfi: {
     title: "Withdraw to ether.fi",

@@ -19,6 +19,8 @@ export interface EntryConditions {
   historicBalance: boolean
   balance: bigint
   fundingAmount: bigint
+  /** The part of the funding that comes back once the backup is active. */
+  credited: bigint
   chunk: ChunkFit
   /** A move plan exists over the live balances. */
   plan: boolean
@@ -36,7 +38,8 @@ export type EntryCondition =
   | { id: "withdrawal" }
   | { id: "link"; hold: BackupLinkHold }
   | { id: "migration" }
-  | { id: "balance"; need: bigint; have: bigint }
+  /** `hold`: the part of `need` that comes back. */
+  | { id: "balance"; need: bigint; hold: bigint; have: bigint }
   /** `send`: the self-send that joins the balance's small pieces. */
   | { id: "pieces"; send: bigint }
   | { id: "synced" }
@@ -79,7 +82,11 @@ export function entryBlocks(c: EntryConditions): EntryBlock[] {
       ? unmet({ id: "link", hold }, hold.kind === "expiry" ? undefined : "activity")
       : met("link"),
     check(!c.historicBalance, { id: "migration" }, "migration"),
-    check(enough, { id: "balance", need: c.fundingAmount, have: c.balance }, "deposit"),
+    check(
+      enough,
+      { id: "balance", need: c.fundingAmount, hold: c.credited, have: c.balance },
+      "deposit",
+    ),
     // A balance short of the funding never fits in one piece; its own row says so.
     c.chunk.kind === "short" && enough
       ? unmet({ id: "pieces", send: c.chunk.chunk })

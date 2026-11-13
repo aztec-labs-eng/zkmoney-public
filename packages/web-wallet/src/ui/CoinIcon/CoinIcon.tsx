@@ -1,25 +1,25 @@
 import type { CSSProperties } from "react"
 import { ChainIcon } from "../ChainIcon/ChainIcon"
+import { BrandIcon } from "../brand/BrandIcon/BrandIcon"
 import { ICONS } from "./coinIcons"
 import type { DepositTokenOption } from "../../features/sipa/loadDepositFacts"
 import ethLogo from "../../assets/deposit/eth.svg"
 import wethLogo from "../../assets/deposit/weth.svg"
 import wbtcLogo from "../../assets/deposit/wbtc.svg"
-import ethBadge from "../../assets/deposit/eth-fill.svg"
 import styles from "./CoinIcon.module.css"
 
-/** The coin with its Ethereum badge, on the coin rows and the sheet header. */
+/** Where a coin is held: a chain, as the config names it, or the brand for the private balance. */
+export type CoinBadge = { id: number; name: string } | "brand"
+
+/** The coin, with the logo of where it is held as its badge; none without `badge`. */
 export function CoinIcon({
   token,
   size = 44,
-  badge = true,
-  chain,
+  badge,
 }: {
   token: Pick<DepositTokenOption, "icon">
   size?: number
-  badge?: boolean
-  /** Another chain's logo in place of the Ethereum badge. */
-  chain?: { chainId: number; name: string }
+  badge?: CoinBadge
 }) {
   return (
     <span
@@ -27,16 +27,15 @@ export function CoinIcon({
       style={{ "width": size, "height": size, "--coin-size": `${size}px` } as CSSProperties}
     >
       <img src={token.icon} alt="" width={size} height={size} />
-      {badge &&
-        (chain ? (
-          <span className={`${styles.coinBadge} ${styles.coinBadgeChain}`}>
-            <ChainIcon chainId={chain.chainId} name={chain.name} size={16} />
-          </span>
-        ) : (
-          <span className={styles.coinBadge}>
-            <img src={ethBadge} alt="" width={10} height={10} />
-          </span>
-        ))}
+      {badge && (
+        <span className={styles.coinBadge}>
+          {badge === "brand" ? (
+            <BrandIcon size={16} />
+          ) : (
+            <ChainIcon chainId={badge.id} name={badge.name} size={16} />
+          )}
+        </span>
+      )}
     </span>
   )
 }
@@ -59,13 +58,13 @@ export function OriginTokenIcon({
   coins: readonly DepositTokenOption[]
   size?: number
   /** The chain the token is on, shown as its badge. */
-  chain?: { chainId: number; name: string }
+  chain?: { id: number; name: string }
 }) {
   const coin = coins.find((c) => c.symbol === symbol)
-  if (coin) return <CoinIcon token={coin} size={size} badge={!!chain} chain={chain} />
+  if (coin) return <CoinIcon token={coin} size={size} badge={chain} />
   const logo = ORIGIN_LOGOS[symbol]
   return logo ? (
-    <CoinIcon token={{ icon: logo }} size={size} badge={!!chain} chain={chain} />
+    <CoinIcon token={{ icon: logo }} size={size} badge={chain} />
   ) : (
     <ChainIcon chainId={0} name={symbol} size={size} />
   )

@@ -28,8 +28,6 @@ import {
   loadRecords,
   useStore,
   retryableStop,
-  readSavingsPrice,
-  readSavingsVault,
   runMetadataMigration,
   savingsValue,
   type MetadataMigrationRecord,
@@ -56,7 +54,6 @@ import {
   TopNavIconButton,
 } from "@obsidion/web-ds"
 import { formatUnits, type Address } from "viem"
-import { l1PublicClient } from "../../../config/oxideTuple"
 import { showReportableError } from "../../../errors/errorModal"
 import { BootSplash } from "../../../ui/PxeBoot"
 import { fireEvent } from "../../../lib/analytics"
@@ -160,6 +157,7 @@ import {
   releaseUpgradeLock,
   useUpgradeLock,
 } from "../upgradeLock"
+import { savingsTotal, sharePriceAt } from "../../savings/savingsLine"
 import styles from "./MigrationDetectionMount.module.css"
 import copy from "./MigrationDetectionMount.copy"
 import { fmt } from "../../../lib/fmt"
@@ -370,7 +368,7 @@ export function MigrationDetectionMount() {
   useEffect(() => {
     if (!oldHoldings.pending) milestones.mark("oldVersionsRead")
   }, [oldHoldings.pending, milestones])
-  const savings = useStore(useSession().savingsHolding)
+  const savings = useStore(useSession().savingsLine)
 
   // A source moves into the pinned deployment, or into the product of its asset.
   const destinationOf = useCallback(
@@ -718,9 +716,7 @@ export function MigrationDetectionMount() {
         const portal = destination.portal.toLowerCase()
         if (destination === current || prices.has(portal)) continue
         try {
-          const client = l1PublicClient(config)
-          const vault = await readSavingsVault(client, destination.portal as `0x${string}`)
-          prices.set(portal, (await readSavingsPrice(client, vault)).sharePrice)
+          prices.set(portal, await sharePriceAt(session.page.chain, destination.portal))
         } catch (error) {
           failed = true
           console.warn(`[migration] share price read failed for ${destination.portal}:`, error)
@@ -1222,9 +1218,10 @@ export function MigrationDetectionMount() {
       ? (mainBalance.main?.atomic ?? 0n) + oldHoldings.recordedMain - lost.main
       : undefined
   const heldMain = landing !== undefined && landing < 0n ? 0n : landing
+  const savingsHeld = savingsTotal(savings)
   const savingsLanding =
-    oldHoldings.recordedSavings > 0n && !oldHoldings.pending && savings.position
-      ? savings.position.value + oldHoldings.recordedSavings - lost.savings
+    oldHoldings.recordedSavings > 0n && !oldHoldings.pending && savingsHeld !== undefined
+      ? savingsHeld + oldHoldings.recordedSavings - lost.savings
       : undefined
   const heldSavings = savingsLanding !== undefined && savingsLanding < 0n ? 0n : savingsLanding
   // A fresh start takes the lock at that figure, so it waits until the figure is known.
@@ -1345,9 +1342,8 @@ export function MigrationDetectionMount() {
         state,
         phase: runPhase,
         registration,
-        keepOpen: keepOpen || undefined,
       }),
-    [state, runPhase, registration, keepOpen],
+    [state, runPhase, registration],
   )
   // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => () => setUpgradeStatus({ state: "checking", registration: false }), [])
@@ -1850,7 +1846,7 @@ export function MigrationDetectionMount() {
   const held = lock.state === "held" ? lock : undefined
   const balance = {
     main: held?.main ?? heldMain,
-    savings: held?.savings ?? heldSavings ?? savings.position?.value,
+    savings: held?.savings ?? heldSavings ?? savingsHeld,
   }
   // Before the quotes, the probe's figure: fees aside, and without deposits still waiting, as `lost`
   // leaves them out. A deposit or Savings source it cannot value leaves it loading.
@@ -1861,7 +1857,7 @@ export function MigrationDetectionMount() {
     counted.every((r) => r.sweptDeposits === 0 && destinationOf(r.tuple) === current)
       ? {
           main: counted.reduce((total, r) => total + r.balance, mainBalance.main?.atomic ?? 0n),
-          savings: savings.position?.value,
+          savings: savingsHeld,
         }
       : {}
   const flowApprovals = metadataRecord?.approvals && (upgradeCount ?? metadataRecord.approvals)

@@ -1,12 +1,13 @@
 // @vitest-environment node
 /** The Savings figure: its cents, the digits that tick beneath them, and its carry at the rate. */
 import { describe, expect, it } from "vitest"
-import type { SavingsPosition } from "@obsidion/front-core"
+import { RATE_SCALE } from "@obsidion/front-core"
 import {
   selectSavingsEstimate,
   splitTicking,
   tickingDigits,
 } from "../../../src/features/savings/savingsEstimate"
+import type { SavingsPosition } from "../../../src/features/savings/savingsLine"
 import { usdAtomicFloor } from "../../../src/ui/format"
 
 const WAD = 10n ** 18n
@@ -56,8 +57,10 @@ describe("selectSavingsEstimate", () => {
     shares: 900n * WAD,
     value: 1000n * WAD,
     sharePrice: WAD,
-    apy: 0.055,
+    rate: (55n * RATE_SCALE) / 1000n,
     readAt: T0,
+    shareDecimals: 18,
+    assetDecimals: 18,
   }
   const at = (ms: number) => selectSavingsEstimate(position, true, T0 + ms)
 
@@ -74,7 +77,7 @@ describe("selectSavingsEstimate", () => {
     })
     const unfunded = { ...position, shares: 0n, value: 0n }
     expect(selectSavingsEstimate(unfunded, true, T0 + 1_200)).toEqual({ value: 0n, ticking: false })
-    const unrated = { ...position, apy: undefined }
+    const { rate: _, ...unrated } = position
     expect(selectSavingsEstimate(unrated, true, T0)).toEqual({ value: 1000n * WAD, ticking: false })
     expect(selectSavingsEstimate(null, true, T0)).toEqual({ value: undefined, ticking: false })
   })

@@ -2,29 +2,123 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import {
+  featuresUrlOf,
+  parseFeaturesDocument,
+  parseServedFeatures,
   parseServedProfile,
   resolveWalletProfileDocument,
-  type ConfigProfile,
-  type ConfigVersion,
+  type FeaturesDocument,
 } from "@obsidion/config-client"
 import { useLeavingLosesTransaction } from "../features/operations/operations"
 import { reloadPage } from "../platform/storage/walletStorage"
 import { Modal, PageModal, PageModalPanel } from "../ui/Modal"
 import { assertProfilePolicy, parseNetwork } from "../config/profilePolicy"
-import { clearProfileDraft, profileDraft, saveProfileDraft } from "./configDraft"
+import { clearConfigDraft, configDraft, saveConfigDraft, type ConfigDocument } from "./configDraft"
 import { useDomEffect } from "../ui/useDomEffect"
+import { WalletError } from "@obsidion/core/errors"
+import { fmt } from "../lib/fmt"
+import copy from "./ConfigProfileModal.copy"
 
 const PROFILE_URL = import.meta.env.VITE_CONFIG_PROFILE_URL as string | undefined
 
-function validate(text: string): { profile: ConfigProfile; version: ConfigVersion } {
-  const profile = parseServedProfile(JSON.parse(text))
-  const resolved = resolveWalletProfileDocument(profile, {
-    source: "the preview draft",
-    expectedProfileId: import.meta.env.VITE_CONFIG_EXPECTED_PROFILE_ID,
-    network: import.meta.env.VITE_NETWORK ?? "sandbox",
-  })
-  assertProfilePolicy(resolved, parseNetwork(import.meta.env.VITE_NETWORK))
-  return { profile, version: resolved.version }
+const EXPECTED_PROFILE_ID = import.meta.env.VITE_CONFIG_EXPECTED_PROFILE_ID
+const NETWORK = import.meta.env.VITE_NETWORK ?? "sandbox"
+
+/** What the summary shows of a valid document. */
+interface DocumentSummary {
+  identity: [label: string, value: string][]
+  rows: [label: string, value: string][]
+  /** Fields the build overrides. */
+  overridden: string[]
+}
+
+/** One document the editor drafts: where it lives, how it is checked, and its words. */
+interface DocumentSpec {
+  kind: ConfigDocument
+  /** Where the live document is read. */
+  url: string | undefined
+  /** Throws what is wrong with `text`; returns its summary. */
+  validate(text: string): DocumentSummary
+  words: typeof copy.profile | typeof copy.features
+}
+
+const PROFILE: DocumentSpec = {
+  kind: "profile",
+  url: PROFILE_URL,
+  validate(text) {
+    const profile = parseServedProfile(JSON.parse(text))
+    const resolved = resolveWalletProfileDocument(profile, {
+      source: "the preview draft",
+      expectedProfileId: EXPECTED_PROFILE_ID,
+      network: NETWORK,
+    })
+    assertProfilePolicy(resolved, parseNetwork(import.meta.env.VITE_NETWORK))
+    const { version } = resolved
+    const row = copy.profile.row
+    return {
+      identity: [
+        [row.name, profile.profileId],
+        [row.current, profile.current],
+      ],
+      rows: [
+        [row.network, profile.network],
+        [row.l1Chain, String(profile.shared.l1ChainId)],
+        [row.rollup, profile.shared.rollupVersion],
+        [row.xmtp, profile.shared.xmtpEnv],
+        [row.l1Rpc, version.l1RpcUrl],
+        [row.l2Rpc, version.nodeUrl],
+        [row.bundlerRpc, row.notInProfile],
+        [row.accountService, version.accountServiceUrl],
+        [row.zkmoneyApi, version.zkmoneyApiUrl ?? row.disabled],
+        [row.paylinkDomain, version.paylinkDomain],
+        [row.tokens, version.assets?.map((asset) => asset.symbol).join(", ") || row.noneListed],
+        [row.oxidePortal, version.oxide.portal],
+        [row.oxideManifest, version.oxide.manifestUrl],
+        [row.contracts, fmt(row.entries, { count: Object.keys(version.contracts).length })],
+      ],
+      overridden: [
+        import.meta.env.VITE_NODE_URL && copy.profile.row.l2Rpc,
+        import.meta.env.VITE_L1_RPC_URL && copy.profile.row.l1Rpc,
+      ].filter((field): field is string => !!field),
+    }
+  },
+  words: copy.profile,
+}
+
+function featuresSummary(document: FeaturesDocument): DocumentSummary {
+  const { across } = document.features
+  const row = copy.features.row
+  return {
+    identity: [
+      [row.name, document.profileId],
+      [row.published, document.publishedAt ?? row.notPublished],
+    ],
+    rows: [
+      [row.network, document.network],
+      [row.features, Object.keys(document.features).join(", ") || row.none],
+      ...(across
+        ? ([
+            [row.acrossChains, across.chains.map((chain) => chain.name).join(", ") || row.none],
+            [row.acrossExit, across.oxide.exit ?? row.notBound],
+          ] as [string, string][])
+        : []),
+    ],
+    overridden: [],
+  }
+}
+
+const FEATURES: DocumentSpec = {
+  kind: "features",
+  url: PROFILE_URL && featuresUrlOf(PROFILE_URL),
+  validate(text) {
+    const data: unknown = JSON.parse(text)
+    // The identity the wallet checks, then every rule the publisher enforces.
+    parseServedFeatures(data, {
+      expected: { profileId: EXPECTED_PROFILE_ID, network: parseNetwork(NETWORK) },
+    })
+    return featuresSummary(parseFeaturesDocument(data))
+  },
+  words: copy.features,
 }
 
 function errorMessages(message: string): string[] {
@@ -44,9 +138,21 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
 }
 
 export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
+  return <ConfigDocumentModal spec={PROFILE} onClose={onClose} />
+}
+
+/** The Settings row that opens {@link FeaturesModal}. */
+export const featuresEditorLabel = copy.features.title
+
+export function FeaturesModal({ onClose }: { onClose: () => void }) {
+  return <ConfigDocumentModal spec={FEATURES} onClose={onClose} />
+}
+
+function ConfigDocumentModal({ spec, onClose }: { spec: DocumentSpec; onClose: () => void }) {
+  const { words } = spec
   const [text, setText] = useState("")
   const [summaryText, setSummaryText] = useState("")
-  const [sourceUrl, setSourceUrl] = useState(PROFILE_URL ?? "")
+  const [sourceUrl, setSourceUrl] = useState(spec.url ?? "")
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string>()
   const [urlError, setUrlError] = useState<string>()
@@ -57,7 +163,9 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
   const userSelectedText = useRef(false)
   const editButton = useRef<HTMLButtonElement>(null)
   const urlRequest = useRef<AbortController | null>(null)
-  const [savedDraft] = useState(() => !!PROFILE_URL && profileDraft(PROFILE_URL) !== undefined)
+  const [savedDraft] = useState(
+    () => !!PROFILE_URL && configDraft(spec.kind, PROFILE_URL) !== undefined,
+  )
   const losesTransaction = useLeavingLosesTransaction()
 
   const selectText = () => {
@@ -76,12 +184,12 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
   useEffect(() => () => urlRequest.current?.abort(), [])
 
   useEffect(() => {
-    if (!PROFILE_URL) {
-      setLoadError("This build has no config profile URL.")
+    if (!PROFILE_URL || !spec.url) {
+      setLoadError(words.noUrl)
       setLoading(false)
       return
     }
-    const draft = profileDraft(PROFILE_URL)
+    const draft = configDraft(spec.kind, PROFILE_URL)
     if (draft !== undefined) {
       setText(draft)
       setSummaryText(draft)
@@ -89,9 +197,13 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
       return
     }
     const controller = new AbortController()
-    void fetch(PROFILE_URL, { cache: "no-store", signal: controller.signal })
+    void fetch(spec.url, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
-        if (!response.ok) throw new Error(`Profile fetch returned ${response.status}`)
+        if (!response.ok)
+          throw new WalletError(
+            "config.invalid",
+            fmt(words.fetchFailed, { status: response.status }),
+          )
         const candidate = JSON.stringify(await response.json(), null, 2)
         if (!controller.signal.aborted && !userSelectedText.current) {
           setText(candidate)
@@ -106,34 +218,29 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
         if (!controller.signal.aborted) setLoading(false)
       })
     return () => controller.abort()
-  }, [])
+  }, [spec, words])
 
   const parsed = useMemo(() => {
     if (!text) return undefined
     try {
-      return { value: validate(text) }
+      return { value: spec.validate(text) }
     } catch (error) {
       // eslint-disable-next-line local/message-in-state -- debt
       return { error: (error as Error).message }
     }
-  }, [text])
-  const profile = parsed?.value?.profile
-  const version = parsed?.value?.version
+  }, [spec, text])
+  const summary = parsed?.value
   const issues = urlError
     ? errorMessages(urlError)
     : parsed?.error
     ? errorMessages(parsed.error)
     : []
-  const assets = version?.assets?.map((asset) => asset.symbol).join(", ") || "None listed"
-  const overridden = [
-    import.meta.env.VITE_NODE_URL && "L2 RPC",
-    import.meta.env.VITE_L1_RPC_URL && "L1 RPC",
-  ].filter(Boolean)
+  const overridden = summary?.overridden ?? []
 
   const save = () => {
     if (!PROFILE_URL || !parsed?.value || losesTransaction || loadingUrl) return
     try {
-      saveProfileDraft(PROFILE_URL, text)
+      saveConfigDraft(spec.kind, PROFILE_URL, text)
       void reloadPage()
     } catch (error) {
       // eslint-disable-next-line local/message-in-state -- debt
@@ -143,7 +250,7 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
   const reset = () => {
     if (losesTransaction || loadingUrl) return
     try {
-      clearProfileDraft()
+      clearConfigDraft(spec.kind)
       void reloadPage()
     } catch (error) {
       // eslint-disable-next-line local/message-in-state -- debt
@@ -155,7 +262,7 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
     urlRequest.current?.abort()
     setLoadingUrl(false)
     setText(summaryText)
-    setSourceUrl(PROFILE_URL ?? "")
+    setSourceUrl(spec.url ?? "")
     setUrlError(undefined)
     setSaveError(undefined)
     setShowErrors(false)
@@ -169,7 +276,7 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
       url = new URL(sourceUrl.trim(), location.href)
       if (!sourceUrl.trim() || !["http:", "https:"].includes(url.protocol)) throw new Error()
     } catch {
-      setUrlError("Enter an HTTP(S) profile URL.")
+      setUrlError(words.enterUrl)
       return
     }
 
@@ -179,9 +286,10 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
     setUrlError(undefined)
     try {
       const response = await fetch(url.href, { cache: "no-store", signal: controller.signal })
-      if (!response.ok) throw new Error(`Profile fetch returned ${response.status}`)
+      if (!response.ok)
+        throw new WalletError("config.invalid", fmt(words.fetchFailed, { status: response.status }))
       const candidate = JSON.stringify(await response.json(), null, 2)
-      validate(candidate)
+      spec.validate(candidate)
       if (controller.signal.aborted) return
       selectText()
       setText(candidate)
@@ -197,23 +305,23 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
 
   return (
     <PageModal
-      title="Config profile"
+      title={words.title}
       onClose={onClose}
       fitContent={!editing}
       footer={
         <div className="ww-config-profile__actions">
           {editing ? (
             <PrimaryGradientButton
-              title="Save & reload"
+              title={copy.saveAndReload}
               isDisabled={!parsed?.value || losesTransaction || loadingUrl}
               onClick={save}
             />
           ) : (
-            <PrimaryGradientButton title="Edit JSON" onClick={() => setEditing(true)} />
+            <PrimaryGradientButton title={copy.editJson} onClick={() => setEditing(true)} />
           )}
           {savedDraft && (
             <PrimaryGradientButton
-              title="Use live profile"
+              title={words.useLive}
               buttonStyle="secondary"
               isDisabled={losesTransaction || loadingUrl}
               onClick={reset}
@@ -222,16 +330,14 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
         </div>
       }
     >
-      {profile && version && !editing && (
+      {summary && !editing && (
         <div className="ww-config-profile__identity">
-          <div className="ww-config-profile__identity-field">
-            <strong>Profile Name</strong>
-            <span>{profile.profileId}</span>
-          </div>
-          <div className="ww-config-profile__identity-field">
-            <strong>Current version</strong>
-            <span>{profile.current}</span>
-          </div>
+          {summary.identity.map(([label, value]) => (
+            <div key={label} className="ww-config-profile__identity-field">
+              <strong>{label}</strong>
+              <span>{value}</span>
+            </div>
+          ))}
         </div>
       )}
       <PageModalPanel scrollable={!editing}>
@@ -242,38 +348,24 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
               : "ww-config-profile__body"
           }
         >
-          {savedDraft && <span className="ww-config-profile__badge">Session draft active</span>}
-          {loading && <p>Loading profile…</p>}
+          {savedDraft && <span className="ww-config-profile__badge">{copy.draftActive}</span>}
+          {loading && <p>{words.loading}</p>}
           {loadError && (
             <p className="ww-config-profile__error" role="alert">
               {loadError}
             </p>
           )}
           <div className="ww-config-profile__editor-section">
-            {profile && version && !editing && (
+            {summary && !editing && (
               <div className="ww-config-profile__summary">
-                <SummaryRow label="Network" value={profile.network} />
-                <SummaryRow label="L1 chain" value={String(profile.shared.l1ChainId)} />
-                <SummaryRow label="Rollup" value={profile.shared.rollupVersion} />
-                <SummaryRow label="XMTP" value={profile.shared.xmtpEnv} />
-                <SummaryRow label="L1 RPC" value={version.l1RpcUrl} />
-                <SummaryRow label="L2 RPC" value={version.nodeUrl} />
-                <SummaryRow label="Bundler RPC" value="Not in profile" />
-                <SummaryRow label="Account service" value={version.accountServiceUrl} />
-                <SummaryRow label="zk.money API" value={version.zkmoneyApiUrl ?? "Disabled"} />
-                <SummaryRow label="Paylink domain" value={version.paylinkDomain} />
-                <SummaryRow label="Tokens" value={assets} />
-                <SummaryRow label="Oxide portal" value={version.oxide.portal} />
-                <SummaryRow label="Oxide manifest" value={version.oxide.manifestUrl} />
-                <SummaryRow
-                  label="Contracts"
-                  value={`${Object.keys(version.contracts).length} entries`}
-                />
+                {summary.rows.map(([label, value]) => (
+                  <SummaryRow key={label} label={label} value={value} />
+                ))}
               </div>
             )}
             {editing && (
               <div className="ww-config-profile__json-panel">
-                <label htmlFor="ww-config-profile-url">Profile JSON URL</label>
+                <label htmlFor="ww-config-profile-url">{words.urlLabel}</label>
                 <form
                   className="ww-config-profile__url-row"
                   noValidate
@@ -299,10 +391,10 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
                     aria-describedby={urlError ? "ww-config-profile-issues" : undefined}
                   />
                   <button type="submit" disabled={loadingUrl || !sourceUrl.trim()}>
-                    {loadingUrl ? "Loading…" : "Load JSON"}
+                    {loadingUrl ? copy.loadingJson : copy.loadJson}
                   </button>
                 </form>
-                <label htmlFor="ww-config-profile-json">Profile JSON</label>
+                <label htmlFor="ww-config-profile-json">{words.jsonLabel}</label>
                 <textarea
                   id="ww-config-profile-json"
                   value={text}
@@ -329,19 +421,17 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
                 className="ww-config-profile__view"
                 onClick={backToSummary}
               >
-                Back to summary
+                {copy.backToSummary}
               </button>
             )}
           </div>
           {overridden.length > 0 && (
             <p className="ww-config-profile__note">
-              Build settings override these profile fields: {overridden.join(", ")}.
+              {fmt(copy.overridden, { fields: overridden.join(", ") })}
             </p>
           )}
           {new URLSearchParams(location.search).has("demo") && (
-            <p className="ww-config-profile__note">
-              Demo mode uses its own profile. This draft applies when the real wallet boots.
-            </p>
+            <p className="ww-config-profile__note">{words.demo}</p>
           )}
           {issues.length > 0 && (
             <div
@@ -350,17 +440,25 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
               role="status"
             >
               <span>
-                {issues.length} {issues.length === 1 ? "error" : "errors"}{" "}
-                {urlError ? "loading the JSON" : "in the supplied JSON"}
+                {fmt(
+                  urlError
+                    ? issues.length === 1
+                      ? copy.issues.loadingOne
+                      : copy.issues.loadingMany
+                    : issues.length === 1
+                    ? copy.issues.suppliedOne
+                    : copy.issues.suppliedMany,
+                  { count: issues.length },
+                )}
               </span>
               <button type="button" onClick={() => setShowErrors(true)}>
-                Show errors
+                {copy.showErrors}
               </button>
             </div>
           )}
           {losesTransaction && (
             <p className="ww-config-profile__error" role="alert">
-              A transaction is still being sent. Wait for it to finish before reloading.
+              {copy.losesTransaction}
             </p>
           )}
           {saveError && (
@@ -374,13 +472,17 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
         createPortal(
           <Modal
             variant="bare"
-            label="JSON errors"
+            label={copy.jsonErrors}
             onClose={() => setShowErrors(false)}
             className="ww-error-modal ww-config-profile__errors-modal"
           >
             <div className="ww-config-profile__errors-header">
-              <span className="zkm-type-title-sm">JSON errors</span>
-              <TopNavIconButton icon="x" ariaLabel="Close" onClick={() => setShowErrors(false)} />
+              <span className="zkm-type-title-sm">{copy.jsonErrors}</span>
+              <TopNavIconButton
+                icon="x"
+                ariaLabel={copy.close}
+                onClick={() => setShowErrors(false)}
+              />
             </div>
             <div className="ww-config-profile__errors-surface">
               <div className="ww-config-profile__errors-scroll">

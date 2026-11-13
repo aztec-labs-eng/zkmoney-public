@@ -51,6 +51,7 @@ export const ENTRY_READY: EntryConditions = {
   historicBalance: false,
   balance: 10n * DAI,
   fundingAmount: 2n * DAI,
+  credited: (14n * DAI) / 10n,
   chunk: { kind: "fits" },
   plan: true,
   usesLeft: true,

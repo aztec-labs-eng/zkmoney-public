@@ -10,8 +10,14 @@
  */
 import type { Pace } from "@obsidion/core/cadence"
 import { useState } from "react"
+import exitCopy from "./SwapExitModal.copy"
 import { isAddress, type Address, type Hex } from "viem"
-import { truncateMiddle, type SavingsMoveRecord, type WithdrawalRecord } from "@obsidion/front-core"
+import {
+  truncateMiddle,
+  WalletError,
+  type MoveRecord,
+  type WithdrawalRecord,
+} from "@obsidion/front-core"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
 import {
   ConfirmationSheetDetailRow,
@@ -44,14 +50,10 @@ import {
 import type { WalletPromptToken } from "../../session/walletPrompt"
 import { WalletPromptNote } from "../deposit/WalletPromptNote/WalletPromptNote"
 import { ExitWalletRow } from "./ExitWalletRow"
-import {
-  executeSwapWithdrawal,
-  recoverSkyEscrowMove,
-  recoverSwapWithdrawal,
-  runSkyEscrowMove,
-} from "./swapRecovery"
+import { executeSwapWithdrawal, recoverSwapWithdrawal, type MoveSendWatch } from "./swapRecovery"
 import type { SwapExitReason } from "@obsidion/front-core"
 import { escrowHeldSymbol, unswappableCopy } from "./unswappableCopy"
+import { fmt } from "../../lib/fmt"
 
 /** Which exit the user is running. */
 type ExitAction = "execute" | "recover"
@@ -74,11 +76,6 @@ const EXECUTE_COPY =
 
 const RECOVER_SECONDARY_COPY = "Or send the DAI to an Ethereum address instead of swapping it."
 
-const moveExecuteCopy = (to: string) =>
-  `No relayer has run this move. You can run it yourself: the funds go on to ${to}, the tip this move set aside for whoever runs it comes back to your wallet, and you pay only the gas. If a relayer gets there first this transaction completes without doing anything.`
-
-const MOVE_RECOVER_SECONDARY_COPY = "Or send the DAI to an Ethereum address instead of moving it."
-
 export function SwapExitModal({
   record,
   reason,
@@ -87,29 +84,41 @@ export function SwapExitModal({
   pace,
   onClose,
 }: {
-  record: WithdrawalRecord
   reason: SwapExitReason
   /** A paylink visitor's cash-out: the recipient's wallet signs the recovery. */
   linkFragment?: string
-  /** A Savings move whose escrow `record`'s release funded: its run goes on to the move's destination. */
-  move?: SavingsMoveRecord
   /** The page's: the L1 receipt wait polls at its interval. */
   pace: Pick<Pace, "foreignMs">
   onClose: () => void
-}) {
+} & (
+  | { record: WithdrawalRecord; move?: undefined }
+  | {
+      /** The move's burn, when this device made it. */
+      record?: WithdrawalRecord
+      /**
+       * A stalled Savings move: `run` once its release funded the escrow, which goes on to the
+       * move's destination; recovery sends the escrow's DAI back to L1.
+       */
+      move: { record: MoveRecord; run: boolean }
+    }
+)) {
   const session = useSession()
   const { config } = session.page
   const { l1TxUrl } = l1Links(config)
   const bridgeMode = isDesktopL1SubmitActive()
   const l1 = useL1Wallet({ expectedChainId: config.l1ChainId, rpcUrl: config.l1RpcUrl })
   const { copied, copy } = useCopy()
+  const swap = move ? undefined : record
+  const moved = move?.record
   // The tracker may park the escrow `recoverable` while the sheet is open; a swap sent then reverts.
-  const canExecute = move ? true : reason === "stuck" && record.phase === "swapping"
+  const canExecute = move ? move.run : reason === "stuck" && swap?.phase === "swapping"
   // A move's burn paid its escrow, so there is no recipient of its own to recover to.
-  const moveTo = move?.direction === "in" ? "Savings" : "Main Account"
-  const held = escrowHeldSymbol(record)
+  const moveTo = moved?.direction === "in" ? "Savings" : "Main Account"
+  const moveValue = moved && (moved.direction === "in" ? moved.amount : moved.quote?.expectedOut)
+  const moveEscrow = moved?.rail === "skyEscrow" ? moved.escrow.address : undefined
+  const held = swap ? escrowHeldSymbol(swap) : "DAI"
 
-  const [destination, setDestination] = useState<string>(move ? "" : record.recipient)
+  const [destination, setDestination] = useState<string>(swap?.recipient ?? "")
   const [phase, setPhase] = useState<"form" | "working" | "done">("form")
   const [action, setAction] = useState<ExitAction>(canExecute ? "execute" : "recover")
   const [stage, setStage] = useState<L1ExitStage>()
@@ -129,15 +138,42 @@ export function SwapExitModal({
   const target = typedValid ? (destination as Address) : null
   // The recovered-to address is screened like the recipient was at withdraw time.
   const { verdict, cleared, rescreen } = useScreenedAddress(target, "withdraw")
-  const amount = move
-    ? move.value
-      ? usdAtomicFloor(BigInt(move.value))
-      : "the move's funds"
-    : `${record.amount} ${record.tokenSymbol}`
+  const amount = swap
+    ? `${swap.amount} ${swap.tokenSymbol}`
+    : moveValue !== undefined
+    ? usdAtomicFloor(moveValue)
+    : "the move's funds"
   const connected = bridgeMode || (!!l1.account && !l1.wrongChain)
   const readyToExecute = connected
   const readyToRecover = connected && !!target && cleared
-  const enteredAt = record.phaseEnteredAt ?? record.startTime
+  const startedAt = record?.startTime ?? moved?.startTime ?? 0
+  const enteredAt = record?.phaseEnteredAt ?? startedAt
+
+  /**
+   * The move's run or recovery, with the account's keys; each opens its own L1 channel, which
+   * reports to `watch`.
+   */
+  const exitMove = async (
+    record: MoveRecord,
+    next: ExitAction,
+    to: Address | null,
+    watch: MoveSendWatch,
+  ) => {
+    const moves = await session.moveCommands?.ready()
+    if (!moves) throw new WalletError("account.locked", "moves need a signed-in account")
+    if (next === "execute") return moves.run(record.id, watch)
+    if (!to) throw new WalletError("invariant", "a recovery needs an address")
+    return moves.recover(record.id, to, watch)
+  }
+
+  const send = (next: ExitAction, opts: Parameters<typeof executeSwapWithdrawal>[1]) => {
+    if (swap)
+      return next === "recover"
+        ? recoverSwapWithdrawal(swap, opts)
+        : executeSwapWithdrawal(swap, opts)
+    if (!moved) throw new WalletError("invariant", "an exit needs a withdrawal or a move")
+    return exitMove(moved, next, target, { ...opts, burn: record })
+  }
 
   const submit = async (next: ExitAction) => {
     if (prompt.openElsewhere) {
@@ -167,20 +203,14 @@ export function SwapExitModal({
     }
     try {
       request = prompt.begin()
-      const hash = move
-        ? next === "recover"
-          ? await recoverSkyEscrowMove(session.savingsMoves, move, record, opts)
-          : await runSkyEscrowMove(record, opts)
-        : next === "recover"
-        ? await recoverSwapWithdrawal(record, opts)
-        : await executeSwapWithdrawal(record, opts)
+      const hash = await send(next, opts)
       setTxHash(hash)
       setPhase("done")
       // Reason and timing only — the addresses are as identifying as the withdrawal itself.
       fireEvent(next === "execute" ? "withdrawal_swap_executed" : "withdrawal_swap_recovered", {
         duration_ms: elapsed(),
         reason,
-        kind: withdrawKind(record),
+        kind: swap ? withdrawKind(swap) : "savings",
       })
     } catch (e) {
       setPhase("form")
@@ -203,7 +233,7 @@ export function SwapExitModal({
   const title = move
     ? phase === "done"
       ? action === "execute"
-        ? "Move sent on"
+        ? exitCopy.moveSent
         : "Move recovered"
       : "Move taking too long"
     : phase === "done"
@@ -234,7 +264,11 @@ export function SwapExitModal({
         {phase === "form" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <p style={{ color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.5, margin: 0 }}>
-              {move ? moveExecuteCopy(moveTo) : canExecute ? EXECUTE_COPY : unswappableCopy(record)}
+              {move
+                ? move.run
+                  ? fmt(exitCopy.moveRun, { to: moveTo })
+                  : exitCopy.moveRecover
+                : swap && (canExecute ? EXECUTE_COPY : unswappableCopy(swap))}
             </p>
 
             {!bridgeMode && <ExitWalletRow l1={l1} chainName={config.l1Chain.name} />}
@@ -246,26 +280,26 @@ export function SwapExitModal({
 
             <div>
               <ConfirmationSheetDetailRow label="Amount" value={amount} />
-              <ConfirmationSheetDetailRow label="Started" value={whenLabel(record.startTime)} />
+              <ConfirmationSheetDetailRow label={exitCopy.started} value={whenLabel(startedAt)} />
               <ConfirmationSheetDetailRow
                 label="Waiting"
                 value={waitedLabel(Date.now() - enteredAt)}
               />
-              {(move?.escrow ?? record.swapEscrow) && (
+              {(moveEscrow ?? swap?.swapEscrow) && (
                 <ConfirmationSheetDetailRow
                   label="Escrow"
-                  value={shortL1Addr(move?.escrow ?? record.swapEscrow!)}
+                  value={shortL1Addr(moveEscrow ?? swap!.swapEscrow!)}
                 />
               )}
-              {move ? (
-                <ConfirmationSheetDetailRow label="To" value={moveTo} />
-              ) : (
+              {swap ? (
                 <ConfirmationSheetDetailRow
                   label="Recipient"
-                  value={`${record.swapOutput} to ${
-                    record.recipientAlias ?? truncateMiddle(record.recipient, 12)
+                  value={`${swap.swapOutput} to ${
+                    swap.recipientAlias ?? truncateMiddle(swap.recipient, 12)
                   }`}
                 />
+              ) : (
+                <ConfirmationSheetDetailRow label={exitCopy.to} value={moveTo} />
               )}
               <ConfirmationSheetDetailRow
                 label="Network"
@@ -275,7 +309,7 @@ export function SwapExitModal({
 
             {canExecute && (
               <PrimaryGradientButton
-                title={move ? "Run the move now" : "Run the swap now"}
+                title={move ? exitCopy.runMove : exitCopy.runSwap}
                 isDisabled={!readyToExecute}
                 onClick={() => void submit("execute")}
               />
@@ -285,7 +319,7 @@ export function SwapExitModal({
               <p
                 style={{ color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.5, margin: 0 }}
               >
-                {move ? MOVE_RECOVER_SECONDARY_COPY : RECOVER_SECONDARY_COPY}
+                {move ? exitCopy.moveRecoverInstead : RECOVER_SECONDARY_COPY}
               </p>
             )}
             <TextField
@@ -362,12 +396,12 @@ export function SwapExitModal({
                   margin: "12px 0 0",
                 }}
               >
-                {action === "execute" && move
-                  ? `Sent on to ${moveTo}. It shows there once it is claimed.`
-                  : action === "execute"
-                  ? `Swapped to ${record.swapOutput} and sent to ${
-                      record.recipientAlias ?? truncateMiddle(record.recipient, 12)
+                {action === "execute" && swap
+                  ? `Swapped to ${swap.swapOutput} and sent to ${
+                      swap.recipientAlias ?? truncateMiddle(swap.recipient, 12)
                     }.`
+                  : action === "execute"
+                  ? fmt(exitCopy.moveSentTo, { to: moveTo })
                   : `${amount} sent to ${target ? shortL1Addr(target) : "the address you chose"}.`}
               </p>
             </div>

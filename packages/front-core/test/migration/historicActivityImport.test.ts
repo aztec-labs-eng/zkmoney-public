@@ -10,12 +10,11 @@ import {
   TRANSACTIONS_STORAGE_KEY,
   scannedNetworks,
   type RetiredDatabase,
-  type SavingsMoveRecord,
   type WithdrawalRecord,
 } from "../../src/core"
 import { createTransfers } from "../../src/engine/transfers"
-import { createSavingsMoves } from "../../src/engine/savingsMoves"
-import { KEY_SAVINGS_MOVES } from "../../src/storageMigrations/savingsMoves"
+import { createMoveStore } from "../../src/engine/moves"
+import type { SavedSavingsMove } from "../../src/storageMigrations/savingsMoves"
 import { openDatabase } from "../../src/engine/database"
 import { memoryBackend } from "../../src/engine/memoryBackend"
 import { scannedRow } from "../../src/core/services/transactions/TransferEventScanner"
@@ -88,7 +87,7 @@ function database(
     rows?: Transaction[]
     deposits?: SipaDeposit[]
     withdrawals?: WithdrawalRecord[]
-    savingsMoves?: SavingsMoveRecord[]
+    savingsMoves?: Partial<SavedSavingsMove>[]
     scanned?: string[]
     extra?: Record<string, string>
   },
@@ -104,7 +103,7 @@ function database(
       Object.fromEntries(o.withdrawals.map((w) => [w.localId, w])),
     )
   if (o.savingsMoves)
-    entries[KEY_SAVINGS_MOVES] = JSON.stringify(
+    entries["@obsidion/savings/moves"] = JSON.stringify(
       Object.fromEntries(o.savingsMoves.map((m) => [m.withdrawalLocalId, m])),
     )
   for (const id of o.scanned ?? []) entries[cursorKey(id)] = "42"
@@ -129,17 +128,19 @@ function setup() {
     db: openDatabase(memoryBackend()),
     now: () => Date.now(),
   })
-  const savingsMoves = createSavingsMoves({ db: openDatabase(memoryBackend()) })
+  const moves = createMoveStore(openDatabase(memoryBackend()))
   const deps = (dbs: RetiredDatabase[], ownsStorage?: () => boolean) => ({
     storage,
     readOtherDatabases: readOf(dbs),
     transactions,
     sipaDeposits,
     withdrawals,
-    savingsMoves,
+    moves,
+    skyHolding: { id: "fea-sky", factory: `0x${"fa".repeat(20)}` },
+    now: () => 5_000,
     ownsStorage,
   })
-  return { storage, transactions, sipaDeposits, sipaBackend, withdrawals, savingsMoves, deps }
+  return { storage, transactions, sipaDeposits, sipaBackend, withdrawals, moves, deps }
 }
 
 describe("importHistoricActivity", () => {
@@ -237,41 +238,62 @@ describe("importHistoricActivity", () => {
     expect(await sipaDeposits.get("0xsipa1")).toMatchObject({ amount: "1", networkId: ACTIVE })
   })
 
-  it("carries a settled withdrawal's Savings move as retired, over a move adopted from its burn", async () => {
-    const { savingsMoves, deps } = setup()
-    const move = (localId: string, extra: Partial<SavingsMoveRecord> = {}) =>
-      ({
-        withdrawalLocalId: localId,
-        direction: "in",
-        amount: "5",
-        startTime: 1,
-        ...extra,
-      } as SavingsMoveRecord)
-    await savingsMoves.put(move("w1"))
-    const claimed = { inboxIndex: "1", amount: "5", claimed: true }
+  it("carries a settled Sky burn's Savings move into the moves store, unsettled ones as migrated", async () => {
+    const { moves, deps } = setup()
+    const skyMove = {
+      direction: "in",
+      factory: `0x${"fa".repeat(20)}`,
+      recipientCommitment: `0x${"0c".repeat(32)}`,
+      recoveryCommitment: `0x${"0d".repeat(32)}`,
+      relayerTip: "2",
+      nonce: `0x${"01".repeat(32)}`,
+    } as const
+    const move = (localId: string, extra: Partial<SavedSavingsMove> = {}) => ({
+      withdrawalLocalId: localId,
+      direction: "in" as const,
+      escrow: `0x${"ee".repeat(20)}` as const,
+      nonce: skyMove.nonce,
+      recipientCommitment: skyMove.recipientCommitment,
+      amount: "5",
+      startTime: 1,
+      ...extra,
+    })
     const db = database("7", {
       scanned: [OLD],
-      withdrawals: [withdrawal({}), withdrawal({ localId: "w2", phase: "submitting" })],
-      savingsMoves: [move("w1", { deposit: claimed }), move("w2")],
+      withdrawals: [
+        withdrawal({ skyMove }),
+        withdrawal({ localId: "w2", skyMove }),
+        withdrawal({ localId: "w3", phase: "submitting", skyMove }),
+        withdrawal({ localId: "w4" }),
+        // Its move does not read: it is skipped, and the rest carried.
+        withdrawal({ localId: "w5", skyMove }),
+      ],
+      savingsMoves: [
+        move("w1", {
+          deposit: { inboxIndex: "1", amount: "4", claimed: true, at: 2 },
+          vault: { assets: "3" },
+        }),
+        move("w2"),
+        move("w3"),
+        move("w4"),
+        { withdrawalLocalId: "w5", amount: "5" },
+      ],
     })
 
-    expect((await importHistoricActivity(deps([db])))?.savingsMoves).toBe(1)
-    expect(await savingsMoves.all()).toEqual([
-      { ...move("w1", { deposit: claimed }), retired: true },
-    ])
-  })
-
-  it("skips a retired Savings move that does not read, and carries the rest", async () => {
-    const { savingsMoves, deps } = setup()
-    const good = { withdrawalLocalId: "w1", direction: "in", amount: "5", startTime: 1 }
-    const db = database("7", {
-      scanned: [OLD],
-      withdrawals: [withdrawal({}), withdrawal({ localId: "w2" })],
-      savingsMoves: [good, { withdrawalLocalId: "w2", amount: "5" }] as SavingsMoveRecord[],
+    expect((await importHistoricActivity(deps([db])))?.savingsMoves).toBe(2)
+    await moves.ready
+    const byId = Object.fromEntries(moves.view.get().records.map((r) => [r.withdrawalLocalId, r]))
+    expect(Object.keys(byId).sort()).toEqual(["w1", "w2"])
+    expect(byId.w1).toMatchObject({
+      holdingId: "fea-sky",
+      rail: "skyEscrow",
+      escrow: { factory: skyMove.factory, address: move("w1").escrow, tip: 2n },
+      phase: "claimed",
+      amount: 5n,
+      assets: 3n,
+      deposit: { inboxIndex: 1n, amount: 4n, at: 2 },
     })
-
-    expect((await importHistoricActivity(deps([db])))?.savingsMoves).toBe(1)
-    expect(await savingsMoves.all()).toEqual([{ ...good, retired: true }])
+    expect(byId.w2).toMatchObject({ phase: "migrated", endTime: 5_000 })
   })
 
   it("dedups link rows by link when they carry no hash", async () => {
@@ -322,6 +344,39 @@ describe("importHistoricActivity", () => {
     ])
     expect((await loadRecords(sipaDeposits.view)).map((d) => d.sipaAddress)).toEqual(["0xsipa8"])
     expect([...(await withdrawals.all())].sort((a, b) => b.startTime - a.startTime)).toEqual([])
+  })
+
+  it("imports retired Savings moves on a later boot when no Sky holding was read", async () => {
+    const { storage, moves, deps } = setup()
+    const skyMove = {
+      direction: "in",
+      factory: `0x${"fa".repeat(20)}`,
+      recipientCommitment: `0x${"0c".repeat(32)}`,
+      recoveryCommitment: `0x${"0d".repeat(32)}`,
+      relayerTip: "2",
+      nonce: `0x${"01".repeat(32)}`,
+    } as const
+    const db = database("7", {
+      scanned: [OLD],
+      withdrawals: [withdrawal({ skyMove })],
+      savingsMoves: [
+        {
+          withdrawalLocalId: "w1",
+          direction: "in",
+          escrow: `0x${"ee".repeat(20)}`,
+          nonce: skyMove.nonce,
+          recipientCommitment: skyMove.recipientCommitment,
+          amount: "5",
+          startTime: 1,
+        },
+      ],
+    })
+    const { skyHolding: _sky, ...unheld } = deps([db])
+    expect((await importHistoricActivity(unheld))?.savingsMoves).toBe(0)
+    expect(await storage.getItem(HISTORIC_ACTIVITY_IMPORTED_KEY)).toBeNull()
+    expect((await importHistoricActivity(deps([db])))?.savingsMoves).toBe(1)
+    expect((await loadRecords(moves.view)).map((r) => r.withdrawalLocalId)).toEqual(["w1"])
+    expect(await storage.getItem(HISTORIC_ACTIVITY_IMPORTED_KEY)).not.toBeNull()
   })
 
   it("a failed read leaves no marker", async () => {

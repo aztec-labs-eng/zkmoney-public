@@ -8,7 +8,8 @@ import type { Pace } from "@obsidion/core/cadence"
 import { toHex, type Address, type Hex } from "viem"
 import type { Config } from "wagmi"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
-import type { OldVersionRefund, OldVersionWithdrawal, SavingsMoves } from "@obsidion/front-core"
+import type { OldVersionRefund, OldVersionWithdrawal } from "@obsidion/front-core"
+import type { RefundedMoves } from "../deposit/recovery/refundedMoves"
 import type { WebWalletConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
@@ -135,7 +136,7 @@ async function refundChannel(
 /** Send `refund` of `record` over whichever channel this build has. Resolves to the L1 tx hash. */
 export async function selfRefundOldVersion(
   config: WebWalletConfig,
-  moves: SavingsMoves,
+  moves: RefundedMoves,
   record: OldVersionWithdrawal,
   refund: OldVersionRefund,
   opts: SelfRefundOptions,

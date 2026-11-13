@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, onTestFinished, vi } from "vitest"
 import { zeroAddress, type Address } from "viem"
 import { createPace } from "@obsidion/core/cadence"
 import type { Holding } from "@obsidion/core/oxide"
@@ -19,6 +19,8 @@ import { FakeL1 } from "../../oxide/pipeline/fakeL1"
 
 const ONE = 10n ** 18n
 const vault = (n: number) => `0x${String(n).padStart(2, "0").repeat(20)}` as Address
+/** The vaults' asset: 6 decimals, as USDC under a Psm holding. */
+const ASSET = vault(99)
 const holdingOn = (address: string) => ({ held: { underlying: address } } as Pick<Holding, "held">)
 
 /**
@@ -28,7 +30,8 @@ const holdingOn = (address: string) => ({ held: { underlying: address } } as Pic
 function vaultL1(vaults: Address[], now: bigint, then = ONE, head = 1_000_000n) {
   const l1 = new FakeL1({ factory: zeroAddress, table: zeroAddress, portals: [] })
   l1.head = head
-  for (const v of vaults) l1.vault(v, 18, (block) => (block === head ? now : then))
+  l1.token(ASSET, "USDC", 6)
+  for (const v of vaults) l1.vault(v, 18, (block) => (block === head ? now : then), ASSET)
   const reading = new Set<string>()
   let mostAtOnce = 0
   l1.before = async (call) => {
@@ -45,15 +48,20 @@ function world(l1: FakeL1) {
   let t = 1_000
   const query = queries({ pace: createPace(), visible: memoryStore(true).readonly, now: () => t })
   return {
-    prices: holdingPrices(query, l1.client, () => t),
+    prices: holdingPrices(
+      query,
+      () => l1.client,
+      () => t,
+    ),
     pass: (ms: number) => (t += ms),
   }
 }
 
-/** The head, decimals and price reads `l1` has answered. */
+/** The head, decimals, asset and price reads `l1` has answered. */
 const readsOf = (l1: FakeL1) => [
   l1.count({ method: "eth_blockNumber" }),
   l1.count({ fn: "decimals" }),
+  l1.count({ fn: "asset" }),
   l1.count({ fn: "convertToAssets" }),
 ]
 
@@ -68,16 +76,19 @@ describe("holdingPrices", () => {
     const read = () => Promise.all(vaults.map((v) => prices(holdingOn(v)).read()))
 
     const first = await read()
-    expect(first.map((p) => p.sharePrice)).toEqual(vaults.map(() => GROWN))
-    expect(readsOf(l1)).toEqual([1, 5, 10])
+    expect(first.map((p) => [p.sharePrice, p.shareDecimals, p.assetDecimals])).toEqual(
+      vaults.map(() => [GROWN, 18, 6]),
+    )
+    // Each vault's share and asset decimals, and its asset.
+    expect(readsOf(l1)).toEqual([1, 10, 5, 10])
     expect(mostAtOnce()).toBe(3)
 
     await read()
-    expect(readsOf(l1)).toEqual([1, 5, 10])
+    expect(readsOf(l1)).toEqual([1, 10, 5, 10])
 
     pass(HOLDING_PRICE_EVERY_MS)
     await read()
-    expect(readsOf(l1)).toEqual([2, 5, 20])
+    expect(readsOf(l1)).toEqual([2, 10, 5, 20])
   })
 
   it.each([
@@ -90,17 +101,28 @@ describe("holdingPrices", () => {
     { case: "a zero earlier price has none", then: 0n, now: GROWN },
     { case: "a failed earlier read has none", then: ONE, now: GROWN, pruned: true },
     {
+      case: "a vault younger than a window has none",
+      then: ONE,
+      now: GROWN,
+      deployedAt: HEAD - RATE_WINDOW_BLOCKS + 1n,
+    },
+    {
       case: "a chain younger than a window has none",
       then: ONE,
       now: GROWN,
       head: RATE_WINDOW_BLOCKS,
     },
-  ])("rate: $case", async ({ then, now, rate, pruned, head = HEAD }) => {
+  ])("rate: $case", async ({ then, now, rate, pruned, deployedAt, head = HEAD }) => {
     const { l1 } = vaultL1([vault(1)], now, then, head)
     if (pruned) l1.failing = (call) => call.block === HEAD - RATE_WINDOW_BLOCKS
+    if (deployedAt) l1.deployedAt.set(vault(1), deployedAt)
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    onTestFinished(() => warn.mockRestore())
     const price = await world(l1)
       .prices(holdingOn(vault(1)))
       .read()
+    // Only a read that failed is logged; a vault with no price a window back is a state.
+    expect(warn).toHaveBeenCalledTimes(pruned ? 1 : 0)
 
     expect(price).toMatchObject({ sharePrice: now, shareDecimals: 18, readAt: 1_000 })
     if (rate === undefined) expect(price.rate).toBeUndefined()
@@ -129,13 +151,13 @@ describe("holdingPrices", () => {
     l1.failing = (call) => call.method === "eth_blockNumber"
     await spent(vaults.map(() => "rejected"))
     l1.failing = () => false
-    // The head is read again; the decimals read beside the failed head are not.
-    expect(await spent(ALL)).toEqual([1, 0, 8])
-    expect(l1.count({ fn: "decimals" })).toBe(4)
+    // The head is read again; the decimals and asset read beside the failed head are not.
+    expect(await spent(ALL)).toEqual([1, 0, 0, 8])
+    expect(l1.count({ fn: "decimals" })).toBe(8)
 
     pass(HOLDING_PRICE_EVERY_MS)
     l1.failing = (call) => call.to === vaults[0] && call.fn === "convertToAssets" && !call.block
-    expect(await spent(["rejected", ...ALL.slice(1)])).toEqual([1, 0, 8])
+    expect(await spent(["rejected", ...ALL.slice(1)])).toEqual([1, 0, 0, 8])
     expect(prices(holdingOn(vaults[0]!)).get()).toMatchObject({
       status: "ready",
       value: { sharePrice: GROWN },

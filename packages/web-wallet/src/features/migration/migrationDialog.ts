@@ -29,8 +29,6 @@ export interface UpgradeStatus {
   phase?: MetadataMigrationPhase
   /** The upgrade also updates the account's registration for this version. */
   registration: boolean
-  /** The run stops if the app closes now. */
-  keepOpen?: boolean
 }
 
 // eslint-disable-next-line no-restricted-syntax -- debt
@@ -67,14 +65,14 @@ export function setUpgradeStatus(next: UpgradeStatus): void {
   if (
     now.state !== next.state ||
     now.phase !== next.phase ||
-    now.registration !== next.registration ||
-    now.keepOpen !== next.keepOpen
+    now.registration !== next.registration
   ) {
     status.set(next)
   }
 }
 
 export const upgradeStatus = (): UpgradeStatus => status.get()
+export const upgradeStatusStore = status.readonly
 
 export function useUpgradeStatus(): UpgradeStatus {
   return useSyncExternalStore(status.subscribe, status.get)

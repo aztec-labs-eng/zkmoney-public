@@ -4,4 +4,3 @@ import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 export function isWalletTokenSymbol(symbol: string | undefined | null): boolean {
   return !!symbol && symbol.toUpperCase() === WALLET_TOKEN_SYMBOL.toUpperCase()
 }
-

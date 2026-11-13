@@ -12,17 +12,11 @@ import type { Config } from "wagmi"
 import { decodePaylinkInline, L1SwapEscrowReader } from "@obsidion/sdk"
 import {
   createOxideL1Reader,
-  deriveSkyEscrowSalts,
   deriveSwapEscrowRecoverySalt,
-  runSkyEscrow,
-  runSkyEscrowRecovery,
   escrowLeg,
   runSwapEscrowExecute,
   runSwapEscrowRecovery,
   signAccountDigestWithPasskey,
-  skyEscrowLeg,
-  type SavingsMoveRecord,
-  type SavingsMoves,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
 import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
@@ -53,6 +47,12 @@ export interface SwapExitOptions {
   session: Pick<Session, "withdrawals" | "auth" | "page">
 }
 
+/** The helper page's line for what a burn took. */
+const amountLine = (burn: Pick<WithdrawalRecord, "amount" | "tokenSymbol">): [string, string] => [
+  "Amount",
+  `${burn.amount} ${burn.tokenSymbol}`,
+]
+
 /**
  * Where the transaction is signed. Neither exit asks who is paid by the submitter: the swap pays
  * the recipient the escrow committed to and tips whoever submits, and the recovery pays the signed
@@ -79,10 +79,7 @@ async function swapExitChannel(
     publicClient: l1PublicClient(config),
     display: {
       title,
-      lines: [
-        ["Amount", `${record.amount} ${record.tokenSymbol}`],
-        [paid.label, paid.address],
-      ],
+      lines: [amountLine(record), [paid.label, paid.address]],
     },
     onHelperOpened: opts.onHelperOpened,
     onStage: opts.onStage,
@@ -163,79 +160,40 @@ export async function recoverSwapWithdrawal(
   })
 }
 
-/** A Savings move's escrow, rebuilt from its burn's Sky meta. */
-function moveEscrow(burn: WithdrawalRecord) {
-  const leg = skyEscrowLeg(burn)
-  if (!leg) {
-    throw new Error("This move's escrow details weren't stored, so this wallet can't act on it.")
-  }
-  return leg
-}
-
-/** Run a Savings move's escrow yourself: its deposit lands and the tip comes back. Resolves to the L1 tx hash. */
-export async function runSkyEscrowMove(
-  burn: WithdrawalRecord,
-  opts: SwapExitOptions,
-): Promise<Hex> {
-  const leg = moveEscrow(burn)
-  const { reader, dai } = await escrowReader(opts.session.page)
-  const channel = await swapExitChannel(
-    burn,
-    { label: "Escrow", address: leg.escrow },
-    "Run your zk.money move",
-    opts,
-  )
-  return await runSkyEscrow({ leg, dai, channel, reader })
+/** What a sheet follows a move's L1 send by: the account it sends from, and the channel's progress. */
+export type MoveSendWatch = Pick<SwapExitOptions, "from" | "onHelperOpened" | "onStage"> & {
+  /** The move's burn, where this device holds its record. */
+  burn?: Pick<WithdrawalRecord, "amount" | "tokenSymbol">
 }
 
 /**
- * Send a Savings move's escrowed DAI to `opts.destination`, signed by the account's installed
- * passkey, and mark the move recovered.
+ * The channel a move's L1 call goes out on; the desktop helper page shows `paid`, under the
+ * amount of `watch.burn`. It reports to `watch` as a swap exit's channel does.
  */
-export async function recoverSkyEscrowMove(
-  moves: Pick<SavingsMoves, "update">,
-  move: SavingsMoveRecord,
-  burn: WithdrawalRecord,
-  opts: SwapExitOptions,
-): Promise<Hex> {
-  const to = opts.destination
-  if (!to || !isAddress(to)) {
-    throw new Error("Enter the Ethereum address that should receive the recovered funds.")
-  }
-  const leg = moveEscrow(burn)
-  const { config } = opts.session.page
-  const l1 = l1PublicClient(config)
-  const { account, secret, signAccount } = await walletRecoverer(opts.session, l1)
-  const { reader, dai } = await escrowReader(opts.session.page)
-  const channel = await swapExitChannel(
-    burn,
-    { label: "Recovered to", address: to },
-    "Recover your zk.money move",
-    opts,
-  )
-  const hash = await runSkyEscrowRecovery(
-    {
-      leg,
-      channel,
-      reader,
-      recovery: { account, salt: deriveSkyEscrowSalts(secret, move.nonce).recovery },
-      signAccount,
-      dai,
-      chainId: config.l1ChainId,
-      chainNow: async () => (await l1.getBlock()).timestamp,
-    },
-    to,
-  )
-  await moves.update(move.withdrawalLocalId, (current) => ({
-    ...(current ?? move),
-    recovered: { to, txHashes: [hash] },
-  }))
-  return hash
+export async function l1ExitChannel(
+  session: Pick<Session, "page">,
+  title: string,
+  paid: { label: string; address: Address },
+  watch: MoveSendWatch = {},
+): Promise<L1ExitChannel> {
+  const { config, pace, wagmi } = session.page
+  const { from, onHelperOpened, onStage, burn } = watch
+  if (!isDesktopL1SubmitActive())
+    return await injectedWalletChannel(config, { pace, wagmi, from, onStage })
+  return desktopBridgeChannel({
+    destination: paid.address,
+    chainId: config.l1ChainId,
+    publicClient: l1PublicClient(config),
+    display: { title, lines: [...(burn ? [amountLine(burn)] : []), [paid.label, paid.address]] },
+    onHelperOpened,
+    onStage,
+    pace,
+  })
 }
 
 type Recoverer = SwapRecoverer & { signAccount: (account: Address, digest: Hex) => Promise<Hex> }
 
-async function walletRecoverer(
+export async function walletRecoverer(
   session: Pick<Session, "auth" | "page">,
   l1: ReturnType<typeof l1PublicClient>,
 ): Promise<Recoverer> {

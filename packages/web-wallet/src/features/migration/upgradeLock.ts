@@ -31,6 +31,8 @@ const changed = () => changes.set(changes.get() + 1)
 // Accounts whose saved runs were read this page, so the lock can be trusted.
 // eslint-disable-next-line no-restricted-syntax -- debt
 const checked = memoryStore<ReadonlySet<string>>(new Set())
+/** Change whenever what `upgradeLockNow` returns may. */
+export const upgradeLockReads = [changes.readonly, checked.readonly] as const
 // Storage shows a write before it is saved: a release reads as held until it is, and a failed one stays held.
 // eslint-disable-next-line no-restricted-syntax -- debt
 const releasing = new Map<string, { lock: UpgradeLock; saved: Promise<void> }>()

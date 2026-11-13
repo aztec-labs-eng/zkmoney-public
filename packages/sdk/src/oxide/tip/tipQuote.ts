@@ -45,6 +45,13 @@ export type EthUsdSource = { chainId: bigint } | { feed: Address }
 type FeedReader = Parameters<typeof readUsdPerEth>[0]
 type TipPriceReader = FeedReader & Pick<PublicClient, "readContract">
 
+/** ETH's price in USD, `ETH_USD_FEED_DECIMALS` decimals, from `chainId`'s pinned feed; throws when stale. */
+export function readEthUsd(client: FeedReader, chainId: bigint): Promise<bigint> {
+  return readUsdPerEth(client, EthAddress.fromString(ethUsdFeedOf({ chainId })))
+}
+
+export { ETH_USD_FEED_DECIMALS }
+
 export function ethUsdFeedOf(source: EthUsdSource): Address {
   return "feed" in source
     ? source.feed

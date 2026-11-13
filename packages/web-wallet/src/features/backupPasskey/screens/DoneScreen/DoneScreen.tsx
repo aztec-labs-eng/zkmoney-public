@@ -1,8 +1,9 @@
 import { FactBox, InfoBox, KeyStatusRow, SheetCard, SheetShell } from "@obsidion/web-ds"
+import { usdFromCents } from "../../../../ui/format"
+import { addCost } from "../../backupCost"
 import { failureLine } from "../../backupFailure"
 import { relandingCopy } from "../../backupPasskeyCopy"
 import type { BackupKey, BackupSaved, BackupScreenProps } from "../../backupScreen"
-import { dollars } from "../AddTracker/AddTracker"
 import copy from "./DoneScreen.copy"
 
 const ROLE = { "sign-up": copy.signUp, "backup": copy.backup, "unknown": copy.other } as const
@@ -39,7 +40,9 @@ export function DoneScreen({ screen, actions }: BackupScreenProps<"done">) {
           <KeyStatusRow name={copy.backup} detail={savedDetail(unlisted.savedIn)} status="added" />
         )}
       </SheetCard>
-      {paid !== undefined && <FactBox facts={[{ label: copy.cost, value: dollars(paid) }]} />}
+      {paid !== undefined && (
+        <FactBox facts={[{ label: copy.cost, value: usdFromCents(addCost(paid).fee) }]} />
+      )}
       {relanding && <InfoBox title={relandingCopy.title}>{relandingCopy.line}</InfoBox>}
       {failure && (
         <p className="zkm-field__error" role="alert" style={{ margin: 0 }}>

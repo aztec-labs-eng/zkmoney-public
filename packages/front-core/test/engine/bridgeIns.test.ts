@@ -121,6 +121,20 @@ describe("bridgeInTransition", () => {
     expect(bridgeInTransition(signing, again)).toBeUndefined()
   })
 
+  it("keeps what the quote bridges only where it is not the origin coin", () => {
+    const started = (symbol: string) =>
+      bridgeInTransition(undefined, {
+        type: "started",
+        id: "bridge-in:b",
+        start: start({
+          symbol,
+          quote: { ...quote, bridged: { symbol: "USDC", amount: 20_400_000n, decimals: 6 } },
+        }),
+      })!
+    expect(started("DAI").bridged).toEqual({ symbol: "USDC", amount: "20400000", decimals: 6 })
+    expect(started("USDC")).not.toHaveProperty("bridged")
+  })
+
   it("moves a signing record to pending with its hash, and takes a hash only once", () => {
     const sent = bridgeInTransition(signing, { type: "sent", originTxHash: TX_1 })
     expect(sent).toMatchObject({ status: "pending", originTxHash: TX_1 })

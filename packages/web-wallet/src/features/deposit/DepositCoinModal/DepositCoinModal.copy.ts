@@ -1,6 +1,6 @@
 export default {
   close: "Close",
-  whichCoin: "Which coin are you sending?",
+  whichCoin: "Which token are you sending?",
   continue: "Continue",
   tokensFailed: "Couldn't load the tokens you can deposit",
   tokensFailedBody: "Check your connection. The wallet keeps trying in the background.",

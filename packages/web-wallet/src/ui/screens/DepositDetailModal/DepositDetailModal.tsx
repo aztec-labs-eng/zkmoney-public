@@ -145,10 +145,6 @@ export function DepositDetailModal({
       coinIcon(sentSymbol)
     ),
   }
-  const ethereumHop = {
-    label: copy.ethereum,
-    icon: <img src={ethIcon} alt="" width={16} height={16} />,
-  }
 
   return (
     <Modal
@@ -244,25 +240,21 @@ export function DepositDetailModal({
         </DepositFact>
         <DepositFact label="Network">
           <b>
-            <Hops
-              hops={
-                bridged
-                  ? [
-                      {
-                        label: bridgeIn?.chainName ?? "--",
-                        icon: (
-                          <ChainIcon
-                            chainId={bridged.originChainId}
-                            name={bridgeIn?.chainName ?? ""}
-                            size={16}
-                          />
-                        ),
-                      },
-                      ethereumHop,
-                    ]
-                  : [ethereumHop]
-              }
-            />
+            {bridged ? (
+              <>
+                <ChainIcon
+                  chainId={bridged.originChainId}
+                  name={bridgeIn?.chainName ?? ""}
+                  size={16}
+                />
+                {bridgeIn?.chainName ?? "--"}
+              </>
+            ) : (
+              <>
+                <img src={ethIcon} alt="" width={16} height={16} />
+                {copy.ethereum}
+              </>
+            )}
           </b>
         </DepositFact>
         <DepositFact label="Sent">

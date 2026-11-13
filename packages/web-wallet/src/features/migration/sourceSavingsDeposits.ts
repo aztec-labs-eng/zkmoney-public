@@ -1,8 +1,8 @@
 import type { OxideEnvTuple, SourceSavingsMove } from "@obsidion/core/types"
 import {
   deploymentScanRange,
-  savingsRoute,
   refundableSavingsDeposits,
+  skyRoute,
   type FieldLike,
 } from "@obsidion/front-core"
 import { createWithdrawEventSource, readWithdrawalExecutor } from "@obsidion/sdk"
@@ -55,7 +55,7 @@ export async function sourceSavingsDeposits(o: {
           sky
             ? [
                 {
-                  direction: sky.route === savingsRoute("in") ? ("in" as const) : ("out" as const),
+                  direction: sky.route === skyRoute("in") ? ("in" as const) : ("out" as const),
                   factory: sky.factory,
                   nonce: sky.nonce,
                   recipientCommitment: sky.recipientCommitment,

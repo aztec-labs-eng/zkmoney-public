@@ -64,8 +64,10 @@ function swapChainId(config: WebWalletConfig): bigint {
 
 /**
  * Every token a SIPA of the pinned table accepts for `intent`, read off the table's rows, and the ones Main offers. The
- * profile's `assets` only name and order the rows they match by portal: a row the profile omits is still listed, after
- * the named ones, and an asset with no row adds nothing.
+ * profile's `assets` name and order the rows they match by portal: a row the profile omits is still listed, after the
+ * named ones, and an asset with no row adds nothing. Main offers the rows of the profile's `portals.main`, or of its
+ * `assets` that no feature binds as a product without one, so a bridge that the manifest adds is offered nowhere
+ * until the profile names its portal.
  */
 export async function loadDepositTokens(
   { config, chain }: PageFacts,
@@ -104,7 +106,16 @@ export async function loadDepositTokens(
       }
     }),
   )
-  const main = new Set(depositRows(table).main)
+  const main = new Set(depositRows(table, config.portals?.main).main)
+  if (!config.portals && config.assets.length) {
+    const named = new Set(
+      depositRows(
+        table,
+        config.assets.map((asset) => asset.portal),
+      ).main,
+    )
+    for (const row of main) if (!named.has(row)) main.delete(row)
+  }
   const offered = options.filter((_, i) => main.has(ordered[i]!.row))
   const settles = intent === "deposit" ? pinned.underlying : table.deployment.feeToken
   const settlement =

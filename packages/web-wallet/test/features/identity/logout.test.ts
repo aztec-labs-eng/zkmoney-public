@@ -11,7 +11,7 @@ import { cachedMsk } from "../../../src/platform/storage/activeStorage"
 import { writeDeviceKeys } from "../../../src/platform/storage/deviceKeys"
 import { testPage, committed } from "../../support/page"
 
-const page = testPage(undefined, { profileRollupVersion: "r" } as never)
+const page = testPage(undefined, { profileRollupVersion: "r", features: {} } as never)
 const deviceDb = page.database
 const CACHE = JSON.stringify({
   v: 1,
