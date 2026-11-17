@@ -1,8 +1,8 @@
 /**
  * zkmoney-demo-mode-seed — writes a scenario's fixtures into the real stores, unlocks a synthetic
  * session, and stands up the two collaborators an offline browser lacks (an injected L1 wallet and
- * the L1 RPC behind it). Runs to completion before React mounts, so every hook's first read
- * already sees a populated wallet.
+ * the L1 RPC behind it). Runs to completion before the app mounts over its page, so every hook's
+ * first read already sees a populated wallet.
  *
  * Runtime gates skip external services for the demo session. Contact lookup and Share inject
  * deterministic inputs at their service boundaries; persistence and payload encoding remain real.
@@ -33,7 +33,13 @@ import { walletStorage } from "../platform/storage/walletStorage"
 import { openPage, type Page, type PageScreens } from "../app/sessionDeps"
 import { devMockRoute } from "../app/devRoutes"
 import type { PrimedReads } from "../app/pageChain"
-import { activeNamespace, commitSecret, sessionLoaded, signedInAccount } from "../session/session"
+import {
+  activeNamespace,
+  closeSession,
+  commitSecret,
+  sessionLoaded,
+  signedInAccount,
+} from "../session/session"
 import type { Session } from "../session/session"
 import {
   disableDemoMode,
@@ -284,6 +290,9 @@ export async function seedDemo(
   console.info(`[demo] seeding scenario "${scenario}" — this origin's wallet state is replaced`)
   console.info(demoHelp())
 
+  // A mock switch seeds a new page in this document: the last page's session stops before its
+  // storage goes.
+  closeSession()
   await resetWalletStorage()
   await page.device.load()
   // A hidden-balance pref the load carried in would blank the seeded figure.

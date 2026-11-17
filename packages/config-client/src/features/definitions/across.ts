@@ -43,6 +43,8 @@ const acrossSchema = z.strictObject({
   apiUrl: httpUrl,
   /** Across's MulticallHandler on the L1. Without it no deposit that carries a message quotes. */
   multicallHandler: l1Address.optional(),
+  /** Across's SpokePool on the L1: only its fills name a deposit's depositor. */
+  spokePool: l1Address.optional(),
   chains: z.array(
     z.strictObject({
       chainId: z.int().positive(),
@@ -103,10 +105,11 @@ export const acrossFeature = defineFeature({
   schema: acrossSchema,
   oxide: { exit: EXIT_ROLE },
   check: checkChains,
-  onChain: ({ multicallHandler, chains }) => ({
-    l1Contracts: multicallHandler
-      ? [{ path: ["multicallHandler"], address: multicallHandler }]
-      : [],
+  onChain: ({ multicallHandler, spokePool, chains }) => ({
+    l1Contracts: [
+      ...(multicallHandler ? [{ path: ["multicallHandler"], address: multicallHandler }] : []),
+      ...(spokePool ? [{ path: ["spokePool"], address: spokePool }] : []),
+    ],
     chains: chains.map((chain, index) => ({
       path: ["chains", index],
       chainId: chain.chainId,

@@ -137,12 +137,13 @@ type SavingsToken = { tokenService: BalanceReader & { tokenAddress: { toString()
 
 /**
  * The holdings' share tokens, looked up after the first balance; from then on their shares are read
- * beside Main's.
+ * beside Main's. Each is read as soon as it opens, so one that is slow or cannot open never holds
+ * back the others; a failed one is retried.
  */
 export function savingsLookup<W, A>(deps: {
   wallet: Service<W>
   account: Service<A>
-  lookup(wallet: W, account: A): Promise<readonly SavingsToken[]>
+  lookup(wallet: W, account: A): Promise<readonly (() => Promise<SavingsToken>)[]>
   scan: Pick<TransferScan, "alsoRead" | "refreshBalance">
 }): Task {
   return task("savingsLookup", {
@@ -152,11 +153,20 @@ export function savingsLookup<W, A>(deps: {
     backoff: { baseMs: SAVINGS_LOOKUP_RETRY_MS, maxMs: SAVINGS_LOOKUP_RETRY_MS },
     async run({ wallet, account, signal }) {
       const found = await within(deps.lookup(wallet, account), "savingsLookup", { signal })
-      if (found.length === 0) return
-      for (const { tokenService } of found) {
-        deps.scan.alsoRead(tokenService.tokenAddress.toString(), tokenService)
-      }
-      await within(deps.scan.refreshBalance(), "refreshBalance", { signal })
+      const opened = await within(
+        Promise.allSettled(
+          found.map(async (open) => {
+            const { tokenService } = await open()
+            signal.throwIfAborted()
+            deps.scan.alsoRead(tokenService.tokenAddress.toString(), tokenService)
+            await deps.scan.refreshBalance()
+          }),
+        ),
+        "savingsLookup",
+        { signal },
+      )
+      const failed = opened.find((r): r is PromiseRejectedResult => r.status === "rejected")
+      if (failed) throw failed.reason
     },
   })
 }

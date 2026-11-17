@@ -16,6 +16,7 @@
 import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import type { Wallet } from "@aztec-labs/aztec.js/wallet"
+import { displayTokenSymbol } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { createPublicClient, type Address, type Hex, type PublicClient } from "viem"
 import type { Config } from "wagmi"
@@ -220,7 +221,7 @@ export async function finalizeChannel(params: {
     display: {
       title: "Finalize your zk.money withdrawal",
       lines: [
-        ["Amount", `${record.amount} ${record.tokenSymbol}`],
+        ["Amount", `${record.amount} ${displayTokenSymbol(record.tokenSymbol)}`],
         viaEscrow ? ["Released to", `Swap escrow for ${final}`] : ["Recipient", final],
       ],
     },

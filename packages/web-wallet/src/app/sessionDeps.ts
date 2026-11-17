@@ -227,7 +227,6 @@ export interface Page extends PageSessions, PageWallet, PageReads {
   noirWasm: NoirWasm
   /** A ticket signup's witness, read in the visitor's session and redeemed in the account's. */
   preparedTicket: PreparedTicket
-  /** The claim server's ticket offer, which the pre-boot visitor page reads early. */
   ticketOffer: PageTicketOffer
   theme: PageTheme
 }

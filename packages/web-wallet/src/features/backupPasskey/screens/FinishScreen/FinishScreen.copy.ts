@@ -9,6 +9,8 @@ export default {
     count: "Almost there. Confirm {count} more times with the passkey you signed up with.",
     // While the paylinks' approvals are not counted yet.
     several: "Almost there. Confirm a few more times with the passkey you signed up with.",
+    // Once the last approval is in, while its transfer confirms. Proposed copy, pending review.
+    none: "Almost there. That was the last approval.",
   },
   closed: "The window closed before you approved. Your backup won't work until you do.",
   paused: {

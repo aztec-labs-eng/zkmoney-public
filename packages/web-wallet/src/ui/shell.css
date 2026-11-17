@@ -80,7 +80,6 @@
     .ww-cutover__badge,
     .ww-cutover__stamp,
     .ww-cutover__next-num,
-    .ww-account-switcher__trigger[aria-expanded="true"],
     .ww-landing-card,
     .ww-tiprow__tip,
     .ww-ticket-intro
@@ -435,9 +434,7 @@
 }
 /* The small digits that tick under the Savings figure between reads; count scales with the balance. */
 .ww-home__balance-value small,
-.ww-home__balance .ww-home__earned small,
-.ww-account-switcher__menu strong small,
-.ww-account-switcher__total b small {
+.ww-home__balance .ww-home__earned small {
   margin-left: 2px;
   font-size: 0.42em;
   font-weight: 600;
@@ -4504,23 +4501,6 @@ dialog.ww-modal-overlay[data-closing] {
   line-height: 1.35;
   color: var(--text-secondary);
 }
-/* A move into Savings: the terms, then the box that accepts them, above Confirm. */
-.ww-savings__terms {
-  display: grid;
-  gap: 10px;
-  padding-top: 4px;
-}
-.ww-savings__terms a {
-  color: var(--text-primary);
-  text-decoration: underline;
-}
-.ww-savings__terms-accept {
-  align-items: flex-start;
-  color: var(--text-primary);
-}
-.ww-savings__terms-accept input {
-  margin-top: 1px;
-}
 @media (max-width: 640px) {
   .ww-deposit-warning.ww-deposit-sheet {
     padding: 32px 24px;
@@ -4853,12 +4833,6 @@ dialog.ww-modal-overlay[data-closing] {
   font-size: 13px;
   line-height: 1.5;
   color: var(--text-secondary);
-}
-/* A check line under the facts: aligned with them, wrapping anywhere a long error needs. */
-.ww-sheet__note--check {
-  width: 100%;
-  text-align: left;
-  overflow-wrap: anywhere;
 }
 /* A status with its reason beneath, right-aligned in a fact or detail row. */
 .ww-status-reason {
@@ -7504,173 +7478,6 @@ details[open] .ww-withdraw__warning-chevron {
   font-size: 13px;
   line-height: 1.5;
   color: var(--accent-pink);
-}
-
-/* The Savings slide in the Home rail. */
-.ww-shell /* The account pill on Home and its menu. */
-.ww-account-switcher {
-  position: relative;
-}
-.ww-shell .ww-account-switcher__trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-radius: var(--radius-full);
-  border: 1px solid var(--border-hairline);
-  background: rgba(111, 162, 255, 0.16);
-  color: var(--text-primary);
-  font-size: 16px;
-  font-weight: 500;
-}
-.ww-shell .ww-account-switcher__trigger[aria-expanded="true"] {
-  border-color: transparent;
-  background: linear-gradient(110deg, #a600ff, #009cff) border-box;
-}
-.ww-account-switcher__menu {
-  position: absolute;
-  top: calc(100% + 12px);
-  left: 0;
-  z-index: 20;
-  width: min(374px, calc(100vw - 64px));
-  padding: 12px;
-  box-sizing: border-box;
-  border-radius: var(--radius-12);
-  border: 1px solid rgba(var(--ink-rgb), 0.14);
-  background: var(--ww-surface-menu);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
-  color: var(--text-primary);
-  font-size: 13px;
-  text-align: left;
-}
-.ww-account-switcher__menu > small {
-  display: block;
-  padding-bottom: 10px;
-  color: var(--text-secondary);
-  border-bottom: 1px solid var(--border-hairline);
-}
-.ww-shell .ww-account-switcher__menu > button {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 8px;
-  margin-top: 8px;
-  border-radius: 9px;
-  color: inherit;
-  text-align: left;
-}
-.ww-shell .ww-account-switcher__menu > button[aria-selected="true"],
-.ww-shell .ww-account-switcher__menu > button:hover {
-  background: var(--surface-card);
-}
-.ww-account-switcher__menu button > span:nth-child(2) {
-  display: grid;
-  gap: 2px;
-}
-.ww-account-switcher__menu small {
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-.ww-account-switcher__menu strong {
-  margin-left: auto;
-  white-space: nowrap;
-  font-size: 12px;
-}
-.ww-account-switcher__check {
-  width: 14px;
-  color: var(--accent-green);
-}
-.ww-account-switcher__avatar {
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: linear-gradient(130deg, #a600ff, #009cff);
-  color: #fff;
-  font-weight: 600;
-}
-.ww-account-switcher__total {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 12px;
-  padding: 10px 8px 0;
-  border-top: 1px solid var(--border-hairline);
-  color: var(--text-secondary);
-}
-.ww-account-switcher__total b {
-  color: var(--text-primary);
-}
-.ww-savings__card {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 24px;
-  box-sizing: border-box;
-  border-radius: var(--radius-16);
-  background: var(--surface-faint);
-  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.07);
-}
-.ww-savings__card h3 {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-/* The calculator as a card of its own under the token card: a row, pressable as one. */
-.ww-shell .ww-savings__calc {
-  width: 100%;
-  padding: 20px 24px;
-  background: var(--surface-faint);
-  text-align: left;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.ww-savings__glyph--calc {
-  background: var(--surface-strong);
-  color: var(--text-primary);
-}
-/* "From Main Account" wraps rather than clipping to "From Main A…" beside a wide status pill. */
-.ww-shell .ww-savings-move-row .zkm-activity-row__name {
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-.ww-savings__glyph {
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: rgba(var(--accent-gold-rgb), 0.14);
-  color: var(--accent-gold);
-  font-size: 18px;
-  font-weight: 600;
-}
-.ww-savings__token {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 13px;
-}
-.ww-savings__token > span:nth-child(2) {
-  flex: 1;
-  display: grid;
-  gap: 2px;
-}
-.ww-savings__token b {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-.ww-savings__token small {
-  color: var(--text-secondary);
-  font-size: 13px;
 }
 
 /* The calculator sheet. */

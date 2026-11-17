@@ -186,7 +186,11 @@ export async function fundDeposit(
    */
   const stampFunding = async (stamp: FundingStamp) => {
     try {
-      await deps.deposits.apply(address, { type: "fundingSent", fields: stamp })
+      // A wallet's own transfer: its receipt needs no read for a bridge fill.
+      await deps.deposits.apply(address, {
+        type: "fundingSent",
+        fields: { ...stamp, funding: "plain" },
+      })
     } catch (err) {
       console.warn("[fundDeposit] could not record the funding transaction locally", err)
     }

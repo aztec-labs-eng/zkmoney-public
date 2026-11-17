@@ -24,12 +24,7 @@ import {
   zeroHash,
 } from "viem"
 import type { Address, Hash, Hex, PublicClient, StateOverride } from "viem"
-import type {
-  MoveDeposit,
-  MoveDirection,
-  MoveLimits,
-  MoveQuote,
-} from "../../../src/engine/moveTransition"
+import type { MoveDeposit, MoveDirection, MoveQuote } from "../../../src/engine/moveTransition"
 import type {
   BlockRange,
   BuiltBurn,
@@ -48,7 +43,7 @@ import { WalletError } from "../../../src/engine/errors"
 import type { Withdrawals } from "../../../src/engine/withdrawals"
 
 export const DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F" as Address
-const SUSDS = "0x00000000000000000000000000000000000000d2" as Address
+export const SUSDS = "0x00000000000000000000000000000000000000d2" as Address
 /** sUSDS's asset. */
 const USDS = "0x00000000000000000000000000000000000000d3" as Address
 export const DAI_PORTAL = "0x1E6142c98D83c8D14b09668d90583E940A646458" as Address
@@ -75,12 +70,15 @@ export const RELEASE_TIP = 2n
 /** A vault of DAI, its share token, and the portal of its bridge. */
 export const VAULT = "0x00000000000000000000000000000000000007a1" as Address
 export const VAULT_PORTAL = "0x3E6142c98D83c8D14b09668d90583E940A646458" as Address
+/** A second vault of DAI on the same executor, which a swap moves `VAULT`'s shares into. */
+export const VAULT_B = "0x00000000000000000000000000000000000007a2" as Address
+export const VAULT_B_PORTAL = "0x4e6142C98D83C8d14B09668D90583e940a646458" as Address
 export const MULTI_STEP_EXECUTOR = "0x00000000000000000000000000000000000000e6" as Address
+/** The executor's adapter over Sky's DAI–USDS converter. */
+export const SKY_CONVERTER_ADAPTER = "0x0000000000000000000000000000000000000ad3" as Address
 /** The escrow tip the fake prices each way. */
 export const ESCROW_TIPS: Record<MoveDirection, bigint> = { in: 1n, out: 3n }
 const WAD = 10n ** 18n
-/** The vault's limits every fake L1 starts with. */
-export const LIMITS: MoveLimits = { maxDeposit: 10n ** 24n, maxRedeem: 10n ** 24n }
 const BLOCK_MS = 12_000
 
 /** A stub of `bytes` bytes, distinct per `tag` and `n`. */
@@ -141,8 +139,30 @@ export const VAULT_HOLDING: ExecutorHolding = {
     adapters: {
       erc4626: "0x0000000000000000000000000000000000000ad1",
       portalDeposit: "0x0000000000000000000000000000000000000ad2",
+      skyConverter: SKY_CONVERTER_ADAPTER,
     },
   },
+}
+
+/** `SKY_HOLDING` on `VAULT_HOLDING`'s executor: what a swap to or from a vault runs on. */
+export const SKY_VIEW: ExecutorHolding = {
+  id: SKY_HOLDING.id,
+  kind: "yield",
+  l2Token: `0x${"b2".repeat(32)}`,
+  base: SKY_HOLDING.base,
+  held: SKY_HOLDING.held,
+  terms: "erc4626",
+  conversion: "DaiUsds",
+  rail: "executor",
+  executor: VAULT_HOLDING.executor,
+}
+
+/** `VAULT_B` on `VAULT_HOLDING`'s executor. */
+export const VAULT_B_HOLDING: ExecutorHolding = {
+  ...VAULT_HOLDING,
+  id: "fea-vault-b-sandbox",
+  l2Token: `0x${"c4".repeat(32)}`,
+  held: bridge(VAULT_B, VAULT_B_PORTAL, "c4"),
 }
 
 const signature = (digest: Hex): Hex =>
@@ -277,7 +297,6 @@ export function fakeL1(start = { number: 7n, timeMs: 1_700_000_000_000 }) {
   }
 
   const l1 = {
-    limits: { ...LIMITS },
     /** What `shares` of the held token redeem for. */
     price: { shares: WAD, assets: (WAD * 105n) / 100n },
     /** What Main's plain executor takes from each burn. */
@@ -300,6 +319,7 @@ export function fakeL1(start = { number: 7n, timeMs: 1_700_000_000_000 }) {
       [SUSDS.toLowerCase(), { symbol: "sUSDS", decimals: 18 }],
       [USDS.toLowerCase(), { symbol: "USDS", decimals: 18 }],
       [VAULT.toLowerCase(), { symbol: "vDAI", decimals: 18 }],
+      [VAULT_B.toLowerCase(), { symbol: "vDAI2", decimals: 18 }],
     ]),
 
     mine: async () => {
@@ -348,7 +368,7 @@ export function fakeL1(start = { number: 7n, timeMs: 1_700_000_000_000 }) {
       const tx = release ? releaseTx(release.portal, release.withdrawalId) : mined()
       const eventName = direction === "in" ? "Deposit" : "Withdraw"
       const vaultEvent = (amount: bigint, logIndex: number) =>
-        vaultEvents.push({ ...tx, eventName, assets: amount, logIndex })
+        vaultEvents.push({ ...tx, vault: VAULT, eventName, assets: amount, logIndex })
       assets.forEach((amount, i) => vaultEvent(amount, i))
       const deposit = {
         inboxIndex: BigInt(deposits.length),
@@ -359,6 +379,47 @@ export function fakeL1(start = { number: 7n, timeMs: 1_700_000_000_000 }) {
       const portal = direction === "in" ? VAULT_PORTAL : DAI_PORTAL
       deposits.push({ ...tx, deposit, portal, recipientCommitment, logIndex: assets.length })
       trailing.forEach((amount, i) => vaultEvent(amount, assets.length + 1 + i))
+      return { ...tx, deposit }
+    },
+    /**
+     * The executor runs a swap's route in one tx: the release of `release`'s withdrawal, the
+     * source vault's redeem paying `redeemed`, the destination vault's deposit taking `took` in,
+     * then its portal's deposit of `deposited`. `VAULT` into `VAULT_B` unless `from` and `to` say.
+     */
+    executorVaultSwap: async (
+      recipientCommitment: Hex,
+      {
+        redeemed,
+        took,
+        deposited,
+        release,
+        from = VAULT,
+        to = { vault: VAULT_B, portal: VAULT_B_PORTAL },
+      }: {
+        redeemed: bigint
+        took: bigint
+        deposited: bigint
+        release: { portal: Address; withdrawalId: Hex }
+        from?: Address
+        to?: { vault: Address; portal: Address }
+      },
+    ) => {
+      const tx = releaseTx(release.portal, release.withdrawalId)
+      vaultEvents.push({
+        ...tx,
+        vault: from,
+        eventName: "Withdraw",
+        assets: redeemed,
+        logIndex: 0,
+      })
+      vaultEvents.push({ ...tx, vault: to.vault, eventName: "Deposit", assets: took, logIndex: 1 })
+      const deposit = {
+        inboxIndex: BigInt(deposits.length),
+        amount: deposited,
+        messageKey: stub(0x4d, deposits.length, 32),
+        at: head().timeMs,
+      } satisfies MoveDeposit
+      deposits.push({ ...tx, deposit, portal: to.portal, recipientCommitment, logIndex: 2 })
       return { ...tx, deposit }
     },
     fund: async (escrow: Address, amount: bigint) => {
@@ -506,8 +567,9 @@ interface ExecutorRecovery {
   amount: bigint
 }
 
-/** An ERC-4626 event of `VAULT`'s. */
+/** An ERC-4626 event of a vault's. */
 interface VaultEvent extends L1Tx {
+  vault: Address
   eventName: "Deposit" | "Withdraw"
   assets: bigint
   logIndex: number
@@ -531,7 +593,6 @@ interface FakeChain {
 
 /** What a test sets on the fake L1's contracts. */
 interface FakeContracts {
-  limits: MoveLimits
   price: { shares: bigint; assets: bigint }
   withdrawalFee: bigint
   beneficiary: Address
@@ -633,13 +694,13 @@ function fakeClient(l1: FakeContracts, chain: FakeChain): Pick<PublicClient, Fak
         if (same(address, FEED))
           return [1n, 3000n * 10n ** 8n, 0n, block(chain.head()).timestamp, 1n]
         break
-      case "asset":
-        if (same(address, VAULT)) return DAI
-        if (same(address, SUSDS)) return USDS
+      case "DAI":
+      case "USDS":
+        if (same(address, SKY_CONVERTER_ADAPTER)) return functionName === "DAI" ? DAI : USDS
         break
-      case "maxDeposit":
-      case "maxRedeem":
-        if (same(address, VAULT)) return l1.limits[functionName]
+      case "asset":
+        if (same(address, VAULT) || same(address, VAULT_B)) return DAI
+        if (same(address, SUSDS)) return USDS
         break
       // The vault takes no fee, so a preview is its conversion.
       case "convertToAssets":
@@ -666,11 +727,9 @@ function fakeClient(l1: FakeContracts, chain: FakeChain): Pick<PublicClient, Fak
     const within = (tx: L1Tx) => tx.blockNumber >= fromBlock && tx.blockNumber <= toBlock
     const listed = (value: string) => at.some((a) => same(a, value))
     const vaultLogs = (name: VaultEvent["eventName"]) =>
-      listed(VAULT)
-        ? chain.vaultEvents
-            .filter((e) => e.eventName === name && within(e))
-            .map((e) => log(e, VAULT, { assets: e.assets, shares: 0n }, e.logIndex))
-        : []
+      chain.vaultEvents
+        .filter((e) => e.eventName === name && listed(e.vault) && within(e))
+        .map((e) => log(e, e.vault, { assets: e.assets, shares: 0n }, e.logIndex))
     switch (eventName) {
       case "Deposit": {
         if (args.recipientCommitment === undefined) return vaultLogs("Deposit")
@@ -878,7 +937,6 @@ export function fakeEscrowRoutes(
       if (l1.fundsOf(move.escrow.address) === 0n) throw new WalletError("move.escrowRan", move.id)
       return l1.runCall(move.escrow.address)
     },
-    limits: async () => l1.limits,
     assetsOf: async (_route, amount) => (amount * l1.price.assets) / l1.price.shares,
     token: async (address) => {
       const facts = l1.tokens.get(address.toLowerCase())

@@ -31,7 +31,10 @@ function vaultL1(vaults: Address[], now: bigint, then = ONE, head = 1_000_000n) 
   const l1 = new FakeL1({ factory: zeroAddress, table: zeroAddress, portals: [] })
   l1.head = head
   l1.token(ASSET, "USDC", 6)
-  for (const v of vaults) l1.vault(v, 18, (block) => (block === head ? now : then), ASSET)
+  for (const v of vaults) {
+    l1.vault(v, 18, (block) => (block === head ? now : then), ASSET)
+    l1.symbols.set(v.toLowerCase(), "svUSDC")
+  }
   const reading = new Set<string>()
   let mostAtOnce = 0
   l1.before = async (call) => {
@@ -57,11 +60,12 @@ function world(l1: FakeL1) {
   }
 }
 
-/** The head, decimals, asset and price reads `l1` has answered. */
+/** The head, decimals, asset, symbol and price reads `l1` has answered. */
 const readsOf = (l1: FakeL1) => [
   l1.count({ method: "eth_blockNumber" }),
   l1.count({ fn: "decimals" }),
   l1.count({ fn: "asset" }),
+  l1.count({ fn: "symbol" }),
   l1.count({ fn: "convertToAssets" }),
 ]
 
@@ -69,26 +73,32 @@ const GROWN = (1001n * ONE) / 1000n
 const HEAD = 1_000_000n
 
 describe("holdingPrices", () => {
-  it("reads the head once a pass and three holdings at a time; the decimals once", async () => {
+  it("reads the head once a pass and three holdings at a time; the decimals and the symbols once", async () => {
     const vaults = [1, 2, 3, 4, 5].map(vault)
     const { l1, mostAtOnce } = vaultL1(vaults, GROWN)
     const { prices, pass } = world(l1)
     const read = () => Promise.all(vaults.map((v) => prices(holdingOn(v)).read()))
 
     const first = await read()
-    expect(first.map((p) => [p.sharePrice, p.shareDecimals, p.assetDecimals])).toEqual(
-      vaults.map(() => [GROWN, 18, 6]),
+    expect(first).toMatchObject(
+      vaults.map(() => ({
+        sharePrice: GROWN,
+        shareDecimals: 18,
+        shareSymbol: "svUSDC",
+        assetDecimals: 6,
+        assetSymbol: "USDC",
+      })),
     )
-    // Each vault's share and asset decimals, and its asset.
-    expect(readsOf(l1)).toEqual([1, 10, 5, 10])
+    // Each vault's share and asset decimals, its asset, and both symbols.
+    expect(readsOf(l1)).toEqual([1, 10, 5, 10, 10])
     expect(mostAtOnce()).toBe(3)
 
     await read()
-    expect(readsOf(l1)).toEqual([1, 10, 5, 10])
+    expect(readsOf(l1)).toEqual([1, 10, 5, 10, 10])
 
     pass(HOLDING_PRICE_EVERY_MS)
     await read()
-    expect(readsOf(l1)).toEqual([2, 10, 5, 20])
+    expect(readsOf(l1)).toEqual([2, 10, 5, 10, 20])
   })
 
   it.each([
@@ -151,13 +161,13 @@ describe("holdingPrices", () => {
     l1.failing = (call) => call.method === "eth_blockNumber"
     await spent(vaults.map(() => "rejected"))
     l1.failing = () => false
-    // The head is read again; the decimals and asset read beside the failed head are not.
-    expect(await spent(ALL)).toEqual([1, 0, 0, 8])
+    // The head is read again; the decimals, asset and symbol read beside the failed head are not.
+    expect(await spent(ALL)).toEqual([1, 0, 0, 0, 8])
     expect(l1.count({ fn: "decimals" })).toBe(8)
 
     pass(HOLDING_PRICE_EVERY_MS)
     l1.failing = (call) => call.to === vaults[0] && call.fn === "convertToAssets" && !call.block
-    expect(await spent(["rejected", ...ALL.slice(1)])).toEqual([1, 0, 0, 8])
+    expect(await spent(["rejected", ...ALL.slice(1)])).toEqual([1, 0, 0, 0, 8])
     expect(prices(holdingOn(vaults[0]!)).get()).toMatchObject({
       status: "ready",
       value: { sharePrice: GROWN },

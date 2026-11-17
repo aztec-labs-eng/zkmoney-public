@@ -9,6 +9,7 @@
  * starts as the withdrawal's own recipient — the address the user already chose to be paid at.
  */
 import type { Pace } from "@obsidion/core/cadence"
+import { displayTokenSymbol } from "@obsidion/core/constants"
 import { useState } from "react"
 import exitCopy from "./SwapExitModal.copy"
 import { isAddress, type Address, type Hex } from "viem"
@@ -139,7 +140,7 @@ export function SwapExitModal({
   // The recovered-to address is screened like the recipient was at withdraw time.
   const { verdict, cleared, rescreen } = useScreenedAddress(target, "withdraw")
   const amount = swap
-    ? `${swap.amount} ${swap.tokenSymbol}`
+    ? `${swap.amount} ${displayTokenSymbol(swap.tokenSymbol)}`
     : moveValue !== undefined
     ? usdAtomicFloor(moveValue)
     : "the move's funds"

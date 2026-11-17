@@ -1,11 +1,13 @@
 export default {
   bridging: {
-    chip: "Bridging",
     title: "Bridging your {coin}",
     line: "{amount} from {chain} to your private balance.",
+    confirming: "Confirming on {chain}.",
+    confirmingAbout: "Confirming on {chain}. About {minutes} min.",
+    activity: "You can find it in Activity once it arrives.",
   },
   arriving: {
-    line: "Your {amount} is confirmed and arriving as ≈ {landing}.",
+    line: "Your {amount} is confirmed and arriving as {landing}.",
   },
   paying: {
     title: "Paying @{payee}",

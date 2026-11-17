@@ -10,7 +10,7 @@ export type LiveRate = { rate: bigint | undefined }
 export type LandingRate = QueryEntry<LiveRate>
 
 /**
- * Sky's live rate, with no account: what the landing advertises. Read once per page, started by the
+ * The first listed holding's live rate, with no account: what the landing advertises. Read once per page, started by the
  * boot as soon as the config is up. A failed or slow read settles without a rate.
  */
 export const landingRate = (query: QueryFactory, { chain }: PageFacts): LandingRate =>

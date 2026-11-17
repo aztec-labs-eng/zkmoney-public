@@ -49,6 +49,7 @@ import {
 import emptyArt from "../../../assets/contacts/empty-txns.webp"
 import { ChatBubble } from "../ChatBubble/ChatBubble"
 import { DepositDetailModal } from "../../../ui/screens/DepositDetailModal/DepositDetailModal"
+import { readsBridgeFills } from "../../../session/bridgeFillDetectors"
 import { TxDetailModal } from "../../../ui/screens/TxDetailModal/TxDetailModal"
 import { txNoteFor, txRowView, type ActivityRowView } from "../../../ui/screens/activityView"
 import { chatContactOf, chatMessageOf, type ChatMessage } from "../contactChat"
@@ -771,6 +772,7 @@ function ContactDetail() {
       )}
       {depositDetail && (
         <DepositDetailModal
+          readsFills={readsBridgeFills(session.page.config)}
           record={depositDetail.record}
           onClose={() => setDepositDetail(undefined)}
         />

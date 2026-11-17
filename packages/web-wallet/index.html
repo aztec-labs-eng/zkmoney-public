@@ -10,6 +10,12 @@
          element at the viewport edge instead, which #tint below exists to be. -->
     <meta name="theme-color" content="#49087e" />
     <meta name="color-scheme" content="dark light" />
+    <!-- The Home Screen web app (manifest.webmanifest). iOS shows the launch screens that
+         startupImages.ts links only with apple-mobile-web-app-capable. No status-bar-style: WebKit
+         deprecated black-translucent, and iOS colors the status bar to match the page. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="zk.money" />
     <script>
       // The saved theme and its browser bar color, before anything paints
       // (platform/storage/theme.ts). Dark is the default.
@@ -23,7 +29,10 @@
     </script>
     <title>zk.money</title>
     <link rel="icon" type="image/png" sizes="180x180" href="/favicon.png" />
-    <link rel="apple-touch-icon" href="/favicon.png" />
+    <!-- Opaque, as iOS fills transparency with black. iOS uses it over the manifest's icons, and
+         restyles it for its tinted and clear Home Screen looks. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <!-- Chat apps render these as a card. socialPreview.ts fills the __OG_*__ values per page: the
          zk.money card here, a payment-link card at /link and /request. -->
     <meta name="description" content="__OG_DESCRIPTION__" />

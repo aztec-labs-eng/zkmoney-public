@@ -2,6 +2,7 @@
 /** A table of two rows: each sweep settles, prices and claims on its own row. */
 import { describe, expect, it, vi } from "vitest"
 import { formatUnits, type Address } from "viem"
+import type { HoldingPrice } from "../../../src/core/services/holdings/holdingFigures"
 import { sipaCredits } from "../../../src/core/services/deposits/sipaCredits"
 import { savingsValue } from "../../../src/core/services/savings/savingsMath"
 import { arrivingFunds } from "../../../src/engine/activityFeed"
@@ -326,6 +327,13 @@ describe("across two rows", () => {
 
 describe("a recovered wallet's arriving deposits", () => {
   const PRICE = (11n * ONE) / 10n
+  const SKY_PRICE: HoldingPrice = {
+    sharePrice: PRICE,
+    shareDecimals: 18,
+    assetDecimals: 18,
+    assetSymbol: "USDS",
+    readAt: 0,
+  }
 
   /** Home's figures: what the claims landed on each row's token, plus what is on its way. */
   const figures = async (w: Awaited<ReturnType<typeof twoRows>>, savingsUnknown = false) => {
@@ -336,7 +344,12 @@ describe("a recovered wallet's arriving deposits", () => {
       burns: [],
       moves: [],
       rows: [],
-      ...(savingsUnknown ? { savingsUnknown } : { savingsToken: SUSDS, sharePrice: PRICE }),
+      ...(savingsUnknown
+        ? { savingsUnknown }
+        : {
+            savingsTokens: new Map([[SUSDS.toLowerCase(), "fea-sky"]]),
+            holdingPrices: new Map([["fea-sky", SKY_PRICE]]),
+          }),
     })
     const view = { main: { atomic: held(L2_TOKEN) }, known: true } as BalanceView
     const main = selectHomeMain(view, {
@@ -360,9 +373,19 @@ describe("a recovered wallet's arriving deposits", () => {
     await w.scan()
 
     const unknown = await figures(w, true)
-    expect(unknown.arriving).toEqual({ main: 0n, savings: 0n })
+    expect(unknown.arriving).toEqual({
+      main: 0n,
+      savings: 0n,
+      vaultSwapping: new Map(),
+      savingsInto: new Map(),
+    })
     const known = await figures(w)
-    expect(known.arriving).toEqual({ main: 0n, savings: savingsValue(shares, PRICE) })
+    expect(known.arriving).toEqual({
+      main: 0n,
+      savings: savingsValue(shares, PRICE),
+      vaultSwapping: new Map(),
+      savingsInto: new Map([["fea-sky", savingsValue(shares, PRICE)]]),
+    })
     expect(known.main).toBe(unknown.main)
 
     for (const r of await w.records())
@@ -385,14 +408,24 @@ describe("a recovered wallet's arriving deposits", () => {
     await w.scan()
 
     const before = await figures(w)
-    expect(before.arriving).toEqual({ main: ONE - FEE, savings: savingsValue(shares, PRICE) })
+    expect(before.arriving).toEqual({
+      main: ONE - FEE,
+      savings: savingsValue(shares, PRICE),
+      vaultSwapping: new Map(),
+      savingsInto: new Map([["fea-sky", savingsValue(shares, PRICE)]]),
+    })
 
     for (const r of await w.records())
       for (const s of r.pendingSweeps ?? []) w.l2.settle(s.messageKey)
     expect(await w.claim()).toMatchObject({ claimed: 2, failed: 0 })
 
     const after = await figures(w)
-    expect(after.arriving).toEqual({ main: 0n, savings: 0n })
+    expect(after.arriving).toEqual({
+      main: 0n,
+      savings: 0n,
+      vaultSwapping: new Map(),
+      savingsInto: new Map(),
+    })
     expect({ main: after.main, savings: after.savings }).toEqual({
       main: before.main,
       savings: before.savings,

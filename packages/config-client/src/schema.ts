@@ -50,6 +50,35 @@ const contractName = z
 
 const featureId = z.string().min(1)
 
+/** A line of text a wallet shows as it is: bounded, so a document cannot break a layout. */
+const words = z.string().min(1).max(80)
+
+/** A page a user opens from the wallet: https on every network. */
+const termsLink = z.strictObject({
+  label: words,
+  url: httpUrl.refine((url) => url.startsWith("https://"), "must be https"),
+})
+
+/** What the wallet calls a holding. */
+const holdingWords = z.strictObject({
+  /** Names the yield, under the holding's asset. */
+  rateName: words,
+  /** Tags the holding as new. */
+  new: z.boolean().optional(),
+  /** Where the yield comes from. */
+  yieldFrom: words,
+  /** When funds can move back to Main; the wallet adds how long a move takes. */
+  moveBack: words,
+  /** How risky the holding is, in a few words. */
+  risk: words,
+  /** Who runs the holding, named in its terms. */
+  provider: words,
+  /** The provider's terms a move in accepts. */
+  terms: z.array(termsLink).min(1).max(4),
+})
+
+export type HoldingWords = z.infer<typeof holdingWords>
+
 /**
  * L2 requires `classId` (`address` optional — a class can exist with no instance); L1 is
  * `{address}` alone, a separate shape so an L2 entry cannot omit its class and validate.
@@ -166,6 +195,11 @@ const versionSchema = z.strictObject({
       ),
     })
     .optional(),
+  /**
+   * What the wallet calls each holding, by its id: a feature's, or a `portals.savings` entry's. A
+   * holding without an entry shows its chain figures alone. Present, it names every listed holding.
+   */
+  holdingCopy: z.record(featureId, holdingWords).optional(),
   /**
    * Exact bytes at `artifacts/<generation>/<version>.json`; absent on profiles predating catalogs.
    * Pre-field clients prune this as an additive version key in their served-profile wire parser;
@@ -343,6 +377,17 @@ export const configProfileSchema = baseSchema.check((ctx) => {
       const unnamed = version.holdings?.find((holding) => !ids.includes(holding))
       if (unnamed !== undefined)
         refuse(`lists the holding ${unnamed}, which portals.savings does not name`)
+    }
+    if (version.holdings && version.holdingCopy) {
+      for (const holding of version.holdings) {
+        if (Object.hasOwn(version.holdingCopy, holding)) continue
+        ctx.issues.push({
+          code: "custom",
+          message: `version "${id}" lists the holding ${holding} with no words in holdingCopy`,
+          input: version.holdingCopy,
+          path: ["versions", id, "holdingCopy"],
+        })
+      }
     }
     const assets = version.assets ?? []
     const isOxides = (portal: string) => portal.toLowerCase() === version.oxide.portal.toLowerCase()

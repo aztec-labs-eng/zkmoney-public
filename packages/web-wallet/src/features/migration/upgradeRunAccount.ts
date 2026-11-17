@@ -8,7 +8,7 @@ import {
 import { bridgeUnderlying } from "@obsidion/core/oxide"
 import type { WebWalletConfig } from "../../config/env"
 import type { PageFacts } from "../../session/pageChain"
-import type { SavingsAccount } from "../savings/AccountSwitcher"
+import type { SavingsAccount } from "../savings/AccountSwitcher/AccountSwitcher"
 
 /** The account a run pays into: `webMetadataMigrationKey` saves its destination portal as its second segment. */
 export const upgradeRunAccount = (config: WebWalletConfig, run: string): SavingsAccount =>

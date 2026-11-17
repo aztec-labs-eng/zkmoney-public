@@ -5,7 +5,6 @@ import type {
   OxideDeployment,
   OxideDeploymentTable,
   PinnedOxideDeployment,
-  SkyEscrowHolding,
 } from "@obsidion/core/oxide"
 import type {
   DeploymentScans,
@@ -36,11 +35,11 @@ import type { webBroadcasterArtifact } from "../config/classArtifacts"
 import type { WebWalletConfig } from "../config/env"
 import type { OxideEnv } from "../config/oxideTuple"
 
-/** A Sky holding's price, with the holding. */
-export type SavingsPrice = HoldingPrice & { holding: SkyEscrowHolding }
+/** A holding's price, with the holding. */
+export type SavingsPrice = HoldingPrice & { holding: Holding }
 
-/** A Sky holding's price read: its price, or `failed` when its read failed with no earlier one. */
-export type SavingsPriceRead = SavingsPrice | { holding: SkyEscrowHolding; failed: true }
+/** A holding's price read: its price, or `failed` when its read failed with no earlier one. */
+export type SavingsPriceRead = SavingsPrice | { holding: Holding; failed: true }
 
 /**
  * The page's manifest and chain reads, queries built once per page over its config: every session
@@ -125,13 +124,13 @@ export interface PageChain {
   /** A holding's share price and rate, read on L1. */
   holdingPrice(holding: Pick<Holding, "held">): QueryEntry<HoldingPrice>
   /**
-   * Savings' price: the profile's Sky holding's, else the deployment's first Sky holding's, which
-   * old versions' Savings shares are worth. Null where the deployment has none.
+   * The price of the first holding Savings prices, for a reader that takes one. Null where the
+   * deployment has none.
    */
   savingsPrice: QueryEntry<SavingsPrice | null>
   /**
-   * Each Sky holding's price, the profile's first, each read on its own: a holding whose read fails
-   * keeps its earlier price, or reads `failed`, and the others keep theirs.
+   * The price of each holding Savings can show, the profile's first, each read on its own: a
+   * holding whose read fails keeps its earlier price, or reads `failed`, and the others keep theirs.
    */
   savingsPrices: QueryEntry<readonly SavingsPriceRead[]>
   broadcasterArtifact: ReturnType<typeof webBroadcasterArtifact>

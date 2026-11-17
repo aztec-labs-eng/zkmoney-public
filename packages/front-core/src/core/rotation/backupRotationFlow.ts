@@ -8,7 +8,6 @@
 import { TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
 import { L1_SWEEP_RECHECK_DEPTH } from "@obsidion/core/constants"
 import {
-  BACKUP_FUNDING_MARGIN,
   BackupSetConflictError,
   isSpendEnvelopeRefusal,
   VerificationUnavailableError,
@@ -1305,14 +1304,13 @@ function tippedPlan(plan: BackupRotationPlan, tip: bigint): BackupRotationPlan {
 }
 
 /**
- * The least that counts as this wallet's funding at the deposit address: the plan's deposit less
- * its credit's margin, which was the least the sweep could take when the plan was saved. The
- * funding lands at the plan's deposit, since the withdrawal's charges are fixed. Anyone can pay
- * the address once it is published, so less is someone else's and cannot finish the change. A
- * plan saved without its deposit counts any money.
+ * The least that counts as this wallet's funding at the deposit address: the plan's deposit, which
+ * the funding lands at in full since the withdrawal's charges are fixed. Anyone can pay the address
+ * once it is published, so less is someone else's and cannot finish the change. A plan saved
+ * without its deposit counts any money.
  */
 function fundingFloor(plan: BackupRotationPlan | undefined): bigint {
-  const floor = plan?.deposited ? BigInt(plan.deposited) - BACKUP_FUNDING_MARGIN : 0n
+  const floor = plan?.deposited ? BigInt(plan.deposited) : 0n
   return floor > 0n ? floor : 1n
 }
 

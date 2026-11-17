@@ -6,12 +6,10 @@ import { isAddressEqual, type Address, type Hex, type PublicClient } from "viem"
 import { WalletError, bestEffort } from "@obsidion/core/errors"
 import {
   memoryStore,
-  upsertDepositL1WalletContact,
   type BridgeInPays,
   type BridgeInQuote,
   type BridgeInQuoteRequest,
   type BridgeIns,
-  type Contacts,
   type DepositAdmission,
   type PortalCapacityStore,
   type QueryEntry,
@@ -22,6 +20,7 @@ import { isWalletRejection, type L1Wallet } from "../../../session/l1Wallet"
 import type { ScreenFlow } from "../../../ui/useScreenFlow"
 import { bridgeCharged, isUnreachable } from "../bridgeChains"
 import { FundingPreflightError, runFundingPreflight, UNKNOWN_CAPACITY } from "../fundingPreflight"
+import { saveSendingWallet, type SavedWallets } from "../sendingWallet"
 import {
   bridgeInTransition,
   bridgeQuoteKey,
@@ -46,8 +45,7 @@ export interface BridgeInDeps {
   /** The deposit fee of the row for `token`, read now, decimal in its token. */
   depositFee: (token: string) => Promise<string>
   bridgeIns: Pick<BridgeIns, "start" | "markSent" | "apply">
-  /** The saved wallets the origin wallet joins; none for a visitor. */
-  contacts?: Pick<Contacts, "upsertL1WalletContact"> | null
+  contacts?: SavedWallets | null
   /** Wakes the tracker that follows the sent bridge-in. */
   track: () => void
   now: () => number
@@ -127,16 +125,8 @@ export function openBridgeInFlow(deps: BridgeInDeps, latest: () => BridgeInInput
   /** Saves the sent bridge-in's hash and shows its status. Never throws. */
   const track = async (id: string, depositor: Address, hash: Hex, send: BridgeInSend) => {
     dispatch({ type: "sent", id })
-    // The origin wallet joins the saved wallets, as a deposit's funder does.
-    if (!send.pays && deps.contacts)
-      void bestEffort(
-        "unknown",
-        upsertDepositL1WalletContact(deps.contacts, {
-          address: depositor,
-          walletName: send.walletName,
-          lastUsedAt: now(),
-        }),
-      )
+    if (!send.pays)
+      saveSendingWallet(deps.contacts, { address: depositor, walletName: send.walletName }, now)
     latest().onSent(hash)
     try {
       await bridgeIns.markSent(id, hash)

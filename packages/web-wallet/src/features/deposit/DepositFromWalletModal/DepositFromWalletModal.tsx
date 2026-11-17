@@ -220,6 +220,7 @@ export function DepositFromWalletModal({
         now: page.now,
         chainId: config.l1ChainId,
         fundDeposit: session.fundDeposit,
+        contacts: session.contacts,
         start,
         fee,
       },
@@ -483,7 +484,7 @@ export function DepositFromWalletModal({
         asset: {
           icon: <CoinIcon token={token} size={32} badge={config.l1Chain} />,
           symbol: token.symbol,
-          chain: config.l1Chain.name,
+          detail: config.l1Chain.name,
           onPick: onChangeOrigin,
         },
       }}
@@ -499,7 +500,7 @@ export function DepositFromWalletModal({
         asset: {
           icon: <CoinIcon token={settlement} size={32} badge="brand" />,
           symbol: capacitySymbol,
-          chain: brandCopy.name,
+          detail: brandCopy.name,
         },
       }}
       errors={overspent ? [copy.overspent] : typedError ? [typedError] : []}

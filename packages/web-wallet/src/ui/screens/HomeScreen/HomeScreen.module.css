@@ -351,28 +351,6 @@
     background: var(--surface-faint);
   }
 }
-/* Small labels: the rate, the token, a state. */
-.pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: var(--radius-full);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.2;
-}
-.pillGreen {
-  background: rgba(var(--accent-green-rgb), 0.12);
-  color: var(--accent-green);
-}
-.pillGreen::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
 /* Home on the Savings account: the card over its own cards, in the card's place beside the rail. */
 .savingsMain {
   flex: 1 1 434px;

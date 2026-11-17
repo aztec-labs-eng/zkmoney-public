@@ -1,0 +1,21 @@
+{
+  "scenario": "fresh",
+  "bootstrap": "/activity?account=savings&demo=fresh&flowFixture=success&savingsFixture=delayed",
+  "path": "/activity?account=savings&demo=fresh&flowFixture=success&savingsFixture=delayed",
+  "ready": { "role": "button", "name": "Open move details", "first": true },
+  "steps": [
+    {
+      "action": "screenshot",
+      "file": "savings-list.png",
+      "state": "Savings activity with both holdings' moves"
+    },
+    { "action": "click", "role": "button", "name": "Open move details", "nth": 1 },
+    { "action": "waitFor", "role": "dialog", "name": "Move details" },
+    {
+      "action": "screenshot",
+      "file": "savings-list-vault-in.png",
+      "state": "A claimed move in to the vault, read from Savings"
+    }
+  ],
+  "finalScreenshot": false
+}

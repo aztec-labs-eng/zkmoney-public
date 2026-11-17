@@ -2,6 +2,7 @@ import type { UnreadableRotationRow } from "@obsidion/front-core"
 import { bestEffort, bestEffortSync } from "@obsidion/core/errors"
 import {
   BackupPasskeyRefusedError,
+  type BackupAddChoice,
   type BackupPasskeyFacts,
   BrowserPasskeyCeremony,
   type CeremonyObserver,
@@ -27,6 +28,15 @@ import { fireEvent } from "./analytics"
 
 export const BACKUP_PASSKEY_OUTCOMES = ["succeeded", "cancelled", "refused", "failed"] as const
 export type BackupPasskeyOutcome = (typeof BACKUP_PASSKEY_OUTCOMES)[number]
+
+/** Where an add was asked to save the passkey (`none` without a picker), and its try in the sheet. */
+export interface BackupAddContext {
+  choice: BackupAddChoice | "none"
+  attempt: "1" | "2+"
+}
+
+/** How a backup sign-in came: signing in, or unlocking a signed-in page. */
+export type BackupSignInRoute = "enter" | "unlock"
 
 /**
  * The ceremony one backup add runs on. It has no passkey tracker, so an add never writes a
@@ -63,6 +73,7 @@ function reportBackupPasskeyAdd(
   outcome: BackupPasskeyOutcome,
   facts: BackupPasskeyFacts | undefined,
   windowsRelease: "10" | "11" | undefined,
+  context: BackupAddContext | undefined,
   error?: unknown,
 ): void {
   // Telemetry never fails the add.
@@ -76,6 +87,8 @@ function reportBackupPasskeyAdd(
         reason: error instanceof BackupPasskeyRefusedError ? error.kind : undefined,
         aaguid: otherAaguid(facts),
         windows_release: windowsRelease,
+        choice: context?.choice,
+        attempt: context?.attempt,
       }),
     undefined,
   )
@@ -85,10 +98,11 @@ function reportBackupPasskeyAdd(
  * Runs one backup add attempt and reports it once, when `run` settles: `succeeded` when it
  * resolves, else what its error maps to. `run` gets the ceremony to run on and the observer to
  * pass to `runBackupPasskeyCreation`, so a refusal, a dismissed second prompt or a saved passkey
- * whose response failed to decode still names the passkey.
+ * whose response failed to decode still names the passkey. `context` rides on the report.
  */
 export async function trackBackupPasskeyAdd<T>(
   run: (ceremony: PasskeyCeremony, observe: CeremonyObserver) => Promise<T>,
+  context?: BackupAddContext,
 ): Promise<T> {
   let saved: PasskeyAnswerEvidence | undefined
   let facts: BackupPasskeyFacts | undefined
@@ -111,10 +125,16 @@ export async function trackBackupPasskeyAdd<T>(
     result = await run(ceremony, observe)
   } catch (error) {
     const known = facts ?? (saved && backupAnswerFacts(saved))
-    reportBackupPasskeyAdd(backupPasskeyOutcomeFor(error), known, await windowsRelease, error)
+    reportBackupPasskeyAdd(
+      backupPasskeyOutcomeFor(error),
+      known,
+      await windowsRelease,
+      context,
+      error,
+    )
     throw error
   }
-  reportBackupPasskeyAdd("succeeded", facts, await windowsRelease)
+  reportBackupPasskeyAdd("succeeded", facts, await windowsRelease, context)
   return result
 }
 
@@ -122,6 +142,7 @@ export async function trackBackupPasskeyAdd<T>(
 export function reportBackupPasskeySignIn(
   outcome: BackupPasskeyOutcome,
   facts: BackupPasskeyFacts = { provider: "unknown" },
+  route?: BackupSignInRoute,
 ): void {
   // Telemetry never fails a sign-in.
   bestEffortSync(
@@ -131,6 +152,7 @@ export function reportBackupPasskeySignIn(
         provider: facts.provider,
         device_bound: facts.deviceBound,
         aaguid: otherAaguid(facts),
+        route,
       }),
     undefined,
   )

@@ -7,7 +7,12 @@ import type { Holding } from "@obsidion/core/oxide"
 import { ContractFunctionZeroDataError, erc20Abi, erc4626Abi } from "viem"
 import type { Address, BaseError, PublicClient } from "viem"
 import type { BalanceEntry } from "../../../engine/balances"
-import { holdingEarned, holdingEarnedPending, holdingLedger } from "../../../engine/holdingLedger"
+import {
+  holdingEarned,
+  holdingEarnedPending,
+  holdingLedger,
+  lineMoves,
+} from "../../../engine/holdingLedger"
 import type { LedgerBurn, LedgerMove } from "../../../engine/holdingLedger"
 import { heldShares } from "../../../engine/holdings"
 import type { HoldingLine } from "../../../engine/holdings"
@@ -26,7 +31,11 @@ export interface HoldingPrice {
   /** What one whole share redeems for, in the vault asset's base units. */
   sharePrice: bigint
   shareDecimals: number
+  /** The share token's symbol, as the vault gives it. */
+  shareSymbol: string
   assetDecimals: number
+  /** The vault asset's symbol, as its token gives it. */
+  assetSymbol: string
   /** The yearly yield in `RATE_SCALE`; absent before the vault is a window old, or when unread. */
   rate?: bigint
   readAt: number
@@ -68,8 +77,8 @@ const unborn = (err: unknown) =>
  * Each holding's price, keyed by its vault: read when a view subscribes, every minute while it
  * does, and by a task's `read()` once a minute old. A pass reads the L1 head once, and per holding
  * the latest share price and the price a window before that head, three holdings at a time; the
- * share's and the asset's decimals are read once. Only the earlier read is pinned, so a node a
- * block behind still prices the holding.
+ * decimals and symbols of the share and of the asset are read once. Only the earlier read is
+ * pinned, so a node a block behind still prices the holding.
  */
 export function holdingPrices(
   query: QueryFactory,
@@ -85,21 +94,29 @@ export function holdingPrices(
   })()
   const decimalsOf = (token: Address) =>
     l1().readContract({ address: token, abi: erc20Abi, functionName: "decimals" })
-  const decimals = query<[vault: string], [share: number, asset: number]>("holdingDecimals", {
-    load: (vault) =>
-      Promise.all([
+  const symbolOf = (token: Address) =>
+    l1().readContract({ address: token, abi: erc20Abi, functionName: "symbol" })
+  const units = query<
+    [vault: string],
+    [shareDecimals: number, shareSymbol: string, assetDecimals: number, assetSymbol: string]
+  >("holdingUnits", {
+    load: async (vault) => {
+      const [shareDecimals, shareSymbol, [assetDecimals, assetSymbol]] = await Promise.all([
         decimalsOf(vault as Address),
+        symbolOf(vault as Address),
         l1()
           .readContract({ address: vault as Address, abi: erc4626Abi, functionName: "asset" })
-          .then(decimalsOf),
-      ]),
+          .then((asset) => Promise.all([decimalsOf(asset), symbolOf(asset)])),
+      ])
+      return [shareDecimals, shareSymbol, assetDecimals, assetSymbol]
+    },
   })
   const price = query<[vault: string], HoldingPrice>("holdingPrice", {
     load: (vault, signal) =>
       limit(async () => {
-        const [at, [shareDecimals, assetDecimals]] = await Promise.all([
+        const [at, [shareDecimals, shareSymbol, assetDecimals, assetSymbol]] = await Promise.all([
           head.read(signal),
-          decimals(vault).read(signal),
+          units(vault).read(signal),
         ])
         const unit = 10n ** BigInt(shareDecimals)
         const priceAt = (blockNumber?: bigint) =>
@@ -125,7 +142,9 @@ export function holdingPrices(
         return {
           sharePrice,
           shareDecimals,
+          shareSymbol,
           assetDecimals,
+          assetSymbol,
           ...(then !== undefined && then > 0n ? { rate: yearlyRate(sharePrice, then) } : {}),
           readAt: now(),
         }
@@ -163,10 +182,7 @@ export function selectHoldingFigures(
   const shares = heldShares(balances, scope, line.l2Token)
   const read = price.status === "ready" ? price.value : undefined
   const value = shares !== undefined && read ? holdingValue(shares, read) : undefined
-  const ledger = holdingLedger(
-    moves.filter((m) => line.holdingIds.includes(m.holdingId)),
-    burns,
-  )
+  const ledger = holdingLedger(lineMoves(moves, line.holdingIds), burns)
   const earned =
     shares !== undefined && value !== undefined && read
       ? holdingEarned(ledger, value, shares, read.shareDecimals)

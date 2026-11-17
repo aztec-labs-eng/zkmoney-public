@@ -37,6 +37,7 @@ function liveAbout(processing?: SipaProcessingState, deposits: SipaDeposit[] = [
     deposits: { records: deposits, hydrated: true },
     withdrawals: { records: [], hydrated: true },
     upgrades: { items: [], recipients: new Set(), loaded: true },
+    moves: [],
     processing: new Map(processing ? [[SIPA, processing]] : []),
     registrations: [record],
     operations: { ended: [], running: [] },

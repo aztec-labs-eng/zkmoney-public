@@ -1,7 +1,7 @@
 /** The withdraw flow's state changes: steps, the amount, the kept quotes, the review and the burn. */
 import { describe, expect, it } from "vitest"
 import { getAddress, parseUnits } from "viem"
-import { withdrawInitial } from "../../../src/features/withdraw/WithdrawFlow/withdrawFlow"
+import { withdrawInitial } from "../../../src/features/withdraw/WithdrawFlow/withdrawScreenFlow"
 import {
   withdrawTransition,
   type WithdrawEvent,

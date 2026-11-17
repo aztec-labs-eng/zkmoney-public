@@ -1,14 +1,21 @@
-import type { ReactNode } from "react"
+import { useRef, type ReactNode } from "react"
 import { Icon } from "@obsidion/web-ds"
+import { usePickerDismiss } from "../usePickerDismiss"
 import copy from "./TransferWidget.copy"
 import styles from "./TransferWidget.module.css"
 
-/** The token and chain on one side; pressable where that side can change. */
+/** The token on one side, under it its chain or a vault's rate. Pressable where it can change. */
 export interface TransferAsset {
   icon: ReactNode
   symbol: string
-  chain: string
+  detail: string
   onPick?: () => void
+  /** The choices, under the chip while they are open. */
+  menu?: ReactNode
+  /** Closes `menu` from a press outside the chip, or Escape. */
+  onDismiss?: () => void
+  /** Replaces the chip's `transfer-asset` test id. */
+  testId?: string
 }
 
 export interface TransferSide {
@@ -31,27 +38,46 @@ export interface TransferSide {
 }
 
 function AssetChip({ asset }: { asset: TransferAsset }) {
+  const slot = useRef<HTMLDivElement>(null)
+  const trigger = useRef<HTMLButtonElement>(null)
+  const dismiss = useRef(asset.onDismiss)
+  dismiss.current = asset.onDismiss
+  const close = useRef((next: boolean) => {
+    if (!next) dismiss.current?.()
+  })
+  const open = asset.menu != null
+  usePickerDismiss(open, close.current, slot, trigger)
   const body = (
     <>
       {asset.icon}
       <span className={styles.chipText}>
         <b>{asset.symbol}</b>
-        <small>{asset.chain}</small>
+        <small>{asset.detail}</small>
       </span>
     </>
   )
-  return asset.onPick ? (
-    <button
-      type="button"
-      className={`zkm-btn-reset zkm-pressable ${styles.chip}`}
-      data-testid="transfer-asset"
-      onClick={asset.onPick}
-    >
-      {body}
-      <Icon name="chevron-down" size={16} />
-    </button>
-  ) : (
-    <span className={styles.chip}>{body}</span>
+  return (
+    <div className={styles.slot} ref={slot}>
+      {asset.onPick ? (
+        <button
+          ref={trigger}
+          type="button"
+          className={`zkm-btn-reset zkm-pressable ${styles.chip}`}
+          data-testid={asset.testId ?? "transfer-asset"}
+          aria-haspopup={asset.onDismiss ? "listbox" : undefined}
+          aria-expanded={asset.onDismiss ? open : undefined}
+          onClick={asset.onPick}
+        >
+          {body}
+          <Icon name={open ? "chevron-up" : "chevron-down"} size={16} />
+        </button>
+      ) : (
+        <span className={styles.chip} data-testid={asset.testId ?? "transfer-asset"}>
+          {body}
+        </span>
+      )}
+      {open && <div className={styles.menu}>{asset.menu}</div>}
+    </div>
   )
 }
 
@@ -63,7 +89,11 @@ export function TransferWidget({ from, to }: { from: TransferSide; to: TransferS
   return (
     <div className={styles.transfer}>
       {[from, to].map((side) => (
-        <div key={side.label} className={styles.side} data-testid={side.testId}>
+        <div
+          key={side.label}
+          className={side.asset.menu != null ? `${styles.side} ${styles.open}` : styles.side}
+          data-testid={side.testId}
+        >
           {side === to && (
             <span className={styles.arrow} aria-hidden>
               <Icon name="arrow-down" size={16} />

@@ -7,8 +7,17 @@ import type { MoveDirection, MoveQuote, MoveRail, MoveRecord } from "../../../en
 import { service, type Service } from "../../../engine/service"
 import type { ReadonlyStore } from "../../../engine/store"
 import { newWithdrawalLocalId } from "../../../engine/withdrawals"
-import { moveAtHead, onRail, type MovesDeps } from "./settleMoves"
-import type { BoundRail, MovePorts, MoveRoute, MoveRoutes, RouteHolding } from "./types"
+import { moveAtHead, onRail, withInto, type MovesDeps } from "./settleMoves"
+import {
+  railHoldings,
+  type BoundRail,
+  type MovePorts,
+  type MoveRoute,
+  type MoveRoutes,
+  type RailPorts,
+  type RouteHolding,
+  type VaultSwapRoutes,
+} from "./types"
 
 /**
  * The commands a view's flow runs on the account's moves. A `watch` goes to the account that makes
@@ -31,6 +40,19 @@ export interface Moves<Watch = never> {
   /** Moves `amount` of the holding's token to its base, as `add` does. */
   withdraw(
     holdingId: string,
+    amount: bigint,
+    operationId: string,
+    reviewed?: MoveQuote,
+    signal?: AbortSignal,
+  ): Promise<MoveRecord>
+  /**
+   * Moves `amount` of `fromId`'s token into `toId` in one burn, as `add` does. Refuses with
+   * `move.noVaultSwap` when the two are not on one rail that swaps, and with `move.exitOnly` when
+   * the wallet does not list `toId`.
+   */
+  vaultSwap(
+    fromId: string,
+    toId: string,
     amount: bigint,
     operationId: string,
     reviewed?: MoveQuote,
@@ -103,6 +125,28 @@ export const runnableRails = (rails: readonly BoundRail[]): ReadonlySet<MoveRail
     ),
   )
 
+/**
+ * The holdings each holding can swap into: served by its rail, when the rail swaps, listed,
+ * and not itself. What `Moves.vaultSwap` accepts.
+ */
+export const vaultSwapTargets = (
+  rails: readonly BoundRail[],
+): ReadonlyMap<string, readonly string[]> =>
+  new Map(
+    rails.flatMap((bound) =>
+      bound((rail) => {
+        const { routes, listed } = rail
+        if (routes.vaultSwap === undefined) return []
+        const holdings = railHoldings(rail)
+        const into = holdings.filter((h) => listed.has(h.id)).map((h) => h.id)
+        return holdings.map((h): [string, readonly string[]] => [
+          h.id,
+          into.filter((id) => id !== h.id),
+        ])
+      }),
+    ),
+  )
+
 /** Whether the move's rail can send its funds back, and its route has not run. */
 export const selectMoveRecoverable = (
   move: Pick<MoveRecord, "rail" | "phase">,
@@ -110,32 +154,90 @@ export const selectMoveRecoverable = (
 ): boolean => BEFORE_RELEASE.has(move.phase) && rails.has(move.rail)
 
 /**
- * Runs `use` with the holding `holdingId` names and its rail's port, in the port's types, and
- * whether the wallet lists the holding.
+ * Runs `use` with the rail that swaps `fromId` into `toId`, and both holdings in its port's
+ * types: the rail that serves both, whichever rail moves each in and out. Refuses with
+ * `move.noVaultSwap` when no rail does.
+ */
+export async function withVaultSwap<T>(
+  ports: Pick<MovePorts, "rails">,
+  fromId: string,
+  toId: string,
+  use: <H extends RouteHolding, R extends MoveRoute, Q extends MoveQuote>(
+    rail: RailPorts<H, R, Q>,
+    vaultSwaps: VaultSwapRoutes<H, R, Q>,
+    from: H,
+    into: H,
+  ) => Promise<T>,
+): Promise<T> {
+  for (const bound of ports.rails.get()) {
+    const run = bound((rail) => {
+      const holdings = railHoldings(rail)
+      const from = holdings.find((h) => h.id === fromId)
+      const into = holdings.find((h) => h.id === toId)
+      const vaultSwaps = rail.routes.vaultSwap
+      if (!from || !into || !vaultSwaps || toId === fromId) return undefined
+      return () => use(rail, vaultSwaps, from, into)
+    })
+    if (run) return run()
+  }
+  throw new WalletError("move.noVaultSwap", `${fromId} to ${toId}`)
+}
+
+/**
+ * Runs `use` with the rail that moves the holding `holdingId` in and out, in its port's types, and
+ * it.
  */
 export async function withHolding<T>(
   ports: MovePorts,
   holdingId: string,
   use: <H extends RouteHolding, R extends MoveRoute, Q extends MoveQuote>(
-    routes: MoveRoutes<H, R, Q>,
+    rail: RailPorts<H, R, Q>,
     holding: H,
-    listed: boolean,
   ) => Promise<T>,
 ): Promise<T> {
   for (const bound of ports.rails.get()) {
-    const run = bound(({ routes, holdings, listed }) => {
-      const holding = holdings.find((h) => h.id === holdingId)
-      return holding && (() => use(routes, holding, listed.has(holding.id)))
+    const run = bound((rail) => {
+      const holding = rail.holdings.find((h) => h.id === holdingId)
+      return holding && (() => use(rail, holding))
     })
     if (run) return run()
   }
   throw new WalletError("holding.noRoute", `no holding ${holdingId}`)
 }
 
+/** Runs `use` with the rail `move` runs on and its holding, as `withHolding` does. */
+async function withMove<T>(
+  ports: MovePorts,
+  move: Pick<MoveRecord, "id" | "holdingId" | "rail">,
+  use: <H extends RouteHolding, R extends MoveRoute, Q extends MoveQuote>(
+    rail: RailPorts<H, R, Q>,
+    holding: H,
+  ) => Promise<T>,
+): Promise<T> {
+  for (const bound of ports.rails.get()) {
+    const run = bound((rail) => {
+      if (rail.routes.rail !== move.rail) return undefined
+      const holding = railHoldings(rail).find((h) => h.id === move.holdingId)
+      return holding && (() => use(rail, holding))
+    })
+    if (run) return run()
+  }
+  throw new WalletError("holding.noRoute", `no ${move.rail} holding ${move.holdingId}`)
+}
+
+/** Whether a rail serves a holding `holdingId`. */
+const served = (ports: MovePorts, holdingId: string) =>
+  ports.rails
+    .get()
+    .some((bound) => bound((rail) => railHoldings(rail).some((h) => h.id === holdingId)))
+
 function movesOf<Watch>(deps: MovesDeps, ports: MovePorts<Watch>): Moves<Watch> {
   const { account } = ports
 
-  /** Builds the move through its port, saves it, then burns. */
+  /**
+   * Builds the move through its port, saves it, then burns. With `into`, a swap from `holding`
+   * into `into.holding`.
+   */
   async function move<H extends RouteHolding, R extends MoveRoute, Q extends MoveQuote>(
     routes: MoveRoutes<H, R, Q>,
     holding: H,
@@ -144,10 +246,15 @@ function movesOf<Watch>(deps: MovesDeps, ports: MovePorts<Watch>): Moves<Watch> 
     operationId: string,
     reviewed: MoveQuote | undefined,
     signal: AbortSignal | undefined,
+    into?: { holding: H; vaultSwaps: VaultSwapRoutes<H, R, Q> },
   ): Promise<MoveRecord> {
-    const route = await routes.read(holding)
+    const [route, intoRoute] = await Promise.all([
+      routes.read(holding),
+      into && routes.read(into.holding),
+    ])
+    const to = into && intoRoute && { ...into, route: intoRoute }
     const [quote, scanFrom] = await Promise.all([
-      routes.quote(route, direction, amount),
+      to ? to.vaultSwaps.quote(route, to.route, amount) : routes.quote(route, direction, amount),
       routes.head(),
     ])
     if (reviewed && quote.conversionOut < reviewed.conversionOut) {
@@ -161,7 +268,9 @@ function movesOf<Watch>(deps: MovesDeps, ports: MovePorts<Watch>): Moves<Watch> 
     const recipientCommitment = await routes.commitment(salts.recipient, account.address)
     const recovery = { salt: salts.recovery, account: account.recoveryAccount }
     const args = { direction, amount, from: account.address, nonce, recipientCommitment, recovery }
-    const { target, withdrawal, releaseTip, ...rail } = routes.build(route, args, quote)
+    const { target, withdrawal, releaseTip, ...rail } = to
+      ? to.vaultSwaps.build(route, to.route, args, quote)
+      : routes.build(route, args, quote)
     const startTime = deps.now()
     const id = newWithdrawalLocalId(startTime)
     const record = {
@@ -169,6 +278,7 @@ function movesOf<Watch>(deps: MovesDeps, ports: MovePorts<Watch>): Moves<Watch> 
       id,
       holdingId: holding.id,
       direction,
+      ...(to ? { intoHoldingId: to.holding.id } : {}),
       amount,
       nonce,
       recipientCommitment,
@@ -183,6 +293,7 @@ function movesOf<Watch>(deps: MovesDeps, ports: MovePorts<Watch>): Moves<Watch> 
       operationId,
       withdrawalLocalId: id,
       holdingId: holding.id,
+      ...(to ? { intoHoldingId: to.holding.id } : {}),
       nonce,
       direction,
       source,
@@ -205,23 +316,39 @@ function movesOf<Watch>(deps: MovesDeps, ports: MovePorts<Watch>): Moves<Watch> 
 
   return {
     add: (holdingId, amount, operationId, reviewed, signal) =>
-      withHolding(ports, holdingId, (routes, holding, listed) => {
-        if (!listed) throw new WalletError("move.exitOnly", holdingId)
+      withHolding(ports, holdingId, ({ routes, listed }, holding) => {
+        if (!listed.has(holdingId)) throw new WalletError("move.exitOnly", holdingId)
         return move(routes, holding, "in", amount, operationId, reviewed, signal)
       }),
     withdraw: (holdingId, amount, operationId, reviewed, signal) =>
-      withHolding(ports, holdingId, (routes, holding) =>
+      withHolding(ports, holdingId, ({ routes }, holding) =>
         move(routes, holding, "out", amount, operationId, reviewed, signal),
       ),
+    async vaultSwap(fromId, toId, amount, operationId, reviewed, signal) {
+      for (const id of [fromId, toId])
+        if (!served(ports, id)) throw new WalletError("holding.noRoute", id)
+      return withVaultSwap(ports, fromId, toId, ({ routes, listed }, vaultSwaps, from, into) => {
+        if (!listed.has(toId)) throw new WalletError("move.exitOnly", toId)
+        return move(routes, from, "out", amount, operationId, reviewed, signal, {
+          holding: into,
+          vaultSwaps,
+        })
+      })
+    },
     async recover(moveId, to, watch) {
       const record = await deps.moves.get(moveId)
       if (!record) throw new WalletError("invariant", `no move ${moveId}`)
-      return withHolding(ports, record.holdingId, async (routes, holding) => {
+      return withMove(ports, record, async (rail, holding) => {
+        const { routes } = rail
+        const holdings = railHoldings(rail)
         const { recover } = routes
         if (!recover || !onRail(record, routes.rail) || !BEFORE_RELEASE.has(record.phase)) {
           throw new WalletError("move.noRecovery", `${moveId}: ${record.rail}, ${record.phase}`)
         }
-        const at = { holding, routes, route: await routes.read(holding) }
+        const own = { holding, routes, route: await routes.read(holding) }
+        // Recovery pays the source's shares: a swap's destination it cannot read leaves it that.
+        const at =
+          (await bestEffort("unknown", withInto(own, record, holdings, routes.read))) ?? own
         const burn =
           record.withdrawalLocalId === undefined
             ? undefined
@@ -295,7 +422,7 @@ function movesOf<Watch>(deps: MovesDeps, ports: MovePorts<Watch>): Moves<Watch> 
       if (!record) throw new WalletError("invariant", `no move ${moveId}`)
       // What the signer is shown: the escrow the run empties.
       const shown = record.rail === "skyEscrow" ? record.escrow.address : undefined
-      return withHolding(ports, record.holdingId, async (routes, holding) => {
+      return withMove(ports, record, async ({ routes }, holding) => {
         if (!routes.run || !onRail(record, routes.rail))
           throw new WalletError("invariant", `${moveId}: no run on ${record.rail}`)
         if (!BEFORE_RELEASE.has(record.phase)) throw new WalletError("move.escrowRan", moveId)

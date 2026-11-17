@@ -10,7 +10,7 @@ import {
   type SentRecord,
   type WithdrawFlowDeps,
   type WithdrawInputs,
-} from "../../../src/features/withdraw/WithdrawFlow/withdrawFlow"
+} from "../../../src/features/withdraw/WithdrawFlow/withdrawScreenFlow"
 import type { WithdrawState } from "../../../src/features/withdraw/WithdrawFlow/withdrawTransition"
 import {
   bridgeOutDecimals,

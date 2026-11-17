@@ -5,12 +5,8 @@ import type { MoveRecord } from "./moveTransition"
 /** The relayer retries a reverting release this long by default, then drops it. */
 export const RELAYER_MAX_PENDING_AGE_MS = 14 * 24 * 60 * 60 * 1000
 
-/**
- * What a delayed move waits on. `illiquidVault`: the vault cannot redeem the shares until its
- * markets have liquidity. `vaultFull`: the vault takes no more deposits. `relayerDropped`: no known
- * condition, and the relayer dropped the release after its max pending age.
- */
-export type MoveDelay = "illiquidVault" | "vaultFull" | "relayerDropped"
+/** What a delayed move waits on: the relayer dropped its release after its max pending age. */
+export type MoveDelay = "relayerDropped"
 
 /** Where a move stands. A move that waits on an L1 condition is delayed, never failed. */
 export type MoveState =
@@ -31,18 +27,7 @@ const PENDING: MoveState = { kind: "pending" }
  * none: its burn was made on another device, and its wait counts from its start time.
  */
 export function selectMoveState(
-  move: Pick<
-    MoveRecord,
-    | "phase"
-    | "rail"
-    | "direction"
-    | "amount"
-    | "quote"
-    | "observed"
-    | "failure"
-    | "startTime"
-    | "replayedFrom"
-  >,
+  move: Pick<MoveRecord, "phase" | "rail" | "failure" | "startTime" | "replayedFrom">,
   withdrawal:
     | Pick<WithdrawalRecord, "phase" | "l2TxHash" | "minedAt" | "startTime" | "failure">
     | undefined,
@@ -59,7 +44,7 @@ export function selectMoveState(
     if (move.phase === "burning") return { kind: "proving" }
     // Not replayed: the burn's record is still loading.
     if (move.replayedFrom === undefined) return PENDING
-    return waiting(move, move.startTime, now)
+    return waiting(move.startTime, now)
   }
   if (withdrawal.phase === "failed") return { kind: "failed", failure: withdrawal.failure }
   if (withdrawal.phase === "submitting") {
@@ -68,34 +53,12 @@ export function selectMoveState(
   // A spent escrow burn still waits, on whoever runs the escrow.
   const spent = withdrawal.phase === "done" && move.rail === "skyEscrow"
   if (withdrawal.phase !== "finalizing_l1" && !spent) return PENDING
-  return waiting(move, withdrawal.minedAt ?? withdrawal.startTime, now)
+  return waiting(withdrawal.minedAt ?? withdrawal.startTime, now)
 }
 
-/**
- * A move whose release waits on L1 since `since`, held to the terms' limits in their own units:
- * a move in by what its conversion delivers in the vault's asset, a move out by the shares it
- * redeems. A replayed move keeps no quote: moving out its burn's shares bound it, moving in nothing
- * does.
- */
-function waiting(
-  move: Pick<MoveRecord, "direction" | "amount" | "quote" | "observed">,
-  since: number,
-  now: number,
-): MoveState {
-  const dropped = now - since >= RELAYER_MAX_PENDING_AGE_MS
-  const limits = move.observed
-  const redeemed = move.quote?.routed ?? move.amount
-  const deposited = move.quote?.conversionOut
-  const reason: MoveDelay | undefined =
-    limits && move.direction === "out" && limits.maxRedeem < redeemed
-      ? "illiquidVault"
-      : limits &&
-        move.direction === "in" &&
-        deposited !== undefined &&
-        limits.maxDeposit < deposited
-      ? "vaultFull"
-      : dropped
-      ? "relayerDropped"
-      : undefined
-  return reason ? { kind: "delayed", reason, dropped } : PENDING
+/** A move whose release waits on L1 since `since`. */
+function waiting(since: number, now: number): MoveState {
+  return now - since >= RELAYER_MAX_PENDING_AGE_MS
+    ? { kind: "delayed", reason: "relayerDropped", dropped: true }
+    : PENDING
 }

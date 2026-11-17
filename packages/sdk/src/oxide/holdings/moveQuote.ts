@@ -57,7 +57,7 @@ const WITHDRAWAL_FLOW = 0
 /** Gas depends on whether the tip transfer writes a nonzero balance, not on the amount. */
 const SIMULATION_TIP = 1n
 /** The simulation opens neither commitment; both only need to be nonzero and field-sized. */
-const SIMULATION_COMMITMENT = `0x00${keccak256(
+export const SIMULATION_COMMITMENT = `0x00${keccak256(
   new TextEncoder().encode("obsidion.vault-move.simulation"),
 ).slice(4)}` as const
 /** A fresh account, so the tip transfer is priced as a cold, zero-to-nonzero write. */
@@ -94,10 +94,45 @@ export function tipsExceedAmount(amount: bigint, tips: bigint): WalletError {
   )
 }
 
-type QuoteClient = Pick<
+export type QuoteClient = Pick<
   PublicClient,
   "getBlock" | "estimateMaxPriorityFeePerGas" | "simulateBlocks" | "readContract"
 >
+
+/**
+ * The relayer tip for a release that runs a route, in `token`, with the route's gas `routeGas`
+ * measures, read beside the block, fees and prices.
+ */
+export async function routeTip(
+  client: QuoteClient,
+  eth: EthUsdSource,
+  token: TipTokenPrice,
+  routeGas: () => Promise<bigint>,
+): Promise<RelayerTipEstimate & { routeGas: bigint }> {
+  const [block, feeValues, prices, gas] = await Promise.all([
+    client.getBlock({ blockTag: "latest" }),
+    estimateL1OperationFeeValues(client),
+    readTipPrices(client, { eth, token }),
+    routeGas(),
+  ])
+  const gasUsed = RELEASE_GAS_WITHOUT_ROUTE + gas
+  // The relayer covers the two gas-cost words of the executor call, as oxide's quote does.
+  const minPayout = tipQuote(prices, {
+    gasToCover: gasUsed + 2n * UINT256_EXTRA_CALLDATA_GAS,
+    block,
+    feeValues,
+  })
+  return {
+    routeGas: gas,
+    relayerTip: withTipMargin(minPayout),
+    minPayout,
+    gasUsed,
+    maxFeePerGas: feeValues.maxFeePerGas,
+    usdPerEth: prices.usdPerEth,
+    baseFee: block.baseFeePerGas ?? 0n,
+    priorityFee: feeValues.maxPriorityFeePerGas,
+  }
+}
 
 /**
  * Quotes a move of `amount`. Throws `move.tipsExceedAmount` when the tips leave nothing,
@@ -133,23 +168,13 @@ export async function quoteMove(
     // The route's gas does not depend on its amount, so it is measured before the tip is priced, on
     // an amount the route gets at least: the whole of it with the tips on top, else half.
     const probe = tipsOnTop ? executed : executed / 2n
-    const [block, feeValues, prices, routeGas] = await Promise.all([
-      client.getBlock({ blockTag: "latest" }),
-      estimateL1OperationFeeValues(client),
-      readTipPrices(client, { eth: args.eth, token }),
+    const tip = await routeTip(client, args.eth, token, () =>
       simulateMove(client, route, direction, {
         executed: probe + SIMULATION_TIP,
         relayerTip: SIMULATION_TIP,
       }),
-    ])
-    const gasUsed = RELEASE_GAS_WITHOUT_ROUTE + routeGas
-    // The relayer covers the two gas-cost words of the executor call, as oxide's quote does.
-    const minPayout = tipQuote(prices, {
-      gasToCover: gasUsed + 2n * UINT256_EXTRA_CALLDATA_GAS,
-      block,
-      feeValues,
-    })
-    const relayerTip = withTipMargin(minPayout)
+    )
+    const { relayerTip } = tip
     const feePoolCut = MOVE_FEE_POOL_CUT.amount
     const amount = tipsOnTop ? args.amount + proverTip + relayerTip + feePoolCut : args.amount
     if (amount - proverTip <= relayerTip + feePoolCut) {
@@ -182,14 +207,7 @@ export async function quoteMove(
       conversionMinOut: terms.conversion.minOut,
       expectedOut: terms.expectedOut,
       minOut: terms.minOut,
-      routeGas,
-      relayerTip,
-      minPayout,
-      gasUsed,
-      maxFeePerGas: feeValues.maxFeePerGas,
-      usdPerEth: prices.usdPerEth,
-      baseFee: block.baseFeePerGas ?? 0n,
-      priorityFee: feeValues.maxPriorityFeePerGas,
+      ...tip,
     }
   } catch (error) {
     if (error instanceof WalletError) throw error
@@ -222,26 +240,6 @@ export async function vaultShareTipPrice(
 export function bufferedMinOut(expectedOut: bigint, bufferBps: bigint): bigint {
   if (bufferBps < 0n || bufferBps >= BPS) throw new RangeError(`buffer ${bufferBps} bps`)
   return (expectedOut * (BPS - bufferBps)) / BPS
-}
-
-/** What a vault takes and gives back now: a deposit in its asset, a redeem in its shares. */
-export interface TermsLimits {
-  /** For a deposit by the portal-deposit adapter's route, in the asset. */
-  maxDeposit: bigint
-  /** For a redeem of the vault portal's shares, in shares. */
-  maxRedeem: bigint
-}
-
-/** The vault's limits for a move's terms step. */
-export async function readTermsLimits({
-  deployment,
-  terms,
-}: Pick<HoldingRoute, "deployment" | "terms">): Promise<TermsLimits> {
-  const [maxDeposit, maxRedeem] = await Promise.all([
-    terms.reader.maxDeposit(deployment.portalDepositAdapter),
-    terms.reader.maxRedeem(deployment.held.portal),
-  ])
-  return { maxDeposit, maxRedeem }
 }
 
 interface MoveTerms {

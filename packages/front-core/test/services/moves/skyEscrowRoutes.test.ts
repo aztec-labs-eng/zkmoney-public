@@ -7,7 +7,7 @@ import { SkyEscrowFactoryAbi, SkyRoute } from "@oxide/experiments/sky/sky_saving
 import { EscrowBaseAbi } from "@oxide/l1-contracts/artifacts.js"
 import { L1_OPERATION_BROADCAST_TIERS } from "@oxide/oxide-lib/l1_operation_calldata.js"
 import { decodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal_executor.js"
-import { decodeFunctionData, getAddress, isAddressEqual, maxUint256, multicall3Abi } from "viem"
+import { decodeFunctionData, getAddress, isAddressEqual, multicall3Abi } from "viem"
 import type { Address, Hex } from "viem"
 import { describe, expect, it } from "vitest"
 import type { MoveDirection } from "../../../src/engine/moveTransition"
@@ -103,7 +103,6 @@ describe("skyEscrowRoutes keeps the MoveRoutes contract", () => {
     holding: SKY_HOLDING,
     amount: AMOUNT,
     token: { address: DAI, symbol: "DAI", decimals: 18 },
-    limits: { maxDeposit: maxUint256, maxRedeem: maxUint256 },
     keys: RECOVERY_KEYS,
     escrowTip: (quote) => quote.escrowTip,
     recoveredToken: (route) => route.base.token,

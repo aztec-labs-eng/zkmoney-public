@@ -15,6 +15,7 @@ import { Modal } from "../../../ui/Modal"
 import { approvalsLeft, MoveSteps, type MoveStepRow } from "../../../ui/MoveSteps/MoveSteps"
 import stepsCopy from "../../../ui/MoveSteps/MoveSteps.copy"
 import { selectHeldTotal, type CheckStatus, type MoveRowView } from "../accountHistory"
+import { reportHistoryChecked, reportMoveEnded } from "../backupFunnel"
 import { getPreviousAccountWatcher, type MoveForecast } from "../previousAccountWatcher"
 import copy from "./AccountHistorySheet.copy"
 import styles from "./AccountHistorySheet.module.css"
@@ -42,10 +43,21 @@ export function AccountHistorySheet({ onClose }: { onClose: () => void }) {
     ? () =>
         void bestEffort(
           "unknown",
-          session.wallet.ready().then((wallet) => watcher.check(wallet)),
+          session.wallet
+            .ready()
+            .then((wallet) => watcher.check(wallet))
+            .then(() => reportHistoryChecked(session.accountHistory.get())),
         )
     : undefined
-  const move = () => void watcher.move({ signal: leave.current?.signal })
+  const move = () => {
+    const planned =
+      history.kind === "rotation" && history.status.kind === "found"
+        ? history.status.forecast?.approvals
+        : undefined
+    void watcher
+      .move({ signal: leave.current?.signal })
+      .then((outcome) => reportMoveEnded(outcome, session.accountHistory.get(), planned))
+  }
   const amount = (atomic: bigint) => (hideBal ? HIDDEN_BALANCE : usdAtomicFloor(atomic))
   const rotation = history.kind === "rotation"
   return (
@@ -224,7 +236,7 @@ function Status({
           <div className={`ww-contacts__group ${styles.rows}`}>
             {status.held.map((holding) => (
               <ConfirmationSheetDetailRow
-                key={holding.kind}
+                key={holding.token}
                 label={holding.kind === "main" ? copy.main : copy.savings}
                 value={
                   holding.kind === "main"

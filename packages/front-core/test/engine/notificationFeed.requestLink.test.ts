@@ -30,6 +30,7 @@ const targetOf = (record: OperationRecord) => {
     deposits: { records: [], hydrated: true },
     withdrawals: { records: [], hydrated: true },
     upgrades: { items: [], recipients: new Set(), loaded: true },
+    moves: [],
     processing: new Map(),
     registrations: [],
     operations: { ended: [record], running: [] },

@@ -6,6 +6,7 @@ export type LedgerMove = Pick<
   MoveRecord,
   | "id"
   | "holdingId"
+  | "intoHoldingId"
   | "direction"
   | "amount"
   | "phase"
@@ -43,6 +44,22 @@ export interface HoldingLedger {
 
 /** The burn's phases before its shares have left the holding. */
 const UNMINED: ReadonlySet<WithdrawalRecord["phase"]> = new Set(["submitting", "failed"])
+
+/**
+ * The moves of the holdings `holdingIds`, each as the line sees it: a swap out of one of them is
+ * a move out, and a swap into one a move in, at what the destination's vault took in. Earned
+ * restarts at a swap.
+ */
+export function lineMoves<M extends LedgerMove>(
+  moves: readonly M[],
+  holdingIds: readonly string[],
+): M[] {
+  return moves.flatMap((move): M[] => {
+    const from = holdingIds.includes(move.holdingId)
+    const into = move.intoHoldingId !== undefined && holdingIds.includes(move.intoHoldingId)
+    return [...(from ? [move] : []), ...(into ? [{ ...move, direction: "in" as const }] : [])]
+  })
+}
 
 /**
  * The cost of the shares `moves` leave, at average cost, replayed in the order the shares moved: a

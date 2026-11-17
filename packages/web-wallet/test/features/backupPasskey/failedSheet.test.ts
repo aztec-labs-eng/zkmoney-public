@@ -21,7 +21,7 @@ const PLACE: BackupAddOptions = {
   ],
   selected: "key",
 }
-const OVER_PLACE: BackupScreen = { id: "place", place: PLACE, busy: false }
+const OVER_PLACE: BackupScreen = { id: "place", place: PLACE, opened: "key", busy: false }
 
 const sheet = (failure: BackupFailure, over: { under?: BackupScreen; canCancel?: boolean } = {}) =>
   failedSheet({ id: "failed", failure, canCancel: false, busy: false, checking: false, ...over })

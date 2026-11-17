@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import type { Address } from "viem"
 import { openDatabase } from "../../src/engine/database"
 import { memoryBackend, type MemoryBackend } from "../../src/engine/memoryBackend"
-import { decodeRecord, loadRecords } from "../../src/engine/persistentStore"
+import { decodeRecord, encodeRecord, loadRecords } from "../../src/engine/persistentStore"
 import {
   createSipaDeposits,
   sipaCursorKey,
@@ -177,7 +177,7 @@ describe("createSipaDeposits broadcast migration", () => {
     expect(await store.byRecipient(RECIPIENT)).toHaveLength(1)
   })
 
-  it("opens a store saved at version 1 at version 3, folding its broadcasts once", async () => {
+  it("opens a store saved at version 1 at version 4, folding its broadcasts once", async () => {
     const backend = memoryBackend()
     await openAccount(backend).ready
     backend.entries.set(`${ACCOUNT}acct/meta/sipaDeposits`, "1")
@@ -185,7 +185,30 @@ describe("createSipaDeposits broadcast migration", () => {
     const store = openAccount(backend)
 
     expect((await loadRecords(store.view)).map((r) => r.broadcast?.kind)).toEqual(["deposit"])
-    expect(backend.entries.get(`${ACCOUNT}acct/meta/sipaDeposits`)).toBe("3")
+    expect(backend.entries.get(`${ACCOUNT}acct/meta/sipaDeposits`)).toBe("4")
+  })
+
+  it("opens a store saved at version 3 with its bridge fills unread and its transfers plain", async () => {
+    const backend = memoryBackend()
+    await openAccount(backend).ready
+    backend.entries.set(`${ACCOUNT}acct/meta/sipaDeposits`, "3")
+    const relayer = `0x${"ee".repeat(20)}` as Address
+    const bridged = { ...fields(), funding: "bridge", fundingFromAddress: relayer }
+    const sent = { ...fields({ sipaAddress: B }), funding: "transfer" }
+    for (const record of [bridged, sent])
+      backend.entries.set(
+        `${ACCOUNT}acct/sipaDeposits/${record.sipaAddress.toLowerCase()}`,
+        encodeRecord(record),
+      )
+    backend.entries.set(`${PAGE}${BROADCASTS_STORAGE_KEY}`, JSON.stringify({ a: job(A) }))
+    const store = openAccount(backend)
+
+    const [a, b] = await loadRecords(store.view)
+    expect(a).not.toHaveProperty("funding")
+    expect(a).toMatchObject({ fundingFromAddress: relayer })
+    expect(a).not.toHaveProperty("broadcast")
+    expect(b).toMatchObject({ funding: "plain" })
+    expect(backend.entries.get(`${ACCOUNT}acct/meta/sipaDeposits`)).toBe("4")
   })
 
   it("opens with no broadcasts over a blob that does not parse", async () => {

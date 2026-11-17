@@ -105,13 +105,17 @@ import { isEtherfiContact, useSavedL1Wallets } from "../../../session/savedL1Wal
 import type { WithdrawFlowEntry } from "../../../session/routeStates"
 import { FEE_UNAVAILABLE_COPY, useSwapSimulation } from "../withdrawQuote"
 import { tokenName } from "../../token/tokenName"
-import { WITHDRAWAL_RECEIVE_ASSETS, withdrawalReceiveAsset } from "../withdrawAssets"
+import {
+  mainTransferAsset,
+  WITHDRAWAL_RECEIVE_ASSETS,
+  withdrawalReceiveAsset,
+} from "../withdrawAssets"
 import type { WithdrawalReceiveAsset } from "../withdrawAssets"
 import { breakdown, FeeInfoButton } from "../../../ui/FeeBreakdown/FeeBreakdown"
 import type { FeeRow } from "../../../ui/FeeBreakdown/FeeBreakdown"
 import { addressName, asksName, connectedRecipient, walletPillName } from "./walletRecipient"
-import { openWithdrawFlow, withdrawFlowDeps, withdrawInitial } from "./withdrawFlow"
-import type { WithdrawInputs } from "./withdrawFlow"
+import { openWithdrawFlow, withdrawFlowDeps, withdrawInitial } from "./withdrawScreenFlow"
+import type { WithdrawInputs } from "./withdrawScreenFlow"
 import { RecipientCoinBalance } from "../RecipientCoinBalance/RecipientCoinBalance"
 import { SpeedCards } from "./SpeedCards/SpeedCards"
 import copy from "./WithdrawFlow.copy"
@@ -917,11 +921,7 @@ export function WithdrawFlow({
             loading: !wallet.readThisSession,
           },
           max: { disabled: !v.canMax, onClick: flow.max },
-          asset: {
-            icon: <CoinIcon token={withdrawalReceiveAsset("DAI")} size={32} badge="brand" />,
-            symbol: "DAI",
-            chain: brandCopy.name,
-          },
+          asset: mainTransferAsset(),
         }}
         receive={{
           who,
@@ -953,7 +953,7 @@ export function WithdrawFlow({
           asset: {
             icon: <CoinIcon token={asset} size={32} badge={coinBadge} />,
             symbol: coin,
-            chain: network.name,
+            detail: network.name,
             onPick: openPicker,
           },
         }}

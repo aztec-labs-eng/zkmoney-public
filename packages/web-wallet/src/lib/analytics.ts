@@ -98,6 +98,26 @@ export type AnalyticsEvent =
   | "backup_passkey_sign_in"
   // Sent when a saved backup rotation fails its check (lib/backupPasskeyTelemetry.ts).
   | "backup_rotation_unreadable"
+  // ── Backup passkey funnel (features/backupPasskey/backupFunnel.ts) ── The cards, the sheet's
+  // screens and taps, and Account history. `backup_rotation_phase` and `backup_recovery` ride the
+  // saved attempt, so a step reached with the sheet closed still reports.
+  | "backup_nudge_shown"
+  | "backup_nudge_exit"
+  | "backup_sheet_opened"
+  | "backup_add_tapped"
+  | "backup_intro_answered"
+  | "backup_place_chosen"
+  | "backup_pay_submitted"
+  | "backup_rotation_phase"
+  | "backup_step_failed"
+  | "backup_cancelled"
+  | "backup_failure_answered"
+  | "backup_leave_prompted"
+  | "backup_block_action"
+  | "backup_delayed"
+  | "backup_recovery"
+  | "account_history_checked"
+  | "account_history_move_ended"
   // ── v5 to v6 upgrade funnel (features/migration/migrationFunnel.ts) ──
   | "migration_prompted"
   | "migration_started"

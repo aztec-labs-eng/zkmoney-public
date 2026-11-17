@@ -55,6 +55,7 @@ const SIGNING_FLOWS: readonly PasskeyFlow[] = [
   "withdraw",
   // A signup funded by a payment link signs one batch to spend it, with the passkey just made.
   "onboarding",
+  "backup",
 ]
 
 /** The proving screens holding an attempt, newest last. */

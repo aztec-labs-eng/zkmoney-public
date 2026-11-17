@@ -5,6 +5,8 @@ import {
   holdingCatalog,
   pinnedHoldings,
   pinnedOxideDeployment,
+  profileHoldingsProblems,
+  unwordedHoldings,
 } from "../../dist/oxide/index.js"
 
 const DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
@@ -474,4 +476,119 @@ test("with the profile's savings portals, Sky is the default only when they name
   const unnamed = pinnedHoldings(read, [])
   assert.equal(unnamed.listedByDefault, undefined)
   assert.equal(unnamed.holdings.length, 1)
+})
+
+test("a profile's portals and holdings that the pinned deployment carries pass", () => {
+  const d = deployment({ "fea-sky-v6": skyFeature(), "fea-multistep-v6": executorFeature() })
+  const portals = { main: [DAI_PORTAL], savings: [SKY, STEAK] }
+
+  assert.deepEqual(profileHoldingsProblems(d, { portals, holdings: [SKY.id, STEAK.id] }), [])
+  assert.deepEqual(profileHoldingsProblems(d, { holdings: ["fea-sky-v6"] }), [])
+  assert.deepEqual(profileHoldingsProblems(d, {}), [])
+})
+
+test("a profile's portal the pinned deployment lacks, or a holding it does not hold, is a problem", () => {
+  const gone = "0x4E6142c98D83c8D14b09668d90583E940A646458"
+  const d = deployment({ "fea-sky-v6": skyFeature(), "fea-multistep-v6": executorFeature() })
+  const portals = { main: [DAI_PORTAL, gone], savings: [SKY, { ...STEAK, base: gone }] }
+
+  assert.deepEqual(profileHoldingsProblems(d, { portals, holdings: [SKY.id, "fea-swap-v6"] }), [
+    `portals.main ${gone} is no bridge of v6.0.0`,
+    `savings portal steakusdc's base ${gone} is no bridge of v6.0.0`,
+    "holding fea-swap-v6 is no holding of v6.0.0",
+  ])
+})
+
+test("a savings portal that names a feature which is no holding, or a vault with no executor, is a problem", () => {
+  const sky = deployment({ "fea-sky-v6": skyFeature() })
+
+  assert.deepEqual(
+    profileHoldingsProblems(sky, { portals: { main: [DAI_PORTAL], savings: [STEAK] } }),
+    ["holding steakusdc is refused: holding.noExecutor multistep"],
+  )
+  assert.deepEqual(
+    profileHoldingsProblems(sky, {
+      portals: { main: [DAI_PORTAL], savings: [{ ...STEAK, id: "fea-swap-v6" }] },
+    }),
+    ["holding fea-swap-v6 is refused: holding.unsupported fea-swap-v6"],
+  )
+})
+
+test("a holding the wallet lists with no words in holdingCopy is unworded", () => {
+  const read = pinnedTo({ "fea-sky-v6": skyFeature() })
+  const words = { [SKY.id]: {} }
+
+  assert.deepEqual(unwordedHoldings(read, {}), [SKY.id])
+  assert.deepEqual(unwordedHoldings(read, { holdingCopy: { "fea-sky-v6b": {} } }), [SKY.id])
+  assert.deepEqual(unwordedHoldings(read, { holdingCopy: words }), [])
+  assert.deepEqual(unwordedHoldings(read, { holdings: [SKY.id, STEAK.id], holdingCopy: words }), [
+    STEAK.id,
+  ])
+  assert.deepEqual(unwordedHoldings(read, { holdings: [] }), [])
+})
+
+test("Sky's holding carries its view on the executor, which a swap runs on, and keeps its escrow line", () => {
+  const all = deploymentHoldings(
+    deployment({
+      "fea-sky-v6": skyFeature(),
+      "fea-multistep-v6": executorFeature(),
+      "fea-vault-steakusdc-v6": vaultFeature(),
+    }),
+  )
+  const [sky] = all.holdings
+  const { executorView, ...escrow } = sky
+  const { base: dai, held: susds } = escrow
+
+  assert.deepEqual(executorView, {
+    id: "fea-sky-v6",
+    kind: "yield",
+    l2Token: l2("b2"),
+    base: dai,
+    held: susds,
+    terms: "erc4626",
+    conversion: "DaiUsds",
+    rail: "executor",
+    executor: { id: "fea-multistep-v6", address: EXECUTOR, adapters: ADAPTERS },
+  })
+  assert.equal(escrow.rail, "skyEscrow")
+  assert.deepEqual(holdingCatalog(all, ["fea-sky-v6"]).holdings, [sky])
+})
+
+test("Sky's holding has no executor view without a vault, or on an executor short of its adapters", () => {
+  const noVault = deploymentHoldings(
+    deployment({ "fea-sky-v6": skyFeature(), "fea-multistep-v6": executorFeature() }),
+  )
+  assert.equal(noVault.holdings[0].executorView, undefined)
+  for (const adapter of ["erc4626", "portalDeposit", "skyConverter"]) {
+    const short = deploymentHoldings(
+      deployment({
+        "fea-sky-v6": skyFeature(),
+        "fea-multistep-v6": executorFeature({ [`${adapter}Adapter`]: ZERO }),
+        "fea-vault-steakusdc-v6": vaultFeature("None"),
+      }),
+    )
+    const sky = short.holdings.find((h) => h.id === "fea-sky-v6")
+    assert.equal(sky.rail, "skyEscrow", adapter)
+    assert.equal(sky.executorView, undefined, adapter)
+  }
+})
+
+test("Sky's holding has the same executor view when its vault is a savings portal the profile names", () => {
+  const executor = { "fea-sky-v6": skyFeature(), "fea-multistep-v6": executorFeature() }
+  const listed = deploymentHoldings(
+    deployment({ ...executor, "fea-vault-steakusdc-v6": vaultFeature() }),
+  )
+  const named = deploymentHoldings(deployment(executor), [SKY, STEAK])
+
+  assert.deepEqual(named.rejected, [])
+  assert.deepEqual(
+    named.holdings.map((h) => h.id),
+    ["fea-sky-v6", "steakusdc"],
+  )
+  const view = ({ holdings: [sky] }) => {
+    const { executorView } = sky
+    assert.ok(executorView)
+    return { ...executorView, base: executorView.base.id, held: executorView.held.id }
+  }
+  assert.deepEqual(view(named), view(listed))
 })

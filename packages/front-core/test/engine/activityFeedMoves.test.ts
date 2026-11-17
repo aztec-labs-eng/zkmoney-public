@@ -67,6 +67,11 @@ describe("selectFeed: holding moves", () => {
     })
   })
 
+  it("shows a swap as out of the balance, as a move into Savings is", () => {
+    const vaultSwapped = move({ direction: "out", holdingId: "fea-a", intoHoldingId: "fea-b" })
+    expect(feedOf({ moves: [vaultSwapped] }).items).toMatchObject([{ direction: "out" }])
+  })
+
   it("shows a bridging withdrawal and a move once each, neither as the other", () => {
     const own = burn({
       localId: "w-move",
@@ -137,11 +142,12 @@ describe("selectFeed: holding moves", () => {
       moves: [sky, move({ id: "m-exec" })],
     })
     expect(kinds(feed.items)).toEqual(["move:move:m1", "move:move:m-exec"])
-    expect(feed.savings).toMatchObject({
-      hydrated: true,
-      items: [{ id: "move:m1", direction: "in" }],
-    })
-    expect(feed.savings.items).toHaveLength(1)
+    expect(feed.savings.hydrated).toBe(true)
+    // Every rail's moves, each with its direction.
+    expect(feed.savings.items.map((item) => [item.id, item.direction])).toEqual([
+      ["move:m1", "in"],
+      ["move:m-exec", "in"],
+    ])
   })
 
   it("holds Savings' history as loading on a device with no moves until the replay ran", () => {

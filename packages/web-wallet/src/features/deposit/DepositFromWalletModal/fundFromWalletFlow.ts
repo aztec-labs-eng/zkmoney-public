@@ -27,6 +27,7 @@ import type { DepositAddress, DepositTarget } from "../../sipa/depositTarget"
 import type { DepositTokenOption } from "../../sipa/loadDepositFacts"
 import { browserSubmission, holdEnds, type FundDepositParams } from "../fundDeposit"
 import { FundingPreflightError, runFundingPreflight, UNKNOWN_CAPACITY } from "../fundingPreflight"
+import { saveSendingWallet, type SavedWallets } from "../sendingWallet"
 import { InsufficientL1BalanceError, type L1TokenBalance } from "../l1DepositTokenBalance"
 import type { SentDeposit } from "./DepositFromWalletModal"
 import {
@@ -86,6 +87,7 @@ export interface FundDeps {
   /** The chain the transfer is sent on. */
   chainId: number
   fundDeposit: (params: FundDepositParams) => Promise<unknown>
+  contacts?: SavedWallets | null
   start?: FundStart
   /** The fee the sheet opened with. */
   fee?: string
@@ -175,6 +177,10 @@ export function openFundFlow(deps: FundDeps, latest: () => FundInputs): FundFlow
         onSubmitted: (txHash) => {
           submitted = true
           prompt.settle(request)
+          if (!payee && inputs.account) {
+            const wallet = { address: inputs.account, walletName: inputs.walletName ?? undefined }
+            saveSendingWallet(deps.contacts, wallet, now)
+          }
           latest().onSent({
             address: deposit.address,
             txHash,

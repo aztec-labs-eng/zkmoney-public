@@ -345,13 +345,18 @@ interface JsonRpcRequest {
   params?: readonly unknown[]
 }
 
+/** The stub, holding the fetch it passes other requests to. */
+type StubbedFetch = typeof fetch & { passthrough?: typeof fetch }
+
 /**
  * Answer the app's own HTTP L1 client (`l1Transport`) from `handle`, and pass every other request
  * through. Scoped to `rpcUrl` exactly — the demo must not intercept the design-system assets, the
  * dev server's HMR, or anything else the page fetches.
  */
 export function installL1RpcStub(rpcUrl: string, handle: RpcHandler): void {
-  const passthrough = globalThis.fetch.bind(globalThis)
+  // A reseed replaces the stub rather than wrapping it.
+  const passthrough =
+    (globalThis.fetch as StubbedFetch).passthrough ?? globalThis.fetch.bind(globalThis)
   // `new URL` adds the trailing slash a bare origin lacks, as the app's client does.
   const target = new URL(rpcUrl).href
 
@@ -361,8 +366,7 @@ export function installL1RpcStub(rpcUrl: string, handle: RpcHandler): void {
     result: await handle(request.method, request.params),
   })
 
-  // eslint-disable-next-line no-restricted-syntax -- debt
-  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const stub = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url =
       typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url
     if (new URL(url, location.href).href !== target) return passthrough(input, init)
@@ -374,4 +378,6 @@ export function installL1RpcStub(rpcUrl: string, handle: RpcHandler): void {
       headers: { "Content-Type": "application/json" },
     })
   }
+  // eslint-disable-next-line no-restricted-syntax -- debt
+  globalThis.fetch = Object.assign(stub, { passthrough })
 }

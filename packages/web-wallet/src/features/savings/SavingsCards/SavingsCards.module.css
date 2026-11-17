@@ -1,0 +1,51 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px;
+  box-sizing: border-box;
+  border-radius: var(--radius-16);
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.07);
+}
+/* The calculator as a card of its own: a row, pressable as one. */
+:global(.ww-shell) .calc {
+  width: 100%;
+  padding: 20px 24px;
+  background: var(--surface-faint);
+  text-align: left;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.glyph {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--surface-strong);
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 600;
+}
+.token {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+.token > span:nth-child(2) {
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+.token b {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.token small {
+  color: var(--text-secondary);
+  font-size: 13px;
+}

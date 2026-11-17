@@ -109,6 +109,7 @@ const sources = (over: Partial<NotificationSources> = {}): NotificationSources =
   deposits: loaded([]),
   withdrawals: loaded([]),
   upgrades: { items: [], recipients: new Set(), loaded: true },
+  moves: [],
   upgradePricing: { settled: true },
   processing: new Map(),
   registrations: [],

@@ -1,0 +1,27 @@
+{
+  "scenario": "fresh",
+  "bootstrap": "/savings?demo=fresh&flowFixture=success&savingsFixture=vaults",
+  "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=vaults",
+  "ready": {
+    "testId": "savings-balance"
+  },
+  "steps": [
+    {
+      "action": "screenshot",
+      "file": "savings-vaults.png",
+      "state": "Savings with Sky and a USDC vault both funded"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Select account",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "accounts-vaults.png",
+      "state": "Account menu with both lines in the Savings balance"
+    }
+  ],
+  "finalScreenshot": false
+}

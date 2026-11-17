@@ -92,6 +92,7 @@ import { IconStack } from "../../../ui/IconStack/IconStack"
 import { ChainStack } from "../../../ui/flow/ChainStack/ChainStack"
 import { BridgeInModal } from "../BridgeInModal/BridgeInModal"
 import { SwitchAccountModal } from "../SwitchAccountModal/SwitchAccountModal"
+import { readsBridgeFills } from "../../../session/bridgeFillDetectors"
 import { bridgeRoutes } from "../bridgeChains"
 import { acrossBridge } from "../../../session/walletChains"
 import {
@@ -1063,7 +1064,7 @@ function DepositScreenBody({
   /** A sent deposit's status, or its detail once it needs recovery. */
   const sentSheet = (record: SipaDeposit, onDone: () => void) =>
     SENT_ENDED.includes(record.phase) ? (
-      <DepositDetailModal record={record} onClose={onDone} />
+      <DepositDetailModal readsFills={readsBridgeFills(config)} record={record} onClose={onDone} />
     ) : (
       <Modal
         variant="bare"
@@ -1088,6 +1089,7 @@ function DepositScreenBody({
     <>
       {arrivedShown && (
         <DepositDetailModal
+          readsFills={readsBridgeFills(config)}
           record={arrivedShown}
           onClose={() => {
             steps.arrivalClosed(arrivedShown.sipaAddress)
@@ -1113,6 +1115,7 @@ function DepositScreenBody({
       {sentRecord &&
         (target ? (
           <DepositDetailModal
+            readsFills={readsBridgeFills(config)}
             record={sentRecord}
             onClose={() => {
               steps.shut("sent")

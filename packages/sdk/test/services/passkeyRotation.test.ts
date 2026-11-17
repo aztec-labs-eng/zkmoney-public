@@ -37,7 +37,6 @@ import {
 import {
   AccountRecordMismatchError,
   AccountStateReorgedError,
-  BACKUP_FUNDING_MARGIN,
   BackupCredentialIdLengthError,
   BackupSetConflictError,
   MAX_BACKUP_CREDENTIAL_ID_BYTES,
@@ -1052,16 +1051,15 @@ describe("backupSweepRefused", () => {
 describe("fundingAmount", () => {
   const args = { tuple: TUPLE, plainWithdrawalExecutor: PLAIN_EXECUTOR, proverTip: 3n * 10n ** 16n }
 
-  it("adds every charge on the way to L2 to a credit above the subsidy's minimum", async () => {
+  it("adds every charge on the way to L2 to one unit of credit, whatever the subsidy's minimum", async () => {
     const chain = fakeChain()
     chain.state.row = [PORTAL, BENEFICIARY, 2n * 10n ** 16n, TIP]
 
     const funding = await fundingAmount(chain.client, args)
 
-    const credited = ONE_ETH + BACKUP_FUNDING_MARGIN
-    expect(funding.credited).toBe(credited)
+    expect(funding.credited).toBe(1n)
     expect(funding.amount).toBe(
-      ONE_ETH / 10n + args.proverTip + WITHDRAW_RELAYER_TIP + TIP + 2n * 10n ** 16n + credited,
+      ONE_ETH / 10n + args.proverTip + WITHDRAW_RELAYER_TIP + TIP + 2n * 10n ** 16n + 1n,
     )
     expect(funding.breakdown).toEqual({
       withdrawalFee: ONE_ETH / 10n,
@@ -1069,17 +1067,7 @@ describe("fundingAmount", () => {
       relayerTip: WITHDRAW_RELAYER_TIP,
       sweepTip: TIP,
       beneficiaryFee: 2n * 10n ** 16n,
-      minCredited: ONE_ETH,
-      margin: BACKUP_FUNDING_MARGIN,
     })
-  })
-
-  it("credits at least one unit when the subsidy sets no minimum", async () => {
-    const chain = fakeChain()
-    chain.state.config = [TIP, ONE_ETH, 0n]
-    const funding = await fundingAmount(chain.client, args)
-    expect(funding.breakdown.minCredited).toBe(1n)
-    expect(funding.credited).toBe(1n + BACKUP_FUNDING_MARGIN)
   })
 
   it("refuses a route no relayer is paid to sweep, by its reason", async () => {

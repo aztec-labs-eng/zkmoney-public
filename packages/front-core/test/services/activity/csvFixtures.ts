@@ -27,6 +27,9 @@ export const EMPTY: ActivityCsvSources = {
   transactions: [],
   items: [],
   requests: [],
+  bridgeIns: [],
+  chainName: (chainId) => ({ 8453: "Base" }[chainId] ?? ""),
+  readsFills: true,
 }
 
 export function tx(action: string, extra: Record<string, unknown> = {}): Transaction {
@@ -101,6 +104,7 @@ export function deposit(extra: Partial<SipaDeposit> = {}): ActivityItem {
       claimedInboxIndexes: ["7"],
       sweeps: [sweep("7", "20", "19")],
       fundingFromAddress: "0x00000000000000000000000000000000000000cc",
+      funding: "plain",
       fundingTokenSymbol: "DAI",
       fundingTxHash: "0xfund",
       ...extra,

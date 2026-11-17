@@ -63,6 +63,14 @@ export {
   type ListRowProps,
 } from "./components/Rows"
 export {
+  HoldingRow,
+  HoldingSelect,
+  RatePill,
+  type HoldingRowProps,
+  type HoldingSelectProps,
+  type RatePillProps,
+} from "./components/HoldingRow"
+export {
   TwoPartyAmountCard,
   type TwoPartyAmountCardProps,
   type TwoPartyPerson,

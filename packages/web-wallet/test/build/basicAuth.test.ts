@@ -65,17 +65,30 @@ describe("checkBasicAuth", () => {
   })
 })
 
+const PUBLIC_PATHS = [
+  "/og.png",
+  "/favicon.png",
+  "/link",
+  "/request",
+  "/pay/river",
+  "/manifest.webmanifest",
+  "/apple-touch-icon.png",
+  "/icon-192.png",
+  "/icon-512.png",
+  "/startup/1206x2622.png",
+]
+
 // Mirrors the CDN's viewer-request exemptions (iac/modules/app-tier/modules/web-wallet).
 describe("isPublicPath — what the local gate serves without a credential", () => {
-  it("GET and HEAD of a shared link's page, card image and the wallet icon", () => {
-    for (const path of ["/og.png", "/favicon.png", "/link", "/request", "/pay/river"]) {
+  it("GET and HEAD of a shared link's page, card image, the wallet icons and the Home Screen app's files", () => {
+    for (const path of PUBLIC_PATHS) {
       expect(isPublicPath("GET", path)).toBe(true)
       expect(isPublicPath("HEAD", path)).toBe(true)
     }
   })
 
   it("not the same paths by another method", () => {
-    for (const path of ["/og.png", "/favicon.png", "/link", "/request", "/pay/river"]) {
+    for (const path of PUBLIC_PATHS) {
       for (const method of ["POST", "OPTIONS", "PUT", "PATCH", "DELETE", undefined]) {
         expect(isPublicPath(method, path)).toBe(false)
       }
@@ -104,6 +117,13 @@ describe("isPublicPath — what the local gate serves without a credential", () 
       "/assets/og.png",
       "/favicon.png/",
       "/assets/favicon.png",
+      "/manifest.json",
+      "/assets/icon-512.png",
+      "/icon-1024.png",
+      "/startup/",
+      "/startup/1206x2622.png/",
+      "/startup/x.png",
+      "/assets/startup/1206x2622.png",
       "/assets/app.js",
       "/svc/usage/events",
       "/settings",

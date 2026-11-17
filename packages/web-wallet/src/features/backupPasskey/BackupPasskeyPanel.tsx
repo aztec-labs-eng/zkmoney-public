@@ -8,7 +8,7 @@ import {
 import { formatUnits } from "viem"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import { useL1Links, whenLabel } from "../../ui/detailRows"
-import { shortAddr, usdFigure } from "../../ui/format"
+import { shortAddr, toCents, usdFigure } from "../../ui/format"
 import { DepositFact } from "../../ui/screens/DepositFact"
 import { BroadcastStatusRow } from "../broadcasts/BroadcastStatusRow/BroadcastStatusRow"
 import { failureLine, type BackupFailure } from "./backupFailure"
@@ -133,10 +133,14 @@ function FundScreen({
         <DepositFact label={fundCopy.takes}>
           <b>{fundCopy.takesValue}</b>
         </DepositFact>
-        <hr className="ww-divider" />
-        <DepositFact label={fundCopy.receive}>
-          <b>{usd(credited)}</b>
-        </DepositFact>
+        {toCents(credited, DEFAULT_DECIMALS, false) > 0n && (
+          <>
+            <hr className="ww-divider" />
+            <DepositFact label={fundCopy.receive}>
+              <b>{usd(credited)}</b>
+            </DepositFact>
+          </>
+        )}
       </div>
       <div className="ww-backup__actions">
         <PrimaryGradientButton
@@ -393,7 +397,9 @@ function RotationStandIn({
   const busy = "busy" in screen && screen.busy
   const checking = "checking" in screen && screen.checking
   const canCancel = "canCancel" in screen && screen.canCancel
-  const cancel = <SecondaryButton label={panelCopy.cancel} onClick={actions.askCancel} disabled={busy} />
+  const cancel = (
+    <SecondaryButton label={panelCopy.cancel} onClick={() => actions.askCancel()} disabled={busy} />
+  )
   const tryAgain = (
     <PrimaryGradientButton
       title={panelCopy.tryAgain}
@@ -431,7 +437,12 @@ function RotationStandIn({
     )
   } else if (screen.id === "approve" && screen.pay) {
     body = (
-      <FundScreen pay={screen.pay} busy={busy} onFund={actions.fund} onCancel={actions.askCancel} />
+      <FundScreen
+        pay={screen.pay}
+        busy={busy}
+        onFund={actions.fund}
+        onCancel={() => actions.askCancel()}
+      />
     )
   } else if (screen.id === "approve" && screen.progress.stage === "pay") {
     errorInline = true

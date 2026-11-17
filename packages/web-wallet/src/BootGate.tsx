@@ -55,7 +55,6 @@ export function BootGate({ boot: read }: { boot: QueryEntry<PageBoot> }) {
         preBoot={boot.page.preBoot}
         page={boot.page}
         landingRate={boot.page.landingRate}
-        ticketOffer={boot.page.ticketOffer}
       />
     </>
   )

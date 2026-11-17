@@ -3,13 +3,13 @@ import type { Fact } from "@obsidion/web-ds"
 import { fmt } from "../../../../lib/fmt"
 import { usdFromCents } from "../../../../ui/format"
 import { addCost, feeSplit } from "../../backupCost"
-import { holdCopy } from "../../backupPasskeyCopy"
+import { reportIntroAnswered } from "../../backupFunnel"
 import type { BackupScreenProps, IntroCost } from "../../backupScreen"
 import copy from "./IntroScreen.copy"
 
-/** The fee, its breakdown, and the hold that comes back. */
+/** The fee and its breakdown. */
 function costFacts({ funding, fixed }: IntroCost): Fact[] {
-  const { fee, hold } = addCost(funding)
+  const { fee } = addCost(funding)
   // The network part carries Faster's tip.
   const [network, fixedCents] = feeSplit(fee, fixed)
   return [
@@ -28,7 +28,6 @@ function costFacts({ funding, fixed }: IntroCost): Fact[] {
         above: true,
       },
     },
-    { label: holdCopy.label, value: fmt(holdCopy.value, { amount: usdFromCents(hold) }) },
   ]
 }
 
@@ -49,7 +48,10 @@ export function IntroScreen({ screen, actions }: BackupScreenProps<"intro">) {
         <TopNavIconButton
           icon="chevron-left"
           ariaLabel={copy.back}
-          onClick={() => actions.start()}
+          onClick={() => {
+            reportIntroAnswered("back", screen)
+            actions.start()
+          }}
           disabled={busy}
           testId="backup-back"
         />
@@ -60,7 +62,11 @@ export function IntroScreen({ screen, actions }: BackupScreenProps<"intro">) {
         lead={copy.lead}
         primary={{
           label: picker ? copy.choose : copy.continue,
-          onClick: () => (picker ? actions.start("place") : actions.add()),
+          onClick: () => {
+            reportIntroAnswered("continue", screen)
+            if (picker) actions.start("place")
+            else actions.add()
+          },
           loading: busy,
           testId: "backup-continue",
         }}

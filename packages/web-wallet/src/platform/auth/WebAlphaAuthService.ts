@@ -61,7 +61,11 @@ import {
   withoutManager,
 } from "@obsidion/passkey-web"
 import type { Address } from "viem"
-import { type BackupSignInFacts, noteBackupSignIn } from "../../features/identity/backupSignIn"
+import {
+  type BackupSignInFacts,
+  type BackupSignInRoute,
+  noteBackupSignIn,
+} from "../../features/identity/backupSignIn"
 import type { BackupCreation, BackupCreationDriver } from "./backupCreation"
 import { openBackupEnvelope } from "./backupEnvelope"
 import {
@@ -134,6 +138,8 @@ export type RecoverPasskeyRequest = {
   phone?: boolean
   /** The user chose `credentialId` among the account's keys; its hints follow its record. */
   chosen?: boolean
+  /** The unlock of a signed-in page, which a backup sign-in is reported as. */
+  unlock?: boolean
 }
 
 /** Which device answered and its class, kept beside a recovery result the plain result drops. */
@@ -272,13 +278,18 @@ const envelopeOf = (backup: NonNullable<RecoveryMetadata["backup"]>) => ({
   envelope: hexBytes(backup.envelope),
   account: backup.account as Address,
 })
-/** What the backup sign-in event may learn: the answer's backup flag and the record's provider. */
+/**
+ * What the backup sign-in event may learn: the answer's backup flag, the record's provider, and
+ * whether it signed in or unlocked.
+ */
 const backupFactsOf = (
   assertion: PasskeyAssertResult | undefined,
   record: RecoveryMetadata | undefined,
+  route: BackupSignInRoute,
 ): BackupSignInFacts => ({
   ...(assertion?.backupEligible !== undefined ? { backupEligible: assertion.backupEligible } : {}),
   ...(record?.prfAaguid ? { aaguid: record.prfAaguid } : {}),
+  route,
 })
 /** The wallet's address derivation from a master key and the account's key set. */
 export type AddressDeriver = (msk: Fr, passkeys: readonly string[]) => Promise<string>
@@ -840,8 +851,9 @@ export class WebAlphaAuthService implements AlphaAuthService {
     account: Address,
     record: RecoveryMetadata | undefined,
     steered: boolean,
+    route: BackupSignInRoute,
   ): Promise<{ candidates: RecoverPasskeyResult["candidates"]; backupFacts: BackupSignInFacts }> {
-    const backupFacts = backupFactsOf(assertion, record)
+    const backupFacts = backupFactsOf(assertion, record, route)
     try {
       const slot = envelopeSlot(envelope)
       const msk = await openBackupEnvelope(assertion, {
@@ -1559,7 +1571,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
     signal?.throwIfAborted()
     // A backup record's unlock is one backup sign-in event, whatever ends it: a failure to open is
     // reported where the envelope is opened, every other end here.
-    const backupFacts = record.backup ? backupFactsOf(undefined, record) : undefined
+    const backupFacts = record.backup ? backupFactsOf(undefined, record, "unlock") : undefined
     let recovered: WebRecoverResult | undefined
     try {
       recovered = await this.recoverPasskey({
@@ -1568,6 +1580,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
         ...(own ? { own } : {}),
         ...(phone ? { phone } : {}),
         ...(asked ? { chosen: true } : {}),
+        unlock: true,
       })
       // The sheet was held to the asked credential; only its own record's answer may unlock it.
       if (
@@ -1721,7 +1734,15 @@ export class WebAlphaAuthService implements AlphaAuthService {
       const pubkeyCandidates = await candidatePubkeys(assertion)
       if (!pubkeyCandidates.includes(normalKey(record.pubkey))) throw new RotatedCredentialError()
       const { account, envelope } = envelopeOf(record.backup)
-      const opened = await this.openedCandidate(assertion, envelope, account, record, steered)
+      const route = asked?.unlock ? "unlock" : "enter"
+      const opened = await this.openedCandidate(
+        assertion,
+        envelope,
+        account,
+        record,
+        steered,
+        route,
+      )
       return this.recovered({
         assertion,
         candidates: opened.candidates,
@@ -1868,7 +1889,14 @@ export class WebAlphaAuthService implements AlphaAuthService {
       return this.recovered({ assertion, candidates, pubkey, passkeys, record, steered, staleSet })
     }
     const envelope = answer.key.parsed.envelope
-    const opened = await this.openedCandidate(assertion, envelope, account, record, steered)
+    const opened = await this.openedCandidate(
+      assertion,
+      envelope,
+      account,
+      record,
+      steered,
+      "enter",
+    )
     return this.recovered({
       assertion,
       candidates: opened.candidates,

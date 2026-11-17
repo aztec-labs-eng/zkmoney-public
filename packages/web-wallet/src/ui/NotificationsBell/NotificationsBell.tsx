@@ -21,24 +21,6 @@ import { PhoneIcon } from "../PhoneIcon"
 import { usePhoneLayout } from "../usePhoneLayout"
 import styles from "./NotificationsBell.module.css"
 
-/**
- * The bell while the wallet starts: nothing is listed yet. A tap opens the panel, which shows once
- * the wallet is up.
- */
-export function IdleBell() {
-  const [open, setOpen] = useNotificationsPanelOpen()
-  return (
-    <div className={styles.notificationsAnchor}>
-      <BellButton
-        label={copy.bell.label}
-        expanded={open}
-        unread={false}
-        onClick={() => setOpen(!open)}
-      />
-    </div>
-  )
-}
-
 function BellButton({
   label,
   expanded,

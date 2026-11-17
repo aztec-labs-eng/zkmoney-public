@@ -1,0 +1,27 @@
+/* One Savings line: its row and facts, then the moves it offers. */
+:global(.ww-modal.ww-deposit-warning).sheet {
+  --sheet-pad-bottom: 24px;
+  width: min(460px, calc(100vw - 32px));
+  align-items: stretch;
+  gap: 20px;
+  padding-top: 24px;
+  padding-inline: 24px;
+  border-radius: 24px;
+  text-align: start;
+}
+/* On a phone the shared sheet rule pads the bottom, past the safe area. */
+@media (min-width: 641px) {
+  :global(.ww-modal.ww-deposit-warning).sheet {
+    padding-bottom: var(--sheet-pad-bottom);
+  }
+}
+.title {
+  display: flex;
+  justify-content: center;
+  min-height: 32px;
+  align-items: center;
+}
+.actions {
+  display: grid;
+  gap: 12px;
+}

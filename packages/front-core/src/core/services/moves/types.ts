@@ -7,7 +7,6 @@ import type { ReadonlyStore } from "../../../engine/store"
 import type {
   MoveDeposit,
   MoveDirection,
-  MoveLimits,
   MoveQuote,
   MoveRail,
   MoveRailFields,
@@ -102,6 +101,30 @@ export type MoveBurn<Rail extends MoveRail = MoveRail> = RailFields<Rail> & {
 }
 
 /**
+ * A swap on one rail: a burn of one holding's token whose route lands another holding's, with no
+ * stop in the base. Its record is a move out of `from`, and its deposit a move into `to`'s.
+ */
+export interface VaultSwapRoutes<H extends RouteHolding, R extends MoveRoute, Q extends MoveQuote> {
+  /** Prices `amount` of `from`'s token into `to`; the quote carries `out`. */
+  quote: (from: R, to: R, amount: bigint) => Promise<Q>
+  /** The burn `quote` priced; `args.direction` is `out`. */
+  build: (from: R, to: R, args: MoveArgs, quote: Q) => BuiltBurn<H["rail"]>
+  /**
+   * What became of a swap's released funds, as `MoveRoutes.outcome` reads a move's: a run is the
+   * deposit into `to`'s held portal with what `to`'s vault took in; a recovery returns `from`'s token.
+   */
+  outcome: (
+    from: R,
+    to: R,
+    move: RailFields<H["rail"]> & Pick<MoveRecord, "recipientCommitment"> & { withdrawalId: Hex },
+    range: BlockRange,
+    signal?: AbortSignal,
+  ) => Promise<MoveOutcome | undefined>
+  /** Whether `burn`, read from `from`'s held bridge, is a swap into `to`. */
+  owns: (from: R, to: R, burn: MoveBurn) => burn is MoveBurn<H["rail"]>
+}
+
+/**
  * The L1 side of one rail's moves, for holdings of type `H`. A port's route and quote types are its
  * own; the engine reads only what `MoveRoute` and `MoveQuote` declare. A `signal` aborts a read in
  * flight.
@@ -168,7 +191,8 @@ export interface MoveRoutes<
    * target, on rails whose route anyone can run. Refuses with `move.escrowRan` once nothing waits.
    */
   run?: (route: R, move: RailMove<H["rail"]>, keys: SwapRecovery) => Promise<L1Call>
-  limits: (route: R) => Promise<MoveLimits>
+  /** Swaps between two of the rail's holdings, on rails that run them. */
+  vaultSwap?: VaultSwapRoutes<H, R, Q>
   /** What `amount` of the held token redeems for now. */
   assetsOf: (route: R, amount: bigint) => Promise<bigint>
   token: (address: Address) => Promise<{ symbol: string; decimals: number }>
@@ -180,7 +204,7 @@ export interface MoveRoutes<
 
 export interface BurnRequest
   extends Pick<BuiltBurn, "target" | "withdrawal" | "releaseTip">,
-    Pick<MoveRecord, "holdingId" | "nonce"> {
+    Pick<MoveRecord, "holdingId" | "intoHoldingId" | "nonce"> {
   direction: MoveDirection
   /** Tags the sdk's progress events, so the submission tracker sees the hash. */
   operationId: string
@@ -265,9 +289,19 @@ export interface RailPorts<
 > {
   routes: MoveRoutes<H, R, Q>
   holdings: readonly H[]
+  /**
+   * Holdings another rail moves in and out, as this rail reads them: it only swaps them, to or
+   * from one of its own. Sky's savings on the executor.
+   */
+  vaultSwapOnly?: readonly H[]
   /** The ids of the holdings the wallet lists: only they take a move in. */
   listed: ReadonlySet<string>
 }
+
+/** Every holding `rail` serves: its own, then those it only swaps. */
+export const railHoldings = <H extends RouteHolding>(
+  rail: Pick<RailPorts<H>, "holdings" | "vaultSwapOnly">,
+): readonly H[] => (rail.vaultSwapOnly ? [...rail.holdings, ...rail.vaultSwapOnly] : rail.holdings)
 
 /**
  * A rail's port bound to its holdings. A port's types are its own, so ports of different rails

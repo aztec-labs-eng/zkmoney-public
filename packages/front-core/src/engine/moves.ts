@@ -24,6 +24,11 @@ export interface MoveStore {
 
 const PREFIX = "acct/moves"
 const VERSION_KEY = "acct/meta/moves"
+/**
+ * 2: a move may be a swap (`intoHoldingId`, `quote.out`). Every version 1 record reads as it is,
+ * and a build that knows only version 1 refuses the store rather than misread a swap.
+ */
+const VERSION = 2
 
 /** What the first open needs to convert an older build's Savings moves. */
 export interface SavedMovesSource extends SavedMovesChain {
@@ -42,11 +47,12 @@ export function createMoveStore(db: Database, saved?: SavedMovesSource): MoveSto
     })()
   const store = persistentStore<MoveRecord>(db, {
     prefix: PREFIX,
-    version: 1,
+    version: VERSION,
     id: (record) => record.id,
     load: "all",
     ...(converted ? { after: converted } : {}),
     async migrate(from, w) {
+      if (from === 1) return
       if (from !== undefined) throw new WalletError("invariant", `moves: unknown version ${from}`)
       for (const record of (await converted)?.records ?? [])
         w.put(`${PREFIX}/${record.id}`, encodeRecord(record))

@@ -7,6 +7,7 @@ import {
 import { ChoiceCard, SheetLink, SheetShell } from "@obsidion/web-ds"
 import { PASSKEYS_DOCS_URL } from "../../../../lib/links"
 import { KeyWarningLine, StepsNote } from "../../../identity/PhoneSteps"
+import { reportPlaceChosen } from "../../backupFunnel"
 import type { BackupScreenProps } from "../../backupScreen"
 import copy from "./PlaceScreen.copy"
 import styles from "./PlaceScreen.module.css"
@@ -44,7 +45,15 @@ export function PlaceScreen({ screen, actions }: BackupScreenProps<"place">) {
       lead={device?.osFamily === "macos" ? picker.pickerLead.mac : picker.pickerLead.computer}
       primary={{
         label: copy.add,
-        onClick: () => actions.add(place.selected),
+        onClick: () => {
+          reportPlaceChosen({
+            choice: place.selected,
+            opened: screen.opened,
+            options: place.options.length,
+            windows10Warning: !!windows10,
+          })
+          actions.add(place.selected)
+        },
         loading: busy,
         testId: "backup-add",
       }}

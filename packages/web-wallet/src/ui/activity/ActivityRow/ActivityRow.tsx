@@ -29,7 +29,7 @@ import { fmt } from "../../../lib/fmt"
 import { useSession } from "../../../session/session"
 import { REMIND_TITLE } from "../../../features/contacts/useRemind"
 import { contactDisplayName } from "../../../features/contacts/contactsView"
-import { SavingsMoveRow } from "../../../features/savings/SavingsMoveRow"
+import { SavingsMoveRow } from "../../../features/savings/SavingsMoveRow/SavingsMoveRow"
 import { paylinkRowShareUrl } from "../../../features/shortLinks"
 import { upgradeRunTitle } from "../../../features/migration/upgradeCopy"
 import { bridgeInPaid } from "../../../features/deposit/bridgeInView"
@@ -243,9 +243,7 @@ function WithdrawalRow({ item }: { item: Of<"withdrawal"> }) {
       timestamp={
         delayed
           ? copy.stuck
-          : fee
-          ? backupHoldLine(fee, record.tokenDecimals)
-          : rowTimestamp(item.ts)
+          : (fee && backupHoldLine(fee, record.tokenDecimals)) ?? rowTimestamp(item.ts)
       }
       amount={withdrawalHeroAmount(record, fee)}
       statusLabel={backup ? backupFeeStatus(item) : phaseLabel(record.phase)}
@@ -558,7 +556,8 @@ export function ActivityRow({ item, compact = false }: { item: FeedItem; compact
           move={item.move}
           state={item.state}
           perspective="main"
-          sharePrice={host.moveSharePrice(item.move.holdingId)}
+          price={host.movePrice(item.move.holdingId)}
+          into={host.movePrice(item.move.intoHoldingId)}
           eta={host.savingsEta(item.move, item.burn)}
           onOpen={() => host.open({ kind: "savings", id: item.id })}
         />
@@ -607,7 +606,8 @@ export function SavingsActivityRow({ item }: { item: MoveItem }) {
       move={item.move}
       state={item.state}
       perspective="savings"
-      sharePrice={host.moveSharePrice(item.move.holdingId)}
+      price={host.movePrice(item.move.holdingId)}
+      into={host.movePrice(item.move.intoHoldingId)}
       eta={host.savingsEta(item.move, item.burn)}
       onOpen={() => host.open({ kind: "savings", id: item.id })}
     />

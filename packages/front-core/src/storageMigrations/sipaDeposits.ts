@@ -185,7 +185,8 @@ function adoptSlot(record: SipaDeposit, legacy: LegacySlot, at: number): SipaDep
 /**
  * Version 1 carries every legacy record forward: several exist only on this device. Version 2
  * folds this namespace's legacy broadcasts into their records: an owed one exists nowhere else.
- * Version 3 moves each held address's legacy slot or pool entry onto its record.
+ * Version 3 moves each held address's legacy slot or pool entry onto its record. Version 4 clears
+ * each bridge fill's funding, so it is read again for its bridge-in, and renames a plain one's.
  */
 export async function migrateSipaDeposits(
   from: number | undefined,
@@ -193,7 +194,7 @@ export async function migrateSipaDeposits(
   deps: { db: Database; prefix: string; legacy: SipaDepositsDeps["legacy"] },
 ): Promise<void> {
   const { db, prefix } = deps
-  if (from !== undefined && from !== 1 && from !== 2)
+  if (from !== undefined && from !== 1 && from !== 2 && from !== 3)
     throw new WalletError("invariant", `sipaDeposits: unknown version ${from}`)
   const held = new Set((await db.range(`${prefix}/`)).map(([key]) => key.slice(prefix.length + 1)))
   const read = async (id: string) => {
@@ -205,6 +206,25 @@ export async function migrateSipaDeposits(
     held.add(id)
     w.put(`${prefix}/${id}`, encodeRecord(record))
   }
+  if (from !== 3) await toVersion3(from, held, read, save, deps, w)
+  for (const id of held) {
+    const record = await read(id)
+    if (!record) continue
+    // Older builds wrote a plain transfer's funding as "transfer".
+    const { funding, ...unread } = record as Omit<SipaDeposit, "funding"> & { funding?: string }
+    if (funding === "bridge") save(unread)
+    else if (funding === "transfer") save({ ...unread, funding: "plain" })
+  }
+}
+
+async function toVersion3(
+  from: number | undefined,
+  held: Set<string>,
+  read: (id: string) => Promise<SipaDeposit | undefined>,
+  save: (record: SipaDeposit) => void,
+  deps: { legacy: SipaDepositsDeps["legacy"] },
+  w: Write,
+): Promise<void> {
   if (from === undefined) {
     for (const [id, record] of decodeSipaDeposits(await w.get(KEY_SIPA_DEPOSITS)))
       if (!held.has(id)) save(record)

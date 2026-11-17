@@ -2,7 +2,7 @@
  * Withdrawal detail — the L2→L1 counterpart of the deposit detail sheet: hero amount over a facts
  * card whose Status row names the leg the tracker is on and flips to Paid when the L1 release
  * lands, or, for a backup passkey funding whose attempt stopped, names its recovery instead. A
- * backup passkey fee leads with the fee and its hold, and folds the chain facts away. The sheet
+ * backup passkey fee leads with the fee and any hold, and folds the chain facts away. The sheet
  * stays open on the live store row, so the status updates as phases advance.
  *
  * The re-check and the exit it offers are the row's own, handed back so one owner drives the chain
@@ -16,6 +16,7 @@ import {
   type FundingRecovery,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
+import { displayTokenSymbol } from "@obsidion/core/constants"
 import { formatUnits } from "viem"
 import {
   GradientText,
@@ -48,7 +49,7 @@ import { DepositFact } from "./DepositFact"
 import { Hops } from "../MoveReview/MoveReview"
 import { DepositHashFact } from "./DepositHashFact"
 import { DepositStatusValue } from "./DepositStatusValue"
-import { backupFeeStatus, backupFundingTitle, backupNote } from "./backupFee"
+import { backupFeeStatus, backupFundingTitle, backupHold, backupNote } from "./backupFee"
 
 const PHASE_BADGE: Record<WithdrawalRecord["phase"], StatusBadgeStyle> = {
   submitting: "pending",
@@ -160,18 +161,19 @@ export function WithdrawalDetailModal({
     ? backupNote({ record, fee, added, running, exit: !!exit })
     : waitingNote(record)
   const backupLabel = backup ? backupFeeStatus({ record, added, running, recovery }) : undefined
+  const held = fee && backupHold(fee, record.tokenDecimals)
   const deposited = recovery?.deposited
   const recoveryTx = recovery?.recoveryTxHash
   const amounts = withdrawalAmounts(record)
   const swap = swapWithdrawalAmounts(record)
   const swapOption = record.swapOutput ? withdrawalReceiveAsset(record.swapOutput) : undefined
-  const tokenOption =
-    swapOption ?? WITHDRAWAL_RECEIVE_ASSETS.find((o) => o.symbol === record.tokenSymbol)
+  const burnedSymbol = displayTokenSymbol(record.tokenSymbol)
+  const tokenOption = swapOption ?? WITHDRAWAL_RECEIVE_ASSETS.find((o) => o.symbol === burnedSymbol)
   // The Token row: the burned coin, then what the recipient receives where that differs.
-  const receivedSymbol = tokenOption?.symbol ?? record.tokenSymbol
-  const burnedIcon = WITHDRAWAL_RECEIVE_ASSETS.find((o) => o.symbol === record.tokenSymbol)?.icon
+  const receivedSymbol = tokenOption?.symbol ?? burnedSymbol
+  const burnedIcon = WITHDRAWAL_RECEIVE_ASSETS.find((o) => o.symbol === burnedSymbol)?.icon
   const burnedHop = {
-    label: record.tokenSymbol,
+    label: burnedSymbol,
     icon: burnedIcon && <img src={burnedIcon} alt="" width={16} height={16} />,
   }
   // A failed exit released nothing, and a recovered one swapped nothing, so neither names a fee or
@@ -240,7 +242,7 @@ export function WithdrawalDetailModal({
         <b>
           <Hops
             hops={
-              receivedSymbol === record.tokenSymbol
+              receivedSymbol === burnedSymbol
                 ? [burnedHop]
                 : [
                     burnedHop,
@@ -361,9 +363,11 @@ export function WithdrawalDetailModal({
                 <DepositFact label={copy.facts.fee}>
                   <b>-{dollars(fee.amount)}</b>
                 </DepositFact>
-                <DepositFact label={fee.returned ? costCopy.returned : copy.backup.hold}>
-                  <b>{dollars(fee.hold)}</b>
-                </DepositFact>
+                {held && (
+                  <DepositFact label={fee.returned ? costCopy.returned : copy.backup.hold}>
+                    <b>{held}</b>
+                  </DepositFact>
+                )}
               </>
             ) : (
               <DepositFact label={copy.sent}>
@@ -391,7 +395,7 @@ export function WithdrawalDetailModal({
             {chainFacts}
             <DepositFact label={copy.sent}>
               <b>
-                {tokenAmount(amounts.grossDisplay)} {record.tokenSymbol}
+                {tokenAmount(amounts.grossDisplay)} {burnedSymbol}
               </b>
             </DepositFact>
             {estimate && (
@@ -433,7 +437,7 @@ export function WithdrawalDetailModal({
                 <hr className="ww-divider" />
                 <DepositFact label={recipientLabel}>
                   <b>
-                    {tokenAmount(amounts.netDisplay)} {record.tokenSymbol}
+                    {tokenAmount(amounts.netDisplay)} {burnedSymbol}
                   </b>
                 </DepositFact>
               </>

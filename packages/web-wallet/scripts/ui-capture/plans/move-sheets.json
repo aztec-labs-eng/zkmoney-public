@@ -1,0 +1,131 @@
+{
+  "scenario": "fresh",
+  "path": "/dev/mock/deposit/send-eth",
+  "ready": {
+    "selector": "[role=\"dialog\"]"
+  },
+  "steps": [
+    {
+      "action": "waitFor",
+      "selector": "[role=\"dialog\"] button:has-text(\"Review\"):not([disabled])"
+    },
+    {
+      "action": "screenshot",
+      "file": "deposit-send-eth.png",
+      "state": "deposit/send-eth"
+    },
+    {
+      "action": "goto",
+      "path": "/dev/mock/deposit/send-eth-review"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[role=\"dialog\"] button:has-text(\"Send USDC\"):not([disabled])"
+    },
+    {
+      "action": "screenshot",
+      "file": "deposit-send-eth-review.png",
+      "state": "deposit/send-eth-review"
+    },
+    {
+      "action": "goto",
+      "path": "/dev/mock/deposit/bridge-in"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=\"bridge-in-review\"]:not([disabled])"
+    },
+    {
+      "action": "screenshot",
+      "file": "deposit-bridge-in.png",
+      "state": "deposit/bridge-in"
+    },
+    {
+      "action": "goto",
+      "path": "/dev/mock/deposit/bridge-review"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=\"bridge-in-send\"]:not([disabled])"
+    },
+    {
+      "action": "screenshot",
+      "file": "deposit-bridge-review.png",
+      "state": "deposit/bridge-review"
+    },
+    {
+      "action": "goto",
+      "path": "/dev/mock/withdraw/amount-typed"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=\"withdraw-amount-continue\"]:not([disabled])"
+    },
+    {
+      "action": "waitFor",
+      "text": "Checking…",
+      "first": true,
+      "state": "hidden"
+    },
+    {
+      "action": "screenshot",
+      "file": "withdraw-amount-typed.png",
+      "state": "withdraw/amount-typed"
+    },
+    {
+      "action": "goto",
+      "path": "/dev/mock/withdraw/review"
+    },
+    {
+      "action": "waitFor",
+      "text": "· About",
+      "first": true
+    },
+    {
+      "action": "screenshot",
+      "file": "withdraw-review.png",
+      "state": "withdraw/review"
+    },
+    {
+      "action": "goto",
+      "path": "/dev/mock/withdraw/amount-bridge"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=\"withdraw-amount-continue\"]:not([disabled])"
+    },
+    {
+      "action": "waitFor",
+      "text": "Checking…",
+      "first": true,
+      "state": "hidden"
+    },
+    {
+      "action": "screenshot",
+      "file": "withdraw-amount-bridge.png",
+      "state": "withdraw/amount-bridge"
+    },
+    {
+      "action": "goto",
+      "path": "/dev/mock/withdraw/review-bridge"
+    },
+    {
+      "action": "waitFor",
+      "text": "· About",
+      "first": true
+    },
+    {
+      "action": "waitFor",
+      "text": "$--",
+      "first": true,
+      "state": "hidden"
+    },
+    {
+      "action": "screenshot",
+      "file": "withdraw-review-bridge.png",
+      "state": "withdraw/review-bridge"
+    }
+  ],
+  "finalScreenshot": false,
+  "timeout": 60000
+}

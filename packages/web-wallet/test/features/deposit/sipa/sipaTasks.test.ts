@@ -53,7 +53,6 @@ function start() {
     visible,
     catchUp,
     custody: custody.readonly,
-    contacts: { upsertL1WalletContact: async (input) => input as never },
     refreshBalance: async () => {},
     wakeBroadcasts: () => {},
     upgrades: { directBatches: async () => [] },

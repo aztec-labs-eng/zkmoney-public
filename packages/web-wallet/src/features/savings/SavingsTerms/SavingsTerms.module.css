@@ -1,0 +1,18 @@
+/* A move into Savings: the terms, then the box that accepts them, above Confirm. */
+.terms {
+  display: grid;
+  gap: 10px;
+  padding-top: 4px;
+}
+.terms a {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+/* Over the shared checkbox row's alignment, color and margin. */
+.terms .accept {
+  align-items: flex-start;
+  color: var(--text-primary);
+}
+.terms .accept input {
+  margin-top: 1px;
+}

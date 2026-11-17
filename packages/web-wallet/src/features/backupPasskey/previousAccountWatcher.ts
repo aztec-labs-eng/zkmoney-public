@@ -41,12 +41,16 @@ import { l2TokenService } from "../token/l2TokenService"
 import { backupMoveTokens, moveCap } from "./backupMoveTokens"
 import { sponsoredTokenService, walletOutcomeNode } from "./backupPasskeyRuntime"
 
+const sameToken = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
+
 /** How a move ended, or the error that ended it. */
 export type PreviousMoveOutcome = PreviousMoveResult | { kind: "failed"; error: unknown }
 
 /** A token the previous account held at the last check. */
 export interface PreviousHolding {
   kind: "main" | "savings"
+  /** The token's l2 address. */
+  token: string
   /** Atomic units of Main's token, or Savings' shares. */
   amount: bigint
   /** The smallest amount worth a move. */
@@ -58,6 +62,8 @@ export interface PreviousHolding {
 /** One balance of a move run. */
 export interface MoveRunRow {
   kind: PreviousHolding["kind"]
+  /** The token's l2 address. */
+  token: string
   /** Transfers of this run that moved funds. */
   moved: number
   /** `preparing` from a transfer's start, `confirming` once it is out; absent between transfers. */
@@ -102,17 +108,25 @@ const movedFunds = (outcome: TxOutcome) =>
  * A run at rest: no transfer in flight. A balance it moved from is done once `holdings`, read
  * after the run, show only dust left of it, though its pass stopped before saying so.
  */
-const atRest = (
-  { rows, approvals }: MoveRun,
-  holdings?: readonly PreviousHolding[],
-): MoveRun => ({
-  rows: rows.map(({ kind, moved, done }) => {
-    const left = holdings?.find((holding) => holding.kind === kind)
+const atRest = ({ rows, approvals }: MoveRun, holdings?: readonly PreviousHolding[]): MoveRun => ({
+  rows: rows.map(({ kind, token, moved, done }) => {
+    const left = holdings?.find((holding) => sameToken(holding.token, token))
     const emptied = moved > 0 && left !== undefined && isDust(left.amount, left.dust)
-    return { kind, moved, ...((done || emptied) && { done: true }) }
+    return { kind, token, moved, ...((done || emptied) && { done: true }) }
   }),
   approvals,
 })
+
+/** The tokens a move takes a pass over: each but those the last check found only dust in. */
+export function tokensToMove<T extends Pick<HeldToken, "l2Token">>(
+  tokens: readonly T[],
+  held: readonly PreviousHolding[] | undefined,
+): T[] {
+  return tokens.filter((token) => {
+    const holding = held?.find((h) => sameToken(h.token, token.l2Token))
+    return !holding || !isDust(holding.amount, holding.dust)
+  })
+}
 
 export interface PreviousAccountState {
   /** The previous account; absent while none is found. */
@@ -311,7 +325,8 @@ export class PreviousAccountWatcher {
           lastResult: outcome,
           moving,
           moved: done,
-          run: done || !state.run ? undefined : atRest(state.run, read ? state.holdings : undefined),
+          run:
+            done || !state.run ? undefined : atRest(state.run, read ? state.holdings : undefined),
           forecast: undefined,
           ...(done && !read ? { holdings: undefined } : {}),
           ...streak(state, outcome),
@@ -441,16 +456,22 @@ export class PreviousAccountWatcher {
       (
         await tokensOf(previous)
       ).map(async (token): Promise<PreviousHolding> => {
-        const service = await l2TokenService(previous.session.page, account,
-          token.l2Token,
-        )
+        const service = await l2TokenService(previous.session.page, account, token.l2Token)
         const [amount, dust] = await Promise.all([
           service.getBalance(),
           dustOf(previous, account, token),
         ])
         const value =
-          token.kind === "savings" ? await savingsValue(life.parts, amount) : undefined
-        return { kind: token.kind, amount, dust, ...(value === undefined ? {} : { value }) }
+          token.kind === "savings"
+            ? await savingsValue(life.parts, token.l2Token, amount)
+            : undefined
+        return {
+          kind: token.kind,
+          token: token.l2Token,
+          amount,
+          dust,
+          ...(value === undefined ? {} : { value }),
+        }
       }),
     )
     if (life === this.life) this.patch({ holdings })
@@ -491,13 +512,11 @@ export class PreviousAccountWatcher {
     if (!previous) throw new WalletError("invariant", "no previous account to move from")
     if (!previous.signs) throw new WalletError("invariant", "a backup session cannot move it")
     const account = await this.registered(previous)
-    const held = this.state.get().holdings
-    // A token the last check found nothing worth moving in takes no pass.
-    const tokens = (await tokensOf(previous)).filter((token) => {
-      const holding = held?.find(({ kind }) => kind === token.kind)
-      return !holding || !isDust(holding.amount, holding.dust)
-    })
-    let run: MoveRun = { rows: tokens.map(({ kind }) => ({ kind, moved: 0 })), approvals: 0 }
+    const tokens = tokensToMove(await tokensOf(previous), this.state.get().holdings)
+    let run: MoveRun = {
+      rows: tokens.map(({ kind, l2Token }) => ({ kind, token: l2Token, moved: 0 })),
+      approvals: 0,
+    }
     const publish = (next: MoveRun) => {
       run = next
       if (life === this.life) this.patch({ run })
@@ -508,8 +527,8 @@ export class PreviousAccountWatcher {
     const counted = new Set<string>()
     for (const token of tokens) {
       const rows = (change: (row: MoveRunRow) => MoveRunRow) =>
-        run.rows.map((row) => (row.kind === token.kind ? change(row) : row))
-      const phase = () => run.rows.find((row) => row.kind === token.kind)?.phase
+        run.rows.map((row) => (row.token === token.l2Token ? change(row) : row))
+      const phase = () => run.rows.find((row) => row.token === token.l2Token)?.phase
       const watch: MoveWatch = {
         sending: () =>
           publish({
@@ -532,13 +551,19 @@ export class PreviousAccountWatcher {
           counted.add(txHash)
           if (!ours.has(txHash)) return publish({ ...run, earlier: false })
           const more = movedFunds(outcome) ? 1 : 0
-          publish({ ...run, rows: rows(({ kind, moved }) => ({ kind, moved: moved + more })) })
+          publish({
+            ...run,
+            rows: rows(({ kind, token, moved }) => ({ kind, token, moved: moved + more })),
+          })
         },
       }
       const deps = await moveDeps(life.parts, previous, account, token, cap, signal, watch)
       const result = await movePreviousBalance(deps, signal)
       if (result.kind !== "done") return result
-      publish({ ...run, rows: rows(({ kind, moved }) => ({ kind, moved, done: true })) })
+      publish({
+        ...run,
+        rows: rows(({ kind, token, moved }) => ({ kind, token, moved, done: true })),
+      })
     }
     return { kind: "done" }
   }
@@ -566,7 +591,9 @@ export class PreviousAccountWatcher {
     if (await life.parts.saved.move(previous.address.toString())) return undefined
     const { holdings, cap } = this.state.get()
     const worth = (holdings ?? []).filter(({ amount, dust }) => !isDust(amount, dust))
-    const tokens = (await tokensOf(previous)).filter(({ kind }) => worth.some((h) => h.kind === kind))
+    const tokens = (await tokensOf(previous)).filter(({ l2Token }) =>
+      worth.some((h) => sameToken(h.token, l2Token)),
+    )
     if (tokens.length === 0) return undefined
     const account = await this.registered(previous)
     const contractService = await previous.session.contractService.ready()
@@ -628,8 +655,8 @@ function dustOf(previous: Previous, account: ObsidionAccount, token: HeldToken):
   const key = token.l2Token.toLowerCase()
   let dust = previous.dust.get(key)
   if (!dust) {
-    dust = l2TokenService(previous.session.page, account, token.l2Token).then(
-      async (service) => dustFloor((await service.fetchTokenInformation()).decimals),
+    dust = l2TokenService(previous.session.page, account, token.l2Token).then(async (service) =>
+      dustFloor((await service.fetchTokenInformation()).decimals),
     )
     dust.catch(() => previous.dust.delete(key))
     previous.dust.set(key, dust)
@@ -637,13 +664,14 @@ function dustOf(previous: Previous, account: ObsidionAccount, token: HeldToken):
   return dust
 }
 
-/** Savings' `shares` at the vault's price; undefined where the price is unread. */
+/** `shares` of the vault whose share token is `token`, at its price; undefined where unread. */
 async function savingsValue(
   parts: Pick<PreviousAccountParts, "savingsValue">,
+  token: string,
   shares: bigint,
 ): Promise<bigint | undefined> {
   if (shares === 0n) return 0n
-  return bestEffort("balance.unread", parts.savingsValue(shares))
+  return bestEffort("balance.unread", parts.savingsValue(token, shares))
 }
 
 /**

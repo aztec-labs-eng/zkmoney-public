@@ -5,6 +5,9 @@ import daiIcon from "../../assets/deposit/dai.svg"
 import usdcIcon from "../../assets/deposit/USDCToken.svg"
 import usdtIcon from "../../assets/deposit/USDTToken.svg"
 import ethIcon from "../../assets/deposit/ethereum.webp"
+import brandCopy from "../../ui/brand/brand.copy"
+import { CoinIcon } from "../../ui/CoinIcon/CoinIcon"
+import type { TransferAsset } from "../../ui/TransferWidget/TransferWidget"
 import { tokenName } from "../token/tokenName"
 
 export type WithdrawalReceiveAsset = SwapEscrowOutput
@@ -41,4 +44,13 @@ export function withdrawalReceiveAsset(id: WithdrawalReceiveAsset): WithdrawalRe
   const option = WITHDRAWAL_RECEIVE_ASSETS.find((candidate) => candidate.id === id)
   if (!option) throw new WalletError("invariant", `Unknown withdrawal receive asset: ${id}`)
   return option
+}
+
+/** Main Account's DAI as a side of the transfer widget. */
+export function mainTransferAsset(): TransferAsset {
+  return {
+    icon: <CoinIcon token={withdrawalReceiveAsset("DAI")} size={32} badge="brand" />,
+    symbol: "DAI",
+    detail: brandCopy.name,
+  }
 }

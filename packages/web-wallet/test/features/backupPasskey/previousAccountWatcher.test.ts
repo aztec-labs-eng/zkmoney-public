@@ -105,7 +105,7 @@ const DUST = 10n ** 16n
 const MAIN_L2 = `0x${"01".repeat(32)}`
 const SAVINGS_L2 = `0x${"02".repeat(32)}`
 const SAVINGS_PORTAL = "0x00000000000000000000000000000000000000b0"
-const main = (amount: bigint) => ({ kind: "main", amount, dust: DUST })
+const main = (amount: bigint) => ({ kind: "main", token: MAIN_L2, amount, dust: DUST })
 const IDLE: PreviousAccountState = { signs: false, moving: false, checking: false, refusals: 0 }
 
 const keyProvider = (key: string) =>
@@ -197,7 +197,7 @@ function fakeWallet() {
 let saved: SavedPreviousAccount
 let offSaved: () => void
 /** Savings' shares priced as `h.savingsValue` stands when the watcher reads them. */
-const savingsValue = async (shares: bigint) => h.savingsValue?.(shares)
+const savingsValue = async (_token: string, shares: bigint) => h.savingsValue?.(shares)
 /** Waits for the session's saved copy of the previous account to read `address`. */
 const savedReads = (address: string | undefined) =>
   vi.waitFor(() => expect(saved.address.get()).toBe(address))
@@ -554,7 +554,7 @@ describe("the check", () => {
       await watcher.check(pxe.wallet)
       expect(watcher.state.get().holdings).toEqual([
         main(ONE),
-        { kind: "savings", amount: 3n * ONE, dust: DUST, value: 4n * ONE },
+        { kind: "savings", token: SAVINGS_L2, amount: 3n * ONE, dust: DUST, value: 4n * ONE },
       ])
     })
 
@@ -568,6 +568,7 @@ describe("the check", () => {
       await watcher.check(pxe.wallet)
       expect(watcher.state.get().holdings?.[1]).toEqual({
         kind: "savings",
+        token: SAVINGS_L2,
         amount: 3n * ONE,
         dust: DUST,
       })
@@ -744,7 +745,7 @@ describe("moving", () => {
         const moving = watcher.move()
         await vi.waitFor(() => expect(pxe.receipts).toHaveBeenCalled())
         expect(run()).toEqual({
-          rows: [{ kind: "main", moved: 0, phase: "confirming" }],
+          rows: [{ kind: "main", token: MAIN_L2, moved: 0, phase: "confirming" }],
           approvals: 1,
         })
 
@@ -754,7 +755,7 @@ describe("moving", () => {
         await vi.advanceTimersByTimeAsync(15_000)
         await vi.waitFor(() =>
           expect(run()).toEqual({
-            rows: [{ kind: "main", moved: 1, phase: "preparing" }],
+            rows: [{ kind: "main", token: MAIN_L2, moved: 1, phase: "preparing" }],
             approvals: 2,
           }),
         )
@@ -786,7 +787,12 @@ describe("moving", () => {
       let sends = 0
       const second = deferred()
       h.tokenService.sendTokenSponsored!.mockImplementation(
-        async (_to: unknown, _amount: string, _sponsor: unknown, opts: { onTxHash: TxHashCallback }) => {
+        async (
+          _to: unknown,
+          _amount: string,
+          _sponsor: unknown,
+          opts: { onTxHash: TxHashCallback },
+        ) => {
           if (++sends === 2) await second.promise
           await opts.onTxHash(`0x${String(sends).padStart(64, "0")}`, {
             expiresAtMs: Date.now() + 60_000,
@@ -803,7 +809,7 @@ describe("moving", () => {
       const moving = watcher.move()
       await vi.waitFor(() =>
         expect(run()).toEqual({
-          rows: [{ kind: "main", moved: 0, phase: "preparing" }],
+          rows: [{ kind: "main", token: MAIN_L2, moved: 0, phase: "preparing" }],
           approvals: 2,
         }),
       )
@@ -836,8 +842,8 @@ describe("moving", () => {
         lastResult: { kind: "stopped" },
         run: {
           rows: [
-            { kind: "main", moved: 1, done: true },
-            { kind: "savings", moved: 0 },
+            { kind: "main", token: MAIN_L2, moved: 1, done: true },
+            { kind: "savings", token: SAVINGS_L2, moved: 0 },
           ],
           approvals: 1,
         },
@@ -873,8 +879,8 @@ describe("moving", () => {
         expect(await moving).toEqual({ kind: "stopped" })
         expect(run()).toEqual({
           rows: [
-            { kind: "main", moved: 1, done: true },
-            { kind: "savings", moved: 0 },
+            { kind: "main", token: MAIN_L2, moved: 1, done: true },
+            { kind: "savings", token: SAVINGS_L2, moved: 0 },
           ],
           approvals: 1,
         })
@@ -902,7 +908,7 @@ describe("moving", () => {
       sponsor.resolve({ fpcAddress: "fpc", fpcArtifact: {} })
 
       expect(await moving).toEqual({ kind: "stopped" })
-      expect(run()).toEqual({ rows: [{ kind: "main", moved: 1 }], approvals: 1 })
+      expect(run()).toEqual({ rows: [{ kind: "main", token: MAIN_L2, moved: 1 }], approvals: 1 })
     })
 
     it("shows a transfer an earlier run left in flight on no row, and counts no approval for it", async () => {
@@ -921,7 +927,11 @@ describe("moving", () => {
       try {
         const moving = watcher.move()
         await vi.waitFor(() =>
-          expect(run()).toEqual({ rows: [{ kind: "main", moved: 0 }], approvals: 0, earlier: true }),
+          expect(run()).toEqual({
+            rows: [{ kind: "main", token: MAIN_L2, moved: 0 }],
+            approvals: 0,
+            earlier: true,
+          }),
         )
 
         h.txStatus = TxStatus.FINALIZED
@@ -989,7 +999,9 @@ describe("moving", () => {
 
       await getPreviousAccountWatcher().check(pxe.wallet)
       await vi.waitFor(() => expect(forecast()).toEqual({ approvals: 1, upper: false }))
-      const shapesRead = h.shape.mock.calls.map(([, token]) => (token as { l2Token: string }).l2Token)
+      const shapesRead = h.shape.mock.calls.map(
+        ([, token]) => (token as { l2Token: string }).l2Token,
+      )
       expect(shapesRead).toEqual([MAIN_L2])
     })
 
@@ -1092,7 +1104,7 @@ describe("moving", () => {
     expect(watcher.state.get()).toMatchObject({
       moving: false,
       moved: false,
-      run: { rows: [{ kind: "main", moved: 0 }], approvals: 0 },
+      run: { rows: [{ kind: "main", token: MAIN_L2, moved: 0 }], approvals: 0 },
     })
   })
 
@@ -1261,7 +1273,7 @@ describe("moving", () => {
     await vi.waitFor(() =>
       expect(watcher.state.get().holdings).toEqual([
         main(0n),
-        { kind: "savings", amount: 0n, dust: DUST, value: 0n },
+        { kind: "savings", token: SAVINGS_L2, amount: 0n, dust: DUST, value: 0n },
       ]),
     )
   })

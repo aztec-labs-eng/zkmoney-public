@@ -152,20 +152,6 @@ describe("complete", () => {
     expect(await w.scan()).toMatchObject({ failed: 0, complete: false })
   })
 
-  it("is cleared when funding attribution fails", async () => {
-    const w = await pipelineWorld()
-    await swept(w)
-    const { scanned, claimed } = await w.pass({
-      scan: {
-        onFundingWalletDetected: async () => {
-          throw new Error("contacts down")
-        },
-      },
-    })
-    expect(scanned).toMatchObject({ failed: 0, complete: false })
-    expect(claimed.claimed).toBe(1)
-  })
-
   it("is cleared on the claim side when the balance refresh fails", async () => {
     const w = await pipelineWorld()
     await swept(w)

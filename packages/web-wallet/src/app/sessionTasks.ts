@@ -2,6 +2,7 @@
  * A session's feature tasks, services and views, built over its core. `openSession` takes them from
  * here through its deps, so `session/` imports no feature.
  */
+import type { Holding } from "@obsidion/core/oxide"
 import {
   BroadcastDeferred,
   TransferEventScanner,
@@ -26,14 +27,17 @@ import {
   previousAccountScan,
   provingBusy,
   rebuildPaylinks,
+  isMoveBurn,
   keyedService,
   moveQuotes,
+  vaultSwapQuotes,
+  vaultSwapTargets,
   openMoves,
   boundRails,
   recoverableRails,
   runnableRails,
   replayMoves,
-  savingsValue,
+  holdingUsd,
   settleMoves,
   sponsoredAllowance,
   reorg,
@@ -159,6 +163,7 @@ import {
   feedSources,
   mergedRows,
 } from "../ui/activity/feedSources"
+import { backupReports } from "./backupReports"
 import { withdrawReports } from "./withdrawReports"
 
 const NOTHING_WAITS: ReadonlyStore<ReadonlyMap<string, SipaProcessingState>> = memoryStore(
@@ -181,6 +186,10 @@ const NO_HISTORY: ReadonlyStore<AccountHistory> = memoryStore<AccountHistory>({
 const NO_RAILS: ReadonlyStore<ReadonlySet<MoveRail>> = memoryStore<ReadonlySet<MoveRail>>(
   new Set(),
 ).readonly
+
+const NO_VAULT_SWAPS: ReadonlyStore<ReadonlyMap<string, readonly string[]>> = memoryStore<
+  ReadonlyMap<string, readonly string[]>
+>(new Map()).readonly
 
 /** Whether the boot sync's move replay is in, or its wait ran out. */
 const movesReplayed = (milestones: Milestones): ReadonlyStore<boolean> =>
@@ -355,6 +364,9 @@ export function sessionTasks(session: Core) {
   const writers = [
     provingMarks(page.prover.progress, session.operations),
     withdrawReports({ withdrawals, funnel: session.withdrawFunnel, claims: session.owedClaims }),
+    ...(session.backupRotations && session.backupFunnel
+      ? [backupReports({ rotations: session.backupRotations, funnel: session.backupFunnel })]
+      : []),
     notificationStamps(sources, page.wallClock, notifications, page.now),
     claimReversalReports(sources, notifications, page.now),
     ...(signedIn && contacts
@@ -445,6 +457,7 @@ export function sessionTasks(session: Core) {
     const rails = {
       recoverable: derived([bound], recoverableRails),
       runnable: derived([bound], runnableRails),
+      vaultSwaps: derived([bound], vaultSwapTargets),
     }
     const paylinks = paylinkSweep(
       { wallet, account, token, contractService },
@@ -469,11 +482,12 @@ export function sessionTasks(session: Core) {
         acrossBridge(session.page.config)?.chains.find((c) => c.chainId === chainId)?.name,
     }
     const rescan = rescanWithdrawals({ ...rescanDeps, onSighted: () => sighted.set(true) })
-    // Sky burns stay out: the Savings settle would try to claim their deposits for the session's
-    // account, but they were paid to the previous one.
+    // Move burns stay out: their deposits were paid to the previous account, so nothing here can
+    // claim them. `deployed` is read before each scan.
+    let deployed: readonly Holding[] = []
     const previousRescan = rescanWithdrawals({
       ...rescanDeps,
-      keep: (burn) => !burn.sky,
+      keep: (burn) => !isMoveBurn(burn, deployed),
       strict: true,
     })
     const replay = replayMoves({ ...movesDeps, milestones, settle })
@@ -489,11 +503,9 @@ export function sessionTasks(session: Core) {
         lookup: async (_wallet, account) => {
           const { holdings } = await page.chain.holdings.read()
           const tokens = new Map(holdings.map((h) => [h.held.l2Token.toLowerCase(), h.held]))
-          return Promise.all(
-            [...tokens.values()].map(async (held) => ({
-              tokenService: await l2TokenService(page, account, held.l2Token),
-            })),
-          )
+          return [...tokens.values()].map((held) => async () => ({
+            tokenService: await l2TokenService(page, account, held.l2Token),
+          }))
         },
       }),
       settle,
@@ -585,8 +597,10 @@ export function sessionTasks(session: Core) {
             })
             return complete
           },
-          burns: ({ wallet, token }, address) =>
-            previousRescan(wallet, address, [{ tokenService: token }]),
+          burns: async ({ wallet, token }, address) => {
+            deployed = (await page.chain.holdings.read()).holdings
+            return previousRescan(wallet, address, [{ tokenService: token }])
+          },
         }),
       )
     }
@@ -620,7 +634,7 @@ export function sessionTasks(session: Core) {
     prover: page.prover,
   })
   const pipeline =
-    work && account && token && contacts && sipaKeys
+    work && account && token && sipaKeys
       ? sipaPipeline({
           store: sipaDeposits,
           registrations: session.registrations,
@@ -635,7 +649,6 @@ export function sessionTasks(session: Core) {
           visible: deps.visible,
           catchUp: deps.catchUp,
           custody: deps.custody(session.registrations.view, sipaDeposits.view, withdrawals.list),
-          contacts,
           upgrades: session.rollup.upgrades,
           refreshBalance: () => work.scan.refreshBalance(),
           wakeBroadcasts,
@@ -649,9 +662,10 @@ export function sessionTasks(session: Core) {
         session,
         saved: session.savedPreviousAccount,
         pipeline,
-        savingsValue: async (shares) => {
-          const price = await page.chain.savingsPrice.read()
-          return price ? savingsValue(shares, price.sharePrice) : undefined
+        savingsValue: async (token, shares) => {
+          const { holdings } = await page.chain.holdings.read()
+          const holding = holdings.find((h) => h.held.l2Token.toLowerCase() === token.toLowerCase())
+          return holding && holdingUsd(shares, await page.chain.holdingPrice(holding).read())
         },
       }),
     )
@@ -765,13 +779,16 @@ export function sessionTasks(session: Core) {
       now: session.page.now,
     }),
     rebuild: bridgeInRebuild({
+      db,
       deposits: sipaDeposits,
       bridgeIns: session.bridgeIns,
-      fills: bridgeFills(config),
-      provider: () => acrossDeposits,
+      fills: bridgeFills(config, session.page.query),
+      provider: (bridge) => ({ across: acrossDeposits }[bridge]),
       origin,
+      listsChain: (chainId) => !!acrossBridge(config)?.chains.some((c) => c.chainId === chainId),
       listedSymbol: (chainId, token) => listedBridgeSymbol(config, chainId, token),
       landingDecimals: async (token) => (await tokenMetadata(session.page, token)).decimals,
+      now: session.page.now,
     }),
   }
   const tasks = [
@@ -923,6 +940,10 @@ export function sessionTasks(session: Core) {
       moveCommands: work?.moves ?? null,
       /** What a move costs and lands; null for a visitor. */
       moveQuote: work ? moveQuotes(page.query, work.ports) : null,
+      /** What a swap between two holdings costs and lands; null for a visitor. */
+      vaultSwapQuote: work ? vaultSwapQuotes(page.query, work.ports) : null,
+      /** The holdings each holding can swap into. */
+      vaultSwapTargets: work?.rails.vaultSwaps ?? NO_VAULT_SWAPS,
       /** The rails whose moves the account can recover itself. */
       recoverableRails: work?.rails.recoverable ?? NO_RAILS,
       /** The rails whose stalled moves the account can run itself. */
@@ -981,6 +1002,8 @@ declare module "../session/session" {
     backupAddRelease: Services["backupAddRelease"]
     moveCommands: Services["moveCommands"]
     moveQuote: Services["moveQuote"]
+    vaultSwapQuote: Services["vaultSwapQuote"]
+    vaultSwapTargets: Services["vaultSwapTargets"]
     recoverableRails: Services["recoverableRails"]
     runnableRails: Services["runnableRails"]
     savingsLine: Services["savingsLine"]

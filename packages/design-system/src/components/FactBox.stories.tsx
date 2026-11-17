@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite"
-import { FactBox } from "@obsidion/web-ds"
+import { FactBox, HoldingRow, RatePill } from "@obsidion/web-ds"
 
 const meta = {
   title: "Sheets & Modals/FactBox",
@@ -52,4 +52,35 @@ export const ChargedNothing: Story = {
 
 export const CantCancel: Story = {
   args: { facts: [{ label: "Can I cancel?", value: "Not after paying" }] },
+}
+
+/** A holding over facts that read as sentences. */
+export const HoldingFacts: Story = {
+  args: {
+    layout: "columns",
+    head: (
+      <HoldingRow
+        icon={
+          <span
+            style={{
+              display: "block",
+              width: 40,
+              height: 40,
+              borderRadius: "50%",
+              background: "#fea54e",
+            }}
+          />
+        }
+        title="USDS"
+        subtitle="Sky Savings Rate"
+        value="$550.00"
+        rate={<RatePill size="sm" label="3.8% APY" />}
+      />
+    ),
+    facts: [
+      { label: "Yield from", value: "Sky Savings Rate, set by Sky governance" },
+      { label: "Move back", value: "Any time · about 40 min" },
+      { label: "Risk", value: "Low · backed 1:1 by dollar assets" },
+    ],
+  },
 }

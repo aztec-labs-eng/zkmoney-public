@@ -480,7 +480,7 @@ export const WITHDRAW_MOCKS: Record<WithdrawMockName, MockDef> = {
     }),
   },
   "review-bridge": {
-    start: bridged({ history: ["address", "amount", "review"] }),
+    start: bridged({ history: ["address", "amount", "review"], speed: "standard" }),
   },
   "review-fee-changed": {
     start: amount({
@@ -699,7 +699,7 @@ export function withdrawMock(name: string, config: WebWalletConfig): DemoMock | 
           else await create(next)
         },
       }))
-      if (played) playJourney(session.page.pace, played)
+      if (played) playJourney(session, played)
       const status = rest.history?.includes("status")
       return { withdraw: { ...rest, ...(status && { signing: prompt.readonly }) } }
     },

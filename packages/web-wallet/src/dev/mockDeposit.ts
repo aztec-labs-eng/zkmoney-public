@@ -396,7 +396,7 @@ export function depositMock(
       if (def.sent)
         await deposits.adopt(sentRecord(sent, decimals, def.sent, config.l1ChainId, now))
       if (def.sentJourney)
-        playJourney(page.pace, [
+        playJourney(session, [
           {
             at: 4_000,
             run: () =>
@@ -421,7 +421,7 @@ export function depositMock(
         bridgeSent = record?.id
         if (bridgeIn.landed) await deposits.adopt(claimed)
         if (bridgeIn.journey && record)
-          playJourney(page.pace, [
+          playJourney(session, [
             {
               at: 4_000,
               run: () =>

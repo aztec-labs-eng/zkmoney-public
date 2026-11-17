@@ -3,10 +3,15 @@
  * the cents while the page shows it, with as many digits as it takes to see it move. Ported from
  * Harry's #2198 (`EARN_ESTIMATE_TICK_MS`, `splitTicking`).
  */
-import { memoryStore, projectValueAtomic, useStore } from "@obsidion/front-core"
+import { assetUsd, memoryStore, projectValueAtomic, useStore } from "@obsidion/front-core"
 import { usdAtomicFloor } from "../../ui/format"
 import { useSession } from "../../session/session"
-import type { SavingsPosition } from "./savingsLine"
+import {
+  savingsTotal,
+  selectSavingsEarned,
+  type SavingsLine,
+  type SavingsPosition,
+} from "./savingsLine"
 
 /** Tick while funded with a rate: the micro-cent estimate moves, so must the figure. */
 export const SAVINGS_ESTIMATE_TICK_MS = 120
@@ -38,43 +43,51 @@ export function splitTicking(atomic: bigint): { whole: string; ticking: string }
 }
 
 export interface SavingsEstimate {
-  /** The value carried to now while ticking, else the last read; unknown without a position. */
+  /** Savings' worth, carried to now while ticking, else as last read; unknown as the total is. */
   value: bigint | undefined
-  /** True while the figure moves: `enabled`, funded, and a rate to carry it at. */
+  /** What Savings has earned at that worth; unknown as `selectSavingsEarned` is. */
+  earned: bigint | undefined
+  /** True while the figure moves: `enabled`, and a funded line with a rate to carry it at. */
   ticking: boolean
 }
 
-/** Whether the figure moves: `enabled`, funded, and a rate to carry it at. */
-export const ticking = (position: SavingsPosition | null, enabled: boolean): boolean =>
-  !!position && enabled && position.shares > 0n && (position.rate ?? 0n) > 0n
+const moving = (position: SavingsPosition | null): boolean =>
+  !!position && position.shares > 0n && (position.rate ?? 0n) > 0n
 
-/** The figure at `now`: carried at the rate while it ticks; else as read. */
+/** Whether the figure moves: `enabled`, the total known, and a funded line with a rate. */
+export const ticking = (savings: SavingsLine, enabled: boolean): boolean =>
+  enabled &&
+  savingsTotal(savings) !== undefined &&
+  savings.lines.some(({ position }) => moving(position))
+
+/** The figures at `now`: each line carried at its own rate while they tick; else as read. */
 export function selectSavingsEstimate(
-  position: SavingsPosition | null,
+  savings: SavingsLine,
   enabled: boolean,
   now: number,
 ): SavingsEstimate {
-  if (!position) return { value: undefined, ticking: false }
-  const moving = ticking(position, enabled)
+  const carried = ticking(savings, enabled)
+  const usdOf = (position: SavingsPosition) => {
+    const read = assetUsd(position.value, position)
+    return carried && moving(position)
+      ? projectValueAtomic(read, position.readAt, now, position.rate!)
+      : read
+  }
   return {
-    value: moving
-      ? projectValueAtomic(position.value, position.readAt, now, position.rate!)
-      : position.value,
-    ticking: moving,
+    value: savingsTotal(savings, usdOf),
+    earned: selectSavingsEarned(savings, usdOf),
+    ticking: carried,
   }
 }
 
 const STILL = memoryStore(0).readonly
 
 /**
- * The Savings value as the screen shows it, on the page's estimate clock: it ticks every
- * {@link SAVINGS_ESTIMATE_TICK_MS} while it moves and the page shows.
+ * Savings' figures as the screen shows them, on the page's estimate clock: they tick every
+ * {@link SAVINGS_ESTIMATE_TICK_MS} while they move and the page shows.
  */
-export function useSavingsEstimate(
-  position: SavingsPosition | null,
-  enabled: boolean,
-): SavingsEstimate {
+export function useSavingsEstimate(savings: SavingsLine, enabled: boolean): SavingsEstimate {
   const { page } = useSession()
-  const now = useStore(ticking(position, enabled) ? page.savingsEstimateClock : STILL)
-  return selectSavingsEstimate(position, enabled, now)
+  const now = useStore(ticking(savings, enabled) ? page.savingsEstimateClock : STILL)
+  return selectSavingsEstimate(savings, enabled, now)
 }

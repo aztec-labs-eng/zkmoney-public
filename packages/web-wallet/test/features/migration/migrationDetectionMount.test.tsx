@@ -26,10 +26,7 @@ const h = vi.hoisted(() => ({
   railPending: undefined as boolean | undefined,
   railReadFailed: false,
   balance: { main: 0n, known: true },
-  savings: {
-    position: null as { value: bigint } | null,
-    others: [] as { position: { value: bigint } | null }[],
-  },
+  savings: { lines: [] as { position: { value: bigint; assetDecimals: number } }[] },
   registrations: [] as { l2Address: string }[],
   demo: false,
   tokenCreate: vi.fn(),
@@ -78,6 +75,7 @@ vi.mock("../../../src/session/session", async () => {
     withdrawals: { records: [], hydrated: true },
     bridgeIns: { records: [], hydrated: true },
     upgrades: { items: [], recipients: new Set<string>(), loaded: true },
+    moves: [],
     upgradePricing: { settled: true },
     processing: new Map(),
     registrations: [],
@@ -360,7 +358,7 @@ beforeEach(() => {
   h.registrations = []
   h.demo = false
   h.keyFor = undefined
-  h.savings = { position: null, others: [] }
+  h.savings = { lines: [] }
   h.account.obsidionAccount = ACCOUNT
   walletStorage.removeItem("webwallet.upgradeLock/0xabc")
   walletStorage.removeItem("webwallet.version/0xabc")
@@ -3165,7 +3163,11 @@ describe("MigrationDetectionMount — the upgrade lock", () => {
       expect(upgradeButton()!.disabled).toBe(true)
       expect(h.runMetadata).not.toHaveBeenCalled()
       // 3 in the listed vault, and 2 in one the profile no longer lists.
-      h.savings = { position: { value: 3n * wad }, others: [{ position: { value: 2n * wad } }] }
+      h.savings = {
+        lines: [3n, 2n].map((dollars) => ({
+          position: { value: dollars * wad, assetDecimals: 18 },
+        })),
+      }
       await render()
       await startUpgrade()
 

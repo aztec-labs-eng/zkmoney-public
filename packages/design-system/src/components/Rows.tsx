@@ -94,7 +94,16 @@ export interface ContactRowProps {
 }
 
 /** Contact list row: gradient initial avatar, gradient handle, muted subtitle, trailing chevron. */
-export function ContactRow({ tag, name, isL1 = false, colors, onClick, avatarStyle, trailing, className }: ContactRowProps) {
+export function ContactRow({
+  tag,
+  name,
+  isL1 = false,
+  colors,
+  onClick,
+  avatarStyle,
+  trailing,
+  className,
+}: ContactRowProps) {
   const handle = tag.replace(/^@/, "").split(".")[0]
   const label = name?.trim()
   // An L2 contact saves under its tag, or its messaging address before the tag resolves.
@@ -106,10 +115,18 @@ export function ContactRow({ tag, name, isL1 = false, colors, onClick, avatarSty
   const subtitle = isL1 ? tag : hasLabel ? `@${handle}.zk.money` : "zk.money"
   const initialSource = hasLabel ? label! : tag.replace(/^@/, "")
   return (
-    <button type="button" className={["zkm-btn-reset zkm-contact-row", className].filter(Boolean).join(" ")} onClick={onClick}>
+    <button
+      type="button"
+      className={["zkm-btn-reset zkm-contact-row", className].filter(Boolean).join(" ")}
+      onClick={onClick}
+    >
       <GradientInitialAvatar name={initialSource} colors={colors} size={44} style={avatarStyle} />
       <span className="zkm-contact-row__text">
-        <GradientText size={16} weight={500} className={hasLabel || isL1 ? undefined : "zkm-contact-row__tag"}>
+        <GradientText
+          size={16}
+          weight={500}
+          className={hasLabel || isL1 ? undefined : "zkm-contact-row__tag"}
+        >
           {title}
         </GradientText>
         <span className="zkm-contact-row__subtitle">{subtitle}</span>
@@ -130,7 +147,11 @@ export interface SearchResultRowProps {
 /** Tappable search-result row with placeholder dot avatar on a dark translucent card. */
 export function SearchResultRow({ title, subtitle, onClick, className }: SearchResultRowProps) {
   return (
-    <button type="button" className={["zkm-btn-reset zkm-search-row", className].filter(Boolean).join(" ")} onClick={onClick}>
+    <button
+      type="button"
+      className={["zkm-btn-reset zkm-search-row", className].filter(Boolean).join(" ")}
+      onClick={onClick}
+    >
       <span className="zkm-search-row__avatar">
         <span className="zkm-search-row__dot" />
       </span>
@@ -155,7 +176,15 @@ export interface ListRowProps {
 }
 
 /** Payment-method picker row: leading icon + gradient title/subtitle + trailing chrome. */
-export function ListRow({ title, subtitle, disabled = false, leading, trailing, floatingTrailing = false, className }: ListRowProps) {
+export function ListRow({
+  title,
+  subtitle,
+  disabled = false,
+  leading,
+  trailing,
+  floatingTrailing = false,
+  className,
+}: ListRowProps) {
   return (
     <div className={["zkm-list-row", className].filter(Boolean).join(" ")}>
       {leading}
@@ -169,19 +198,34 @@ export function ListRow({ title, subtitle, disabled = false, leading, trailing, 
             {title}
           </GradientText>
         )}
-        <span className="zkm-list-row__subtitle" style={disabled ? { color: "#565656" } : undefined}>
+        <span
+          className="zkm-list-row__subtitle"
+          style={disabled ? { color: "#565656" } : undefined}
+        >
           {subtitle}
         </span>
       </span>
       {!floatingTrailing && <span className="zkm-row-spacer" />}
       {trailing && (
-        <span className={floatingTrailing ? "zkm-list-row__floating-trailing" : undefined}>{trailing}</span>
+        <span className={floatingTrailing ? "zkm-list-row__floating-trailing" : undefined}>
+          {trailing}
+        </span>
       )}
     </div>
   )
 }
 
-/** "Coming soon" gradient capsule badge. */
-export function ComingSoonPill({ label = "Coming soon" }: { label?: string }) {
-  return <span className="zkm-coming-soon">{label}</span>
+/** "Coming soon" gradient capsule badge; `sm` tags a 14px title. */
+export function ComingSoonPill({
+  label = "Coming soon",
+  size = "md",
+}: {
+  label?: string
+  size?: "md" | "sm"
+}) {
+  return (
+    <span className={size === "sm" ? "zkm-coming-soon zkm-coming-soon--sm" : "zkm-coming-soon"}>
+      {label}
+    </span>
+  )
 }

@@ -11,7 +11,11 @@ export type {
   WithdrawalRecord,
 } from "./types"
 
-export { ACROSS_INPUT_DECIMALS, swapWithdrawalAmounts, withdrawalAmounts } from "./withdrawalAmounts"
+export {
+  ACROSS_INPUT_DECIMALS,
+  swapWithdrawalAmounts,
+  withdrawalAmounts,
+} from "./withdrawalAmounts"
 export type { SwapWithdrawalAmounts, WithdrawalAmounts } from "./withdrawalAmounts"
 
 export { withdrawalRecipients } from "./withdrawalRecipients"
@@ -28,7 +32,7 @@ export type { BridgeLeg, EscrowLeg, SkyLeg, SwapLeg } from "./escrowLeg"
 export { skyRoute } from "./skyEscrowLeg"
 export type { BridgeOutProvider, BridgeOutTracking } from "./bridgeOutProvider"
 
-export { rebuildWithdrawals } from "./withdrawalRescan"
+export { isMoveBurn, rebuildWithdrawals } from "./withdrawalRescan"
 export type { WithdrawalRescanDeps } from "./withdrawalRescan"
 
 export {

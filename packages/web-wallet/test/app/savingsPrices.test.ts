@@ -1,5 +1,6 @@
 // @vitest-environment node
-// Each Sky holding's price is read on its own: one vault that does not answer costs only its own.
+// Each holding's price is read on its own, on any rail: a vault that does not answer costs only
+// its own.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { encodeAbiParameters, toFunctionSelector, toHex } from "viem"
 import { PORTAL } from "../fixtures/sandboxProfile"
@@ -11,8 +12,10 @@ const MANIFEST_URL = "http://profile-oxide.test/sandbox.json"
 const L1_URL = "http://profile-l1.test"
 const VAULT = `0x${"d2".repeat(20)}`
 const OLD_VAULT = `0x${"d3".repeat(20)}`
+const USDC_VAULT = `0x${"d4".repeat(20)}`
 const PRICE = 1_050_000_000_000_000_000n
 const DECIMALS = toFunctionSelector("decimals()")
+const SYMBOL = toFunctionSelector("symbol()")
 const uint = (value: bigint | number) => encodeAbiParameters([{ type: "uint256" }], [BigInt(value)])
 
 const bridge = (key: string, token: string, portal: string, byte: string) => ({
@@ -44,10 +47,26 @@ const manifest = {
       features: {
         "fea-sky-sandbox": sky("brg-susds-sandbox"),
         "fea-sky-old": sky("brg-susdsold-sandbox"),
+        "fea-multistep-sandbox": {
+          project: "multistep",
+          bridges: {},
+          contracts: {
+            multiStepExecutor: `0x${"e0".repeat(20)}`,
+            portalDepositAdapter: `0x${"e1".repeat(20)}`,
+            erc4626Adapter: `0x${"e2".repeat(20)}`,
+          },
+        },
+        "fea-vault-usdc": {
+          project: "position",
+          bridges: { main: "brg-dai-sandbox", position: "brg-vaultusdc-sandbox" },
+          contracts: {},
+          variables: { conversion: "None" },
+        },
       },
       bridges: [
         bridge("susds", VAULT, `0x${"bb".repeat(20)}`, "b2"),
         bridge("susdsold", OLD_VAULT, `0x${"bc".repeat(20)}`, "b3"),
+        bridge("vaultusdc", USDC_VAULT, `0x${"bd".repeat(20)}`, "b4"),
         bridge("dai", `0x${"d1".repeat(20)}`, PORTAL, "a1"),
       ],
     },
@@ -66,6 +85,8 @@ function answer({ id, method, params }: Call) {
   const [{ to, data }] = params
   if (down.has(to.toLowerCase()))
     return { jsonrpc: "2.0", id, error: { code: 3, message: "execution reverted", data: "0x" } }
+  if (data.startsWith(SYMBOL))
+    return { jsonrpc: "2.0", id, result: encodeAbiParameters([{ type: "string" }], ["USDS"]) }
   return { jsonrpc: "2.0", id, result: uint(data.startsWith(DECIMALS) ? 18 : PRICE) }
 }
 
@@ -82,13 +103,23 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals())
 
 describe("the Savings prices", () => {
-  it("price each Sky holding on its own: one vault that fails leaves the others priced", async () => {
+  it("price each holding on its own, a vault's beside Sky's: one that fails leaves the others priced", async () => {
     down.add(OLD_VAULT)
     const chain = createPageChain(await sandboxConfig(), testChain())
     const prices = await chain.savingsPrices.read()
-    expect(prices.map((p) => p.holding.id)).toEqual(["fea-sky-sandbox", "fea-sky-old"])
+    expect(prices.map((p) => [p.holding.id, p.holding.rail])).toEqual([
+      ["fea-sky-sandbox", "skyEscrow"],
+      ["fea-sky-old", "skyEscrow"],
+      ["fea-vault-usdc", "executor"],
+    ])
     expect(prices[0]).toMatchObject({ sharePrice: PRICE, shareDecimals: 18 })
     expect(prices[1]).toEqual({ holding: prices[1]?.holding, failed: true })
+    expect(prices[2]).toMatchObject({ sharePrice: PRICE })
+  })
+
+  it("keep Sky's price as an older build's Savings price beside a vault's", async () => {
+    const chain = createPageChain(await sandboxConfig(), testChain())
+    expect((await chain.savingsPrice.read())?.holding.id).toBe("fea-sky-sandbox")
   })
 
   it("keep a holding's earlier price through a re-read of it that fails", async () => {

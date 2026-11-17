@@ -23,13 +23,10 @@ import {
   stopIfAborted,
   task,
   type UpgradeActivity,
-  upsertDepositL1WalletContact,
   within,
   liveStore,
   memoryStore,
   type CatchUp,
-  type Contacts,
-  type UpsertDepositL1WalletContactParams,
   type Database,
   type Milestones,
   type ReadonlyStore,
@@ -125,8 +122,6 @@ export interface SipaPipelineDeps {
   catchUp: CatchUp
   /** A registration holds funds in signup's custody. */
   custody: ReadonlyStore<boolean>
-  /** Where each deposit's funding wallet is saved. */
-  contacts: Pick<Contacts, "upsertL1WalletContact">
   /** Reads the balance after claims landed. */
   refreshBalance(): Promise<void>
   /** Runs the broadcasts a pass owes again. */
@@ -197,8 +192,6 @@ export function sipaPipeline(deps: SipaPipelineDeps) {
       networkId: wallet.networkId,
       registrationScheduleFor: (sipa: string) =>
         registrationScheduleForSipa(deps.registrations, sipa),
-      onFundingWalletDetected: (funder: UpsertDepositL1WalletContactParams) =>
-        upsertDepositL1WalletContact(deps.contacts, funder),
       // The account has no on-chain creation block, and no deposit to it predates the deployment.
       historyStartBlock: async (head: bigint) =>
         (await deploymentScanRange(publicClient, inputs.tuple, head)).fromBlock,

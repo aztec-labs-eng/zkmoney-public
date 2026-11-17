@@ -117,11 +117,17 @@ describe("the across feature", () => {
 })
 
 describe("what the across feature names on chains", () => {
-  it("is its L1 handler, and each chain's contracts and tokens both ways, without native ETH", () => {
-    const d = changed((d) => (d.features.across.multicallHandler = MOCK_FACTORY))
+  it("is its L1 handler and SpokePool, and each chain's contracts and tokens both ways, without native ETH", () => {
+    const d = changed((d) => {
+      d.features.across.multicallHandler = MOCK_FACTORY
+      d.features.across.spokePool = MOCK_SPOKE_POOL
+    })
     const across = parseFeaturesDocument(d).features.across!
     expect(acrossFeature.onChain!(across)).toEqual({
-      l1Contracts: [{ path: ["multicallHandler"], address: MOCK_FACTORY }],
+      l1Contracts: [
+        { path: ["multicallHandler"], address: MOCK_FACTORY },
+        { path: ["spokePool"], address: MOCK_SPOKE_POOL },
+      ],
       chains: [
         {
           path: ["chains", 0],

@@ -40,6 +40,7 @@ export { isAllZeroHex, requireNonZeroL1Address, requireNonZeroL2Address } from "
 export { OxideManifestValidationError } from "./validation.js"
 export * from "./deployment.js"
 export * from "./holdings.js"
+export * from "./profileHoldings.js"
 export { sipaGenerationOf, sipaGenerations } from "./sipaGenerations.js"
 
 function isRecord(value: unknown): value is Record<string, unknown> {

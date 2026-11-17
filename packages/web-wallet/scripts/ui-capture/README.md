@@ -113,4 +113,6 @@ On actual iOS Safari and Android Chrome, record device model, OS/browser version
 
 Run `pnpm test:scan-qr` for the production Share card corpus through the scanner decoder. This explicit browser suite requires Chromium and is excluded from `pnpm test`. Its temporary report records complete payloads, source and PNG hashes, and exact decode results. `pnpm test:ui-capture` also checks the bundled decoder worker against controlled canvas media under COOP/COEP, including stream release after a late permission grant. Neither suite establishes physical camera compatibility.
 
-See the [flow capture plans](./plans/flows/README.md) for the flow-specific fixture interface, and the [backup passkey plans](./plans/backup-passkey/README.md) for a capture of each backup passkey screen.
+The [move sheets plan](./plans/move-sheets.json) captures the amount and review sheets of a deposit, a bridge-in, a withdrawal and a bridge-out from their `/dev/mock/` routes, after their quotes load.
+
+See the [flow capture plans](./plans/flows/README.md) for the flow-specific fixture interface, the [backup passkey plans](./plans/backup-passkey/README.md) for a capture of each backup passkey screen, and the [savings plans](./plans/savings/README.md) for the Savings account.

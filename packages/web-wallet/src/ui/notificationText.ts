@@ -13,6 +13,8 @@ import {
   truncateMiddle,
   shortenAddressSm,
   type BridgeActivityItem,
+  type BurnMove,
+  type MoveDirection,
   type NotificationAbout,
   type NotificationEntry,
   type PaylinkRecord,
@@ -63,8 +65,22 @@ function receiveFrom(tx: TokenTransaction): string {
 const paylinkAmount = (tx: PaylinkRecord | undefined) =>
   tx?.token ? fmt(copy.paylink.amount, { amount: dollars(tx.amountAtomic, tx.token.decimals) }) : ""
 
-const savingsOf = (item: BridgeActivityItem) =>
-  item.kind === "bridge.withdrawal" ? item.record.skyMove : undefined
+/**
+ * The Savings move a burn funds, on either rail: a Sky burn's record names it, a vault burn's move
+ * does. `value` is the dollars a move out burns, where its record holds them.
+ */
+const savingsOf = ({
+  item,
+  move,
+}: {
+  item: BridgeActivityItem
+  move?: BurnMove
+}): { direction: MoveDirection; value?: string; intoHoldingId?: string } | undefined =>
+  item.kind === "bridge.withdrawal" ? item.record.skyMove ?? move : undefined
+
+/** A swap stays in Savings, so it is not named a move to Main. */
+const savingsLabel = (savings: { direction: MoveDirection; intoHoldingId?: string }) =>
+  savings.intoHoldingId === undefined ? savingsMoveLabel(savings.direction) : copy.bridge.switching
 
 const bridgeOutOf = (item: BridgeActivityItem) =>
   item.kind === "bridge.withdrawal" ? item.record.bridgeOut : undefined
@@ -73,8 +89,9 @@ const bridgeOutOf = (item: BridgeActivityItem) =>
  * The figure a bridge entry names: a withdrawal its burn, a deposit what credits the balance (a
  * recovery returns the whole balance), ETH in ETH, a move out of Savings its dollar value.
  */
-function bridgeAmount(item: BridgeActivityItem): string {
-  const savings = savingsOf(item)
+function bridgeAmount(about: { item: BridgeActivityItem; move?: BurnMove }): string {
+  const { item } = about
+  const savings = savingsOf(about)
   if (savings?.direction === "out")
     return savings.value === undefined ? copy.bridge.fromSavings : dollars(BigInt(savings.value))
   if (item.kind === "bridge.withdrawal") return dollarsOf(item.record.amount)
@@ -112,13 +129,13 @@ function withdrawalLive(phase: WithdrawalPhase, destination: string | undefined)
 
 function bridgeLive(about: Extract<NotificationAbout, { kind: "bridgeLive" }>): NotificationText {
   const { item, migration, reason } = about
-  const savings = savingsOf(item)
+  const savings = savingsOf(about)
   const withdrawal = item.kind === "bridge.withdrawal"
   const bridgeOut = bridgeOutOf(item)
   const title = migration
     ? copy.bridge.upgrading
     : savings
-    ? savingsMoveLabel(savings.direction)
+    ? savingsLabel(savings)
     : bridgeOut
     ? fmt(copy.bridge.bridgeOutLive, { chain: bridgeOut.chainName })
     : withdrawal
@@ -126,7 +143,7 @@ function bridgeLive(about: Extract<NotificationAbout, { kind: "bridgeLive" }>): 
       ? copy.bridge.paylinkWithdrawalLive
       : copy.bridge.withdrawalLive
     : copy.bridge.depositLive
-  const amount = bridgeAmount(item)
+  const amount = bridgeAmount(about)
   if (savings) return { title, description: amount }
   const label = reason
     ? SIPA_PROCESSING_COPY[reason].short
@@ -140,7 +157,7 @@ function bridgeEnded(about: Extract<NotificationAbout, { kind: "bridgeEnded" }>)
   const { item, outcome, migration } = about
   const done = outcome === "done"
   const recovered = item.record.phase === "recovered"
-  const savings = savingsOf(item)
+  const savings = savingsOf(about)
   const bridgeOut = bridgeOutOf(item)
   const what = bridgeOut
     ? copy.bridge.bridgeOut
@@ -154,7 +171,7 @@ function bridgeEnded(about: Extract<NotificationAbout, { kind: "bridgeEnded" }>)
         : copy.bridge.upgradeFailed
       : savings
       ? done
-        ? savingsMoveLabel(savings.direction)
+        ? savingsLabel(savings)
         : copy.bridge.moveFailed
       : item.kind === "bridge.withdrawal"
       ? fmt(recovered ? copy.bridge.recovered : done ? copy.bridge.complete : copy.bridge.failed, {
@@ -167,7 +184,7 @@ function bridgeEnded(about: Extract<NotificationAbout, { kind: "bridgeEnded" }>)
       : copy.bridge.depositFailed
   const failure = item.kind === "bridge.withdrawal" ? withdrawalFailureText(item.record) : undefined
   if (!done) return { title, description: failure ?? copy.bridge.tapForDetails }
-  const amount = bridgeAmount(item)
+  const amount = bridgeAmount(about)
   // A move's release is in; the move itself finishes when the destination claims the deposit.
   const description = recovered
     ? fmt(copy.bridge.returned, { amount })

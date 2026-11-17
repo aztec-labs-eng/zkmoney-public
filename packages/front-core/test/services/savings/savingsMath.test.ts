@@ -5,6 +5,7 @@ import {
   projectSavingsMonthly,
   projectValueAtomic,
   savingsPaybackYears,
+  savingsVaultSwapGain,
   savingsValue,
 } from "../../../src/core/services/savings/savingsMath"
 
@@ -71,6 +72,17 @@ describe("savingsPaybackYears", () => {
     expect(savingsPaybackYears(100n * SHARE, 0n, LOW_RATE)).toBe(0)
     expect(savingsPaybackYears(100n * SHARE, SHARE, 0n)).toBe(Infinity)
     expect(savingsPaybackYears(0n, SHARE, LOW_RATE)).toBe(Infinity)
+  })
+})
+
+describe("savingsVaultSwapGain", () => {
+  it("earns the rate difference on the net, and earns back the fee on that difference alone", () => {
+    // $1,000 from 4.5% to 5.5%: $10 more a year, so a $1 fee takes about a tenth of a year.
+    const gain = savingsVaultSwapGain(1000n * SHARE, SHARE, LOW_RATE, RATE)
+    expect(gain?.yearly).toBe(10n * SHARE)
+    expect(gain?.paybackYears).toBe(savingsPaybackYears(1000n * SHARE, SHARE, RATE - LOW_RATE))
+    expect(savingsVaultSwapGain(1000n * SHARE, SHARE, RATE, LOW_RATE)).toBeUndefined()
+    expect(savingsVaultSwapGain(1000n * SHARE, SHARE, RATE, RATE)).toBeUndefined()
   })
 })
 

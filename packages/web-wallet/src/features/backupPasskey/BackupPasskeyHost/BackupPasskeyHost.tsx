@@ -8,7 +8,6 @@ import {
   fundRotation,
   noteRecovery,
   recordMoved,
-  savingsHolding,
   serviceStatus,
   signRotation,
   UNREAD,
@@ -19,9 +18,10 @@ import {
 import { currentDevicePosture, type BackupAddChoice } from "@obsidion/passkey-web"
 import type { Address } from "viem"
 import { backupPasskeySettingsEnabled } from "../../../config/features"
+import { holdSigningFlow } from "../../../lib/passkeyTelemetry"
 import { reloadPage } from "../../../platform/storage/walletStorage"
 import { handOffAccount, useSession } from "../../../session/session"
-import { useScreenFlow } from "../../../ui/useScreenFlow"
+import { Opened, useScreenFlow } from "../../../ui/useScreenFlow"
 import { useSponsoredAllowance } from "../../allowance/useSponsoredAllowance"
 import { DepositExitModal } from "../../deposit/DepositExitModal/DepositExitModal"
 import { EmptyDepositError } from "../../deposit/depositReadErrors"
@@ -32,7 +32,15 @@ import {
 } from "../../registration/sponsoredRailReadiness"
 import { backupAddSheetOptions } from "../backupAddOptions"
 import { fundingBlock, useBackupAddRelease, useFundingRow } from "../backupAddTime"
-import { warnFailure, type BackupStep } from "../backupFailure"
+import { backupFailure, warnFailure, type BackupStep } from "../backupFailure"
+import {
+  reportCancelled,
+  reportDelayed,
+  reportRecoveryEmpty,
+  reportSheetOpened,
+  reportStepFailed,
+  type SheetFrom,
+} from "../backupFunnel"
 import { startBackupAdd } from "../backupPasskeyAdd"
 import type { EntryAction } from "../backupPasskeyEntry"
 import { useBackupEntryFacts } from "../backupPasskeyFacts"
@@ -54,6 +62,7 @@ import {
   type BackupRead,
   type BackupScreen,
   type BackupScreenInput,
+  type CancelFrom,
   type EntryInput,
   type KeysRead,
 } from "../backupScreen"
@@ -77,14 +86,16 @@ import { UnreadableScreen } from "../screens/UnreadableScreen/UnreadableScreen"
 
 const sameOwner = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
 
+/** The steps whose passkey prompts sign for the attempt. */
+const SIGNING: ReadonlySet<BackupStep> = new Set(["approve", "fund", "move"])
+
 /** A deployment tuple's l2 token once read; null where the deployment has no such tuple. */
 const l2Token = (s: QueryState<OxideEnvTuple | null>) =>
   s.status === "ready" ? s.value?.l2Token ?? null : undefined
 
-/** The Savings share token once the holdings are read; null where the deployment has no Savings. */
-const savingsShareToken =
-  (listed: readonly string[] | undefined) => (s: QueryState<DeploymentHoldings>) =>
-    s.status === "ready" ? savingsHolding(s.value, listed)?.l2Token ?? null : undefined
+/** The deployment's holdings once read. */
+const readHoldings = (s: QueryState<DeploymentHoldings>) =>
+  s.status === "ready" ? s.value : undefined
 
 /** The add's own reads, mounted only while a new add can show. */
 function EntryReads({
@@ -150,6 +161,8 @@ interface HostProps {
   /** Reads the account's keys again: after a failed read, and once an attempt ends. */
   onReadKeys: () => void
   onClose?: () => void
+  /** What opened the sheet, which its first screen is reported with. */
+  from?: SheetFrom
 }
 
 /**
@@ -186,19 +199,19 @@ export function BackupPasskeyScreens({
   onAction,
   onReadKeys,
   onClose,
+  from,
 }: HostProps & { saved: BackupRotationState; flow: FlowDeps; walletBuilt: boolean }) {
   const session = useSession()
   const record = pendingRecord(keys, saved)
   const drive = useRotationDrive(record?.owner ?? "")
   const now = useStore(session.page.wallClock)
   // The move's tokens, read on the attempt's last step, which names each balance by them.
-  const { chain, config } = session.page
+  const { chain } = session.page
   const moving =
     record?.phase === "rerooted" || record?.phase === "moved" || record?.attention === "move"
   const mainToken = useStore(moving ? chain.feeTokenBridgeTuple : UNREAD, l2Token)
-  const savingsToken = useStore(
-    moving ? chain.holdings : UNREAD,
-    savingsShareToken(config.holdings),
+  const savingsTokens = useStore(moving ? chain.holdings : UNREAD, readHoldings)?.holdings.map(
+    (holding) => holding.held.l2Token,
   )
   const [laptop] = useState(() => currentDevicePosture() === "laptop")
   const [busy, setBusy] = useState(false)
@@ -209,9 +222,10 @@ export function BackupPasskeyScreens({
   const [cancelled, setCancelled] = useState(false)
   const [start, setStart] = useState<"intro" | "place">()
   const [picked, setPicked] = useState<BackupAddChoice>()
-  const [asking, setAsking] = useState(false)
+  // Where the Cancel the question asks about was tapped.
+  const [asking, setAsking] = useState<Exclude<CancelFrom, "check_passkeys">>()
   // The question goes once the step no longer offers Cancel, as when a funding lands meanwhile.
-  if (asking && !(record && cancellable(record))) setAsking(false)
+  if (asking && !(record && cancellable(record))) setAsking(undefined)
   const funding = useFundingRow(record)
   const release = useBackupAddRelease(timeShows({ keys, saved, start }), fundingBlock(funding))
   // The intro's figures are for the speed the pay step opens on, so it reads the same offer.
@@ -226,7 +240,7 @@ export function BackupPasskeyScreens({
     setEmptyUnder(undefined)
     setStart(undefined)
     setPicked(undefined)
-    setAsking(false)
+    setAsking(undefined)
   }
   const open = useRef<AbortController>(undefined)
   // eslint-disable-next-line local/effect-hook -- debt
@@ -236,16 +250,23 @@ export function BackupPasskeyScreens({
     return () => controller.abort()
   }, [])
 
-  const run = async (step: BackupStep, action: () => Promise<unknown>, attemptId?: string) => {
+  const run = async (
+    step: BackupStep,
+    action: () => Promise<unknown>,
+    record?: BackupRotationRecord,
+  ) => {
     setBusy(true)
     setFailure(undefined)
+    const release = SIGNING.has(step) ? holdSigningFlow("backup") : undefined
     try {
       await action()
     } catch (err) {
       if (open.current?.signal.aborted || recordMoved(err)) return
       warnFailure(step === "add" ? "add failed" : "step failed", err)
-      setFailure({ step, error: err, ...(attemptId && { attemptId }) })
+      reportStepFailed(backupFailure(err, step, record), record)
+      setFailure({ step, error: err, ...(record && { attemptId: record.attemptId }) })
     } finally {
+      release?.()
       setBusy(false)
     }
   }
@@ -255,7 +276,17 @@ export function BackupPasskeyScreens({
     action: (deps: BackupFlowDeps, record: BackupRotationRecord) => Promise<unknown>,
   ) => {
     const { deps } = flow
-    if (record && deps) void run(step, () => action(deps, record), record.attemptId)
+    if (record && deps) void run(step, () => action(deps, record), record)
+  }
+  /** The add attempts this sheet made. */
+  const adds = useRef(0)
+  // Set once the sheet settles on its first screen.
+  const opened = useRef(false)
+  const onShown = (screen: BackupScreen) => {
+    if (from && !opened.current) opened.current = reportSheetOpened(from, screen.id)
+    const delay = "delay" in screen ? screen.delay : undefined
+    if (delay && record && session.backupFunnel)
+      void reportDelayed(session.backupFunnel, record, delay)
   }
   const driver = getRotationDriver()
   /** The tip the last funding was sent with. */
@@ -268,10 +299,12 @@ export function BackupPasskeyScreens({
   const actions: BackupActions = {
     add: (choice) => {
       if (typeof keys !== "object" || !owner || !walletBuilt) return
+      const attempt = ++adds.current
       void run("add", async () => {
         const deps = await buildBackupAddDeps({
           session,
           owner,
+          attempt,
           ...(choice && { choice }),
         })
         await startBackupAdd(deps, open.current?.signal)
@@ -296,12 +329,13 @@ export function BackupPasskeyScreens({
       setFailure(undefined)
       if (record) driver.check(record.owner)
     },
-    cancel: () =>
+    cancel: (from = "cancel") =>
       onRecord("cancel", async (deps, record) => {
         await cancelRotation(deps, record)
+        reportCancelled(record, from)
         setCancelled(true)
       }),
-    askCancel: () => setAsking(true),
+    askCancel: (from = "cancel") => setAsking(from),
     recover: () =>
       onRecord("recover", async (deps, record) => {
         setEmptyUnder(undefined)
@@ -310,7 +344,10 @@ export function BackupPasskeyScreens({
           found = await deps.strandedDeposit(record)
         } catch (err) {
           // Nothing to recover is not a failure: the card says so in its own neutral line.
-          if (err instanceof EmptyDepositError) return setEmptyUnder(recoveryKey(record))
+          if (err instanceof EmptyDepositError) {
+            reportRecoveryEmpty(record)
+            return setEmptyUnder(recoveryKey(record))
+          }
           throw err
         }
         setRecovering({ attemptId: record.attemptId, token: found })
@@ -331,10 +368,7 @@ export function BackupPasskeyScreens({
     saved,
     deps: flow.state,
     ...(drive && { drive }),
-    ...(mainToken &&
-      savingsToken !== undefined && {
-        tokens: { main: mainToken, ...(savingsToken && { savings: savingsToken }) },
-      }),
+    ...(mainToken && savingsTokens && { tokens: { main: mainToken, savings: savingsTokens } }),
     ...(funding && { funding }),
     ...(release && { release }),
     ...(offer && { offer }),
@@ -359,15 +393,22 @@ export function BackupPasskeyScreens({
                 ...actions,
                 retryRead: (read) => (read === "entry" ? refresh() : retryRead(read)),
               }}
+              onShown={onShown}
             />
           )}
         </EntryReads>
       ) : record?.phase === "published" && flow.deps ? (
         <PayReads deps={flow.deps}>
-          {(fit) => <Screen screen={selectBackupScreen({ ...input, fit })} actions={actions} />}
+          {(fit) => (
+            <Screen
+              screen={selectBackupScreen({ ...input, fit })}
+              actions={actions}
+              onShown={onShown}
+            />
+          )}
         </PayReads>
       ) : (
-        <Screen screen={selectBackupScreen(input)} actions={actions} />
+        <Screen screen={selectBackupScreen(input)} actions={actions} onShown={onShown} />
       )}
       {recovering && recovering.attemptId === record?.attemptId && (
         <DepositExitModal
@@ -384,10 +425,11 @@ export function BackupPasskeyScreens({
       {asking && (
         <LeaveSheet
           kind="cancel"
-          onStay={() => setAsking(false)}
+          phase={record?.phase}
+          onStay={() => setAsking(undefined)}
           onConfirm={() => {
-            setAsking(false)
-            actions.cancel()
+            setAsking(undefined)
+            actions.cancel(asking)
           }}
         />
       )}
@@ -439,7 +481,25 @@ function useFlowDeps(record: BackupRotationRecord | null, walletBuilt: boolean):
   }
 }
 
-function Screen({ screen, actions }: { screen: BackupScreen; actions: BackupActions }) {
+function Screen({
+  screen,
+  actions,
+  onShown,
+}: {
+  screen: BackupScreen
+  actions: BackupActions
+  onShown: (screen: BackupScreen) => void
+}) {
+  const delay = "delay" in screen ? screen.delay : undefined
+  return (
+    <>
+      <Opened key={`${screen.id}:${delay ?? ""}`} fire={() => onShown(screen)} />
+      <ScreenOf screen={screen} actions={actions} />
+    </>
+  )
+}
+
+function ScreenOf({ screen, actions }: { screen: BackupScreen; actions: BackupActions }) {
   switch (screen.id) {
     case "loading":
       return <LoadingScreen screen={screen} actions={actions} />

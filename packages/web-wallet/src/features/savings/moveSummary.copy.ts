@@ -3,4 +3,5 @@ export default {
   unpriced: "Savings to {to}",
   savings: "Savings",
   main: "Main Account",
+  vault: "another vault",
 } as const

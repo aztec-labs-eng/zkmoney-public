@@ -48,6 +48,11 @@ describe("backupMoveTokens", () => {
     h.holdings = Promise.resolve(holdingsOf())
     expect(await backupMoveTokens(reads)).toEqual(["0xmain"])
   })
+
+  it("moves every holding's shares after Main's, so no vault is left behind", async () => {
+    h.holdings = Promise.resolve(holdingsOf(SAVINGS, { l2Token: "0xvault" }, { l2Token: "0xMAIN" }))
+    expect(await backupMoveTokens(reads)).toEqual(["0xmain", "0xsavings", "0xvault"])
+  })
 })
 
 describe("moveCap", () => {

@@ -1,29 +1,49 @@
-/* The Move sheet's direction strip. */
-.moveRoute {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  border-radius: var(--radius-12);
-  background: var(--surface-card);
-}
-.moveRoute > span {
-  flex: 1;
+/* A review side that names the vault under it. */
+.side {
   display: grid;
+  justify-items: end;
   gap: 2px;
-  font-size: 15px;
-  color: var(--text-primary);
+  text-align: right;
 }
-.moveRoute small {
+.side small {
   font-size: 12px;
   color: var(--text-secondary);
 }
-:global(.ww-shell) .moveSwap {
+
+/* Main Account's coin in the "Move to" picker. */
+.main {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
-  background: rgba(var(--ink-rgb), 0.1);
-  color: var(--text-primary);
+  background: var(--gradient-brand);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* The review's action. On desktop it stays in view while the facts scroll under it, as
+   `.ww-sheet__actions` does on a phone; the margins cancel the padding, so a review that fits
+   lays out as before. */
+.actions {
+  display: contents;
+}
+@media (min-width: 641px) {
+  .actions {
+    --fade: 16px;
+    /* The sheet's bottom padding: the bar covers it, so nothing scrolls into view below. */
+    --below: 40px;
+    position: sticky;
+    bottom: calc(-1 * var(--below));
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-24);
+    width: 100%;
+    margin: calc(-1 * var(--fade)) 0 calc(-1 * var(--below));
+    padding: var(--fade) 0 var(--below);
+    background: linear-gradient(to bottom, transparent, var(--surface-sheet) var(--fade));
+    /* The sheet's edge, which the bar covers. */
+    box-shadow: inset 0 -1px 0 var(--border-solid);
+  }
 }

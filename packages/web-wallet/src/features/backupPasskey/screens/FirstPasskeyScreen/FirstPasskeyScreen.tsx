@@ -2,6 +2,7 @@ import { ChecklistRow, SheetCard, SheetShell } from "@obsidion/web-ds"
 import { backupPasskeySettingsEnabled } from "../../../../config/features"
 import { fmt } from "../../../../lib/fmt"
 import { BackupStandIn } from "../../BackupPasskeyPanel"
+import { reportBlockAction } from "../../backupFunnel"
 import { keyName, type BackupScreenProps } from "../../backupScreen"
 import copy from "./FirstPasskeyScreen.copy"
 
@@ -26,7 +27,10 @@ export function FirstPasskeyScreen({ screen, actions }: BackupScreenProps<"first
       lead={copy.lead}
       primary={{
         label: copy.signOut,
-        onClick: () => actions.act?.("signOut"),
+        onClick: () => {
+          reportBlockAction("firstPasskey", "signOut")
+          actions.act?.("signOut")
+        },
         testId: "backup-first-passkey-sign-out",
       }}
       secondary={{

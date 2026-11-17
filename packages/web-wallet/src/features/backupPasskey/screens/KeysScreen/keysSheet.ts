@@ -1,5 +1,5 @@
+import type { BackupRotationRecord } from "@obsidion/front-core"
 import { backupPasskeySettingsEnabled } from "../../../../config/features"
-import type { BackupRotationState } from "../../backupRotations"
 
 /**
  * Whether A1 lists the account's keys in place of the Passkeys modal's own list: the redesign is
@@ -9,8 +9,7 @@ export const keysSheetShows = (keys: number): boolean => backupPasskeySettingsEn
 
 /**
  * Whether the host's screen stands alone, under no title or key list of the modal's: with the
- * redesign on, A1 and a saved attempt's screens.
+ * redesign on, A1 and a pending attempt's screens.
  */
-export const hostSheetShows = (keys: number, saved: BackupRotationState): boolean =>
-  keysSheetShows(keys) ||
-  (backupPasskeySettingsEnabled && typeof saved === "object" && saved !== null)
+export const hostSheetShows = (keys: number, pending: BackupRotationRecord | null): boolean =>
+  keysSheetShows(keys) || (backupPasskeySettingsEnabled && pending !== null)

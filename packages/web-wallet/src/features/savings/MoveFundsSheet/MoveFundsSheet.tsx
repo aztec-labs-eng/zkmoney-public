@@ -4,8 +4,9 @@ import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
   assetUsd,
   bestEffort,
-  savingsMoveEta,
+  holdingUsd,
   savingsPaybackYears,
+  savingsVaultSwapGain,
   UNREAD,
   useStore,
   type MoveQuote,
@@ -22,6 +23,9 @@ import {
   TopNavIconButton,
 } from "@obsidion/web-ds"
 import { showReportableError } from "../../../errors/errorModal"
+import { AmountStep } from "../../../ui/flow/AmountStep/AmountStep"
+import { PickerList, type PickerItem } from "../../../ui/PickerList/PickerList"
+import type { TransferAsset } from "../../../ui/TransferWidget/TransferWidget"
 import { failureCode, fireEvent } from "../../../lib/analytics"
 import {
   amountError,
@@ -40,10 +44,11 @@ import {
   SponsoredActionNotice,
   useSponsoredActionBlock,
 } from "../../allowance/SponsoredActionNotice"
-import { SavingsTermsAccept } from "../SavingsTerms"
+import { SavingsTermsAccept } from "../SavingsTerms/SavingsTerms"
 import { failureCodeOf, useBusyLabel, useUserFlowActive } from "../../operations/operations"
 import { OperationHandOff } from "../../operations/OperationHandOff"
 import { FEE_UNAVAILABLE_COPY, ProtocolFeeNote } from "../../withdraw/withdrawQuote"
+import { mainTransferAsset } from "../../withdraw/withdrawAssets"
 import { LimitNotice, usdFigureGrouped } from "../../limits/publicLimit"
 import {
   sharesBurnLimitProblem,
@@ -53,8 +58,10 @@ import {
 } from "../../limits/withdrawalLimit"
 import { apyPercent } from "../EarningsCalculator"
 import { moveOperationId } from "../movesSession"
-import { moveOutSource, type SavingsPosition } from "../savingsLine"
-import { savingsEtaCopy, useSavingsMoveTiming } from "../savingsMoveTiming"
+import { holdingRow, type HoldingRowView } from "../holdingRows"
+import { MoveVault, vaultPickerItem, vaultTransferAsset } from "../MoveVault/MoveVault"
+import { moveInLine, moveLine, moveLines, type SavingsPosition } from "../savingsLine"
+import { moveNowEta, savingsEtaCopy, useSavingsMoveTiming } from "../savingsMoveTiming"
 import { useTxAmountCap } from "../../token/useTxAmountCap"
 import { useSession } from "../../../session/session"
 import styles from "./MoveFundsSheet.module.css"
@@ -80,9 +87,7 @@ const FALLBACK_ESTIMATE = copy.fallbackEstimate
 
 /** The whole journey for a move confirmed now: the estimator's submitting phase, from this moment. */
 function moveEstimate(timing: SavingsMoveTiming | undefined, nowMs: number): string {
-  if (!timing) return FALLBACK_ESTIMATE
-  const burn = { phase: "submitting" as const, startTime: nowMs }
-  const eta = savingsMoveEta({ phase: "burning", startTime: nowMs }, burn, timing, nowMs)
+  const eta = timing && moveNowEta(timing, nowMs)
   return eta ? savingsEtaCopy(eta) : FALLBACK_ESTIMATE
 }
 
@@ -109,6 +114,30 @@ export function sheetQuote(
   return { amount, value, net, fee: value - net, quote }
 }
 
+/**
+ * A swap's quote as the sheet shows it: `value`, the shares' worth, leaves; what the destination
+ * takes in, in its asset of `assetDecimals`, lands.
+ */
+export function vaultSwapSheetQuote(
+  amount: bigint,
+  value: bigint,
+  quote: MoveQuote,
+  assetDecimals: number,
+): SheetQuote {
+  const net = assetUsd(quote.conversionOut, { assetDecimals })
+  return { amount, value, net, fee: value - net, quote }
+}
+
+const NO_TARGETS: readonly string[] = []
+
+/** The "Move to" picker's id for Main Account; a holding id never takes it. */
+const MAIN = "main"
+
+/** A vault by the profile's name for it, else its asset's. */
+const vaultName = (vault: HoldingRowView | undefined) =>
+  vault?.words?.rateName ??
+  (vault?.symbol === undefined ? copy.savings : fmt(copy.vaultName, { symbol: vault.symbol }))
+
 /** The tips a quote refused for exceeding the burn, in the burn's units. */
 const tipsOf = (err: unknown): bigint | undefined =>
   err instanceof WalletError && err.code === "move.tipsExceedAmount" && err.data?.tips
@@ -133,28 +162,49 @@ export function sharesFor(
 export function MoveFundsSheet({
   direction: initialDirection,
   initialAmount = "",
+  holdingId,
   onClose,
 }: {
   direction: SavingsDirection
   initialAmount?: string
+  /** The vault the move goes through, picked from its details. */
+  holdingId?: string
   onClose: () => void
 }) {
   const txAmountCap = useTxAmountCap()
   const session = useSession()
   const savings = useStore(session.savingsLine)
-  const [chosen, setDirection] = useState(initialDirection)
-  // A line the profile no longer lists only lets its shares leave.
-  const direction: SavingsDirection = savings.line?.exitOnly ? "out" : chosen
+  // Lines the profile no longer lists only let their shares leave.
+  const exitOnly = !moveInLine(savings) && savings.lines.length > 0
+  const direction: SavingsDirection = exitOnly ? "out" : initialDirection
+  const [chosen, setChosen] = useState(holdingId)
   const [amount, setAmount] = useState(initialAmount)
   const parsed = parseAmount(amount)
   const valueAtomic =
     !amountError(amount) && parsed > 0 ? parseUnits(amount, DEFAULT_DECIMALS) : undefined
-  // A move in goes to the first line. A move out empties a line the profile no longer lists first,
-  // and takes from the next what that line cannot cover.
-  const source = direction === "out" ? moveOutSource(savings, valueAtomic) : undefined
-  const line = source?.line ?? savings.line
-  const position = source?.position ?? savings.position
-  const assetDecimals = position?.assetDecimals ?? savings.price?.assetDecimals
+  const picked = moveLine(savings, direction, chosen)
+  const line = picked?.line
+  // Named without waiting for every line's shares: a move in needs none of them.
+  const { holdingCopy } = session.page.config
+  const row = picked && holdingRow(picked, holdingCopy)
+  const through = moveLines(savings, direction)
+  const choices = through.map((figures) => holdingRow(figures, holdingCopy))
+  const position = picked?.position ?? null
+  // The vaults a move out of the line can swap into, as the engine offers them.
+  const targets = useStore(session.vaultSwapTargets, (all) =>
+    direction === "out" && line ? all.get(line.id) ?? NO_TARGETS : NO_TARGETS,
+  )
+  const destinations = savings.lines.filter((figures) => targets.includes(figures.line.id))
+  const [into, setInto] = useState<string>()
+  const intoFigures = destinations.find((figures) => figures.line.id === into)
+  const intoRow = intoFigures && holdingRow(intoFigures, holdingCopy)
+  // The vault whose terms the move accepts: the one a move in or a switch puts funds into.
+  const termsRow = direction === "in" ? row : intoRow
+  // A vault without words for its provider's terms takes no funds.
+  const unworded = termsRow !== undefined && termsRow.words === undefined
+  const assetDecimals = intoFigures
+    ? intoFigures.price?.assetDecimals
+    : position?.assetDecimals ?? picked?.price?.assetDecimals
   // What the shares are worth, in dollars like the typed figure.
   const worth = position ? assetUsd(position.value, position) : undefined
   const savingsCap = useStore(
@@ -163,7 +213,9 @@ export function MoveFundsSheet({
   )
   const wallet = useStore(session.balances.view)
   const [maxed, setMaxed] = useState(false)
-  const [phase, setPhase] = useState<"amount" | "confirm" | "working">("amount")
+  const [phase, setPhase] = useState<"amount" | "vault" | "confirm" | "working">("amount")
+  /** Which asset chip's choices are open. The From and To labels stay labels. */
+  const [menu, setMenu] = useState<"from" | "to">()
   const [priced, setPriced] = useState<{
     key: string
     quote?: SheetQuote
@@ -172,9 +224,11 @@ export function MoveFundsSheet({
   const [quoting, setQuoting] = useState(false)
   /** Why the review shows figures other than the ones confirmed. */
   const [requoted, setRequoted] = useState<string>()
-  // A move in needs the terms accepted here, each time; a move out is the user's own funds coming back.
-  const [accepted, setAccepted] = useState(false)
-  const termsNeeded = direction === "in" && !accepted
+  // Funds going into a vault need its terms accepted here, each time; a move out is the user's own
+  // funds coming back. Kept by that vault: one provider's terms never stand for another's.
+  const [acceptedFor, setAcceptedFor] = useState<string>()
+  const accepted = termsRow !== undefined && acceptedFor === termsRow.id
+  const termsNeeded = (direction === "in" || intoRow !== undefined) && !accepted
   const left = useRef(false)
   /** The move this sheet runs: its operation, and the cancel its build honors. */
   const [running, setRunning] = useState<{ operationId: string; cancel: AbortController }>()
@@ -189,7 +243,13 @@ export function MoveFundsSheet({
   const timing = useSavingsMoveTiming()
 
   const from = direction === "in" ? copy.main : copy.savings
-  const to = direction === "in" ? copy.savings : copy.main
+  const intoSymbol = intoRow?.symbol
+  const to =
+    direction === "in" || (intoRow && intoSymbol === undefined)
+      ? copy.savings
+      : intoSymbol !== undefined
+      ? fmt(copy.vaultName, { symbol: intoSymbol })
+      : copy.main
   const available = direction === "in" ? wallet.main?.atomic ?? 0n : worth ?? 0n
   const availableKnown = direction === "in" ? wallet.readThisSession : position !== null
   const maxShares = position ? sharesBurnMax(position.shares, savingsCap) : undefined
@@ -221,6 +281,9 @@ export function MoveFundsSheet({
   // A move in pays its fee on top, so Savings receives what was typed; MAX has nothing on top.
   const feeOnTop = direction === "in" && !maxed
   const overspent = availableKnown && valueAtomic !== undefined && valueAtomic > available
+  // A move out takes one vault's shares; past them, another vault that holds some may cover it.
+  const heldElsewhere =
+    direction === "out" && through.some((figures) => figures.line.id !== line?.id)
   // The limit a withdrawal of this burn meets: Main's on the DAI moving in, the per-burn maximum on
   // the shares moving out.
   const limitProblem =
@@ -229,11 +292,11 @@ export function MoveFundsSheet({
       : direction === "in"
       ? withdrawalLimitProblem(burnAtomic, txAmountCap)
       : sharesBurnLimitProblem(burnAtomic, savingsCap)
-  // The line is in the key: a quote of one line never prices a move out of another.
+  // The lines are in the key: a quote of one route never prices another.
   const key =
     burnAtomic === undefined
       ? ""
-      : `${line?.id}:${direction}:${burnAtomic}:${feeOnTop ? "top" : "off"}`
+      : `${line?.id}:${intoFigures?.line.id ?? direction}:${burnAtomic}:${feeOnTop ? "top" : "off"}`
 
   // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
@@ -242,6 +305,7 @@ export function MoveFundsSheet({
       burnAtomic === undefined ||
       burnAtomic <= 0n ||
       overspent ||
+      unworded ||
       assetDecimals === undefined
     ) {
       setPriced(null)
@@ -252,6 +316,14 @@ export function MoveFundsSheet({
     setQuoting(true)
     const quoteOf = async (amount: bigint) => {
       if (!line || !session.moveQuote) throw new WalletError("invariant", "a move without Savings")
+      if (intoFigures) {
+        if (!session.vaultSwapQuote || !picked?.price)
+          throw new WalletError("invariant", "a swap without its quote or its source's price")
+        const quote = await session
+          .vaultSwapQuote(line.id, intoFigures.line.id, amount)
+          .read(stale.signal)
+        return vaultSwapSheetQuote(amount, holdingUsd(amount, picked.price), quote, assetDecimals)
+      }
       const quote = await session.moveQuote(line.id, direction, amount).read(stale.signal)
       return sheetQuote(direction, amount, quote, assetDecimals)
     }
@@ -306,9 +378,12 @@ export function MoveFundsSheet({
     direction,
     burnAtomic,
     overspent,
+    unworded,
     feeOnTop,
     session,
     line,
+    picked,
+    intoFigures,
     position,
     worth,
     assetDecimals,
@@ -323,24 +398,80 @@ export function MoveFundsSheet({
     feeOnTop && quoted !== undefined
       ? withdrawalLimitProblem(quoted.amount, txAmountCap)
       : undefined
+  // One problem shows at a time, the first that applies.
+  const limitNotice =
+    unworded || overspent || feeOverspent ? undefined : limitProblem ?? grossLimitProblem
+  const shown = overspent
+    ? copy.overspent
+    : feeOverspent
+    ? fmt(copy.feeOverspent, { amount: usdAtomic(quoted!.amount) })
+    : limitNotice
+    ? undefined
+    : amountError(amount) || current?.error
+  const problem: { text: string; testId?: string } | undefined = unworded
+    ? { text: copy.noTerms, testId: "move-no-terms" }
+    : overspent && heldElsewhere
+    ? { text: copy.overVault, testId: "move-other-vault" }
+    : shown
+    ? { text: shown }
+    : undefined
+  const rate = row?.rate
   const payback =
-    direction === "in" && quoted && position?.rate !== undefined
-      ? savingsPaybackYears(quoted.net, quoted.fee, position.rate)
+    direction === "in" && quoted && rate !== undefined
+      ? savingsPaybackYears(quoted.net, quoted.fee, rate)
+      : undefined
+  const slowPayback = payback !== undefined && payback > PAYBACK_WARNING_YEARS
+  const intoRate = intoRow?.rate
+  const gain =
+    quoted && rate !== undefined && intoRate !== undefined
+      ? savingsVaultSwapGain(quoted.net, quoted.fee, rate, intoRate)
+      : undefined
+  // A swap names both rates: what it gains, or that the vault it lands in earns less.
+  const rateNote =
+    !quoted || rate === undefined || intoRate === undefined
+      ? undefined
+      : !gain
+      ? fmt(copy.switchNote.lower, { from: apyPercent(rate), to: apyPercent(intoRate) })
+      : Number.isFinite(gain.paybackYears)
+      ? fmt(copy.switchNote.higher, {
+          from: apyPercent(rate),
+          to: apyPercent(intoRate),
+          amount: usdAtomicFloor(quoted.net),
+          gain: usdAtomic(gain.yearly),
+          fee: usdAtomic(quoted.fee),
+          time: paybackLabel(gain.paybackYears),
+        })
       : undefined
   const paybackLine =
-    payback !== undefined &&
-    Number.isFinite(payback) &&
-    position?.rate !== undefined &&
-    quoted &&
-    quoted.fee > 0n
-      ? fmt(copy.payback.line, {
-          apy: apyPercent(position.rate),
+    payback !== undefined && Number.isFinite(payback) && rate !== undefined && quoted?.fee
+      ? fmt(slowPayback ? copy.payback.slow : copy.payback.line, {
+          apy: apyPercent(rate),
+          amount: usdAtomic(quoted.net),
           time: paybackLabel(payback),
           fee: usdAtomic(quoted.fee),
         })
       : undefined
-  const slowPayback = payback !== undefined && payback > PAYBACK_WARNING_YEARS
+  // Names a vault under Savings' side of the review; a swap heads each side with its vault.
+  const vaultFact = (vault: typeof row) => {
+    const vaultSwapping = intoRow !== undefined
+    const named = [
+      vault?.symbol,
+      vaultSwapping ? undefined : vault?.words?.rateName,
+      vault?.rate === undefined ? undefined : fmt(copy.rate, { apy: apyPercent(vault.rate) }),
+    ]
+      .filter((part) => part !== undefined)
+      .join(copy.separator)
+    return (
+      <span className={styles.side}>
+        <b>{vaultSwapping ? vaultName(vault) : copy.savings}</b>
+        {named && <small>{named}</small>}
+      </span>
+    )
+  }
+  const savingsFact = vaultFact(row)
   const valid =
+    line !== undefined &&
+    !unworded &&
     burnAtomic !== undefined &&
     burnAtomic > 0n &&
     !overspent &&
@@ -349,10 +480,27 @@ export function MoveFundsSheet({
     !grossLimitProblem &&
     quoted !== undefined &&
     !quoting
+  const typedUsd = usdFigure(String(Number.isFinite(parsed) ? parsed : 0))
   const figure = (value: bigint | undefined) =>
     quoting ? "…" : value === undefined ? "$--" : usdAtomicFloor(value)
   const exact = (value: bigint | undefined) =>
     quoting ? "…" : value === undefined ? "$--" : usdAtomic(value)
+
+  // Both amount steps show these alike.
+  const limitLine = limitNotice && (
+    <LimitNotice
+      operation="move"
+      problem={limitNotice}
+      maximum={maxAmount && usdFigureGrouped(maxAmount)}
+      onUseMaximum={maxAmount ? () => setMaxed(true) : undefined}
+    />
+  )
+  const protocolFee = (
+    <ProtocolFeeNote
+      fee={quoting ? undefined : quoted?.quote.withdrawalFee}
+      beneficiary={quoted?.quote.feeBeneficiary}
+    />
+  )
 
   const run = async () => {
     if (!valid || quoted === undefined || !line) return
@@ -365,8 +513,20 @@ export function MoveFundsSheet({
     try {
       const moves = await session.moveCommands?.ready()
       if (!moves) throw new WalletError("account.locked", "moves need a signed-in account")
-      const move = direction === "in" ? moves.add : moves.withdraw
-      await move(line.id, quoted.amount, operationId, quoted.quote, cancel.signal)
+      if (intoFigures) {
+        const toId = intoFigures.line.id
+        await moves.vaultSwap(
+          line.id,
+          toId,
+          quoted.amount,
+          operationId,
+          quoted.quote,
+          cancel.signal,
+        )
+      } else {
+        const move = direction === "in" ? moves.add : moves.withdraw
+        await move(line.id, quoted.amount, operationId, quoted.quote, cancel.signal)
+      }
       outcome.finish()
       if (!left.current) onClose()
     } catch (e) {
@@ -380,11 +540,15 @@ export function MoveFundsSheet({
       outcome.finish()
       if (e instanceof WalletError && e.code === "move.quoteChanged") {
         if (left.current) return
-        const entry = session.moveQuote?.(line.id, direction, quoted.amount)
+        const entry = intoFigures
+          ? session.vaultSwapQuote?.(line.id, intoFigures.line.id, quoted.amount)
+          : session.moveQuote?.(line.id, direction, quoted.amount)
         entry?.refresh()
         const now = entry && (await bestEffort("unknown", entry.read()))
         if (now && assetDecimals !== undefined) {
-          const next = sheetQuote(direction, quoted.amount, now, assetDecimals)
+          const next = intoFigures
+            ? vaultSwapSheetQuote(quoted.amount, quoted.value, now, assetDecimals)
+            : sheetQuote(direction, quoted.amount, now, assetDecimals)
           setPriced({ key, quote: next })
           setRequoted(fmt(copy.quoteChanged, { fee: usdAtomic(next.fee) }))
         }
@@ -402,7 +566,52 @@ export function MoveFundsSheet({
     outcome.finish()
     onClose()
   }
-  const dismiss = phase === "working" ? undefined : onClose
+  const dismiss =
+    phase === "working" ? undefined : phase === "vault" ? () => setPhase("amount") : onClose
+  // Out of a vault that can swap, the move picks where it lands.
+  const routed = destinations.length > 0
+  // The swap's amount step brings its own head.
+  const widget = phase === "amount" && routed
+  const title =
+    phase === "vault" ? copy.title.vault : routed ? copy.title.route : copy.title[direction]
+  const pickSource = (id: string) => {
+    setChosen(id)
+    // A destination the new source cannot swap into is dropped, not kept for later.
+    if (into && !session.vaultSwapTargets.get().get(id)?.includes(into)) setInto(undefined)
+    setMaxed(false)
+    setMenu(undefined)
+    setPhase("amount")
+  }
+  const pickDestination = (id: string) => {
+    setInto(id === MAIN ? undefined : id)
+    setMenu(undefined)
+  }
+  const assetChoice = (
+    asset: TransferAsset,
+    side: "from" | "to",
+    items: readonly PickerItem[],
+    selected: string | undefined,
+    onPick: (id: string) => void,
+  ): TransferAsset => ({
+    ...asset,
+    testId: `move-change-${side}`,
+    onPick: () => setMenu((open) => (open === side ? undefined : side)),
+    onDismiss: () => setMenu(undefined),
+    menu:
+      menu === side ? <PickerList selected={selected} onPick={onPick} items={items} /> : undefined,
+  })
+  const toItems: PickerItem[] = [
+    {
+      id: MAIN,
+      icon: (
+        <span className={styles.main} aria-hidden>
+          {copy.mainInitial}
+        </span>
+      ),
+      title: copy.main,
+    },
+    ...destinations.map((figures) => vaultPickerItem(holdingRow(figures, holdingCopy))),
+  ]
 
   return (
     <Modal
@@ -421,39 +630,83 @@ export function MoveFundsSheet({
               <Icon name="earn" size={24} color="#fff" />
             </span>
           )}
-          <GradientText size={24} weight={700}>
-            {direction === "in" ? copy.title.in : copy.title.out}
-          </GradientText>
+          {!widget && (
+            <GradientText size={24} weight={700}>
+              {title}
+            </GradientText>
+          )}
         </>
       )}
 
-      {phase === "amount" && (
+      {widget && row && (
+        <AmountStep
+          title={title}
+          send={{
+            who: vaultName(row),
+            testId: "move-from",
+            ariaLabel: fmt(copy.amountFrom, { account: from }),
+            value: amount,
+            onChange: (text) => {
+              setMaxed(false)
+              setAmount(text)
+            },
+            note: `${copy.available} ${availableKnown ? usdAtomicFloor(available) : "—"}`,
+            max: { onClick: () => setMaxed(true), disabled: !maxAmount },
+            asset:
+              choices.length > 1
+                ? assetChoice(
+                    vaultTransferAsset(row),
+                    "from",
+                    choices.map(vaultPickerItem),
+                    row.id,
+                    pickSource,
+                  )
+                : vaultTransferAsset(row),
+          }}
+          receive={{
+            who: intoRow ? vaultName(intoRow) : copy.main,
+            testId: "move-to",
+            approx: true,
+            value: quoted ? floorToCents(quoted.net, DEFAULT_DECIMALS) : "",
+            fee:
+              burnAtomic === undefined || current?.error !== undefined
+                ? "none"
+                : quoted
+                ? { figure: usdAtomic(quoted.fee) }
+                : "unknown",
+            asset: assetChoice(
+              intoRow ? vaultTransferAsset(intoRow) : mainTransferAsset(),
+              "to",
+              toItems,
+              into ?? MAIN,
+              pickDestination,
+            ),
+          }}
+          errors={problem ? [problem] : []}
+          notices={
+            <>
+              {limitLine}
+              {protocolFee}
+              {rateNote && <Warning tone={gain ? "info" : "warning"} title={rateNote} />}
+            </>
+          }
+          button={{
+            title: copy.review,
+            disabled: !valid,
+            onClick: () => {
+              setMenu(undefined)
+              setPhase("confirm")
+            },
+          }}
+        />
+      )}
+
+      {phase === "amount" && !routed && (
         <>
           <div className="ww-fund__fields">
-            <div className={styles.moveRoute}>
-              <span>
-                <small>{copy.from}</small>
-                <b>{from}</b>
-              </span>
-              <button
-                type="button"
-                className={`zkm-btn-reset ${styles.moveSwap}`}
-                aria-label={copy.swap}
-                disabled={savings.line?.exitOnly}
-                onClick={() => {
-                  setDirection(direction === "in" ? "out" : "in")
-                  setMaxed(false)
-                }}
-              >
-                <Icon name="payments-arrows-horizontal" size={16} />
-              </button>
-              <span>
-                <small>{copy.to}</small>
-                <b>{to}</b>
-              </span>
-            </div>
+            <MoveVault row={row} choices={choices} onChange={() => setPhase("vault")} />
             <span className="ww-fund__label ww-withdraw__amount-label">
-              <span>{copy.amountToMove}</span>
+              <span>{fmt(copy.amountFrom, { account: from })}</span>
               <span>
                 {copy.available} <b>{availableKnown ? usdAtomicFloor(available) : "—"}</b>
               </span>
@@ -461,7 +714,7 @@ export function MoveFundsSheet({
             <label className="ww-deposit__input ww-fund__amount">
               <span>
                 <input
-                  aria-label={copy.amountToMove}
+                  aria-label={fmt(copy.amountFrom, { account: from })}
                   inputMode="decimal"
                   autoFocus
                   data-autofocus
@@ -472,7 +725,11 @@ export function MoveFundsSheet({
                     setAmount(decimalInput(e.target.value))
                   }}
                 />
-                <small>{usdFigure(String(Number.isFinite(parsed) ? parsed : 0))}</small>
+                <small>
+                  {row?.symbol === undefined
+                    ? typedUsd
+                    : fmt(copy.assetUsd, { symbol: row.symbol, usd: typedUsd })}
+                </small>
               </span>
               <span className="ww-withdraw__amount-side">
                 <button
@@ -485,43 +742,26 @@ export function MoveFundsSheet({
                 </button>
               </span>
             </label>
-            {overspent ? (
-              <span className="ww-pay__error">{copy.overspent}</span>
-            ) : feeOverspent ? (
-              <span className="ww-pay__error">
-                {fmt(copy.feeOverspent, { amount: usdAtomic(quoted!.amount) })}
+            {limitLine}
+            {problem && (
+              <span className="ww-pay__error" data-testid={problem.testId}>
+                {problem.text}
               </span>
-            ) : limitProblem ?? grossLimitProblem ? (
-              <LimitNotice
-                operation="move"
-                problem={(limitProblem ?? grossLimitProblem)!}
-                maximum={maxAmount && usdFigureGrouped(maxAmount)}
-                onUseMaximum={maxAmount ? () => setMaxed(true) : undefined}
-              />
-            ) : amountError(amount) ? (
-              <span className="ww-pay__error">{amountError(amount)}</span>
-            ) : (
-              current?.error && <span className="ww-pay__error">{current.error}</span>
             )}
-            <div className="ww-deposit__input ww-sheet__fact">
-              <span>{copy.l1Fee}</span>
-              <b style={{ fontSize: 14 }}>{figure(quoted?.fee)}</b>
-            </div>
-            <ProtocolFeeNote
-              fee={quoting ? undefined : quoted?.quote.withdrawalFee}
-              beneficiary={quoted?.quote.feeBeneficiary}
-            />
-            <div className="ww-deposit__input ww-sheet__fact">
+            <div className="ww-sheet__facts">
+              <DepositFact label={copy.l1Fee}>
+                <b>{figure(quoted?.fee)}</b>
+              </DepositFact>
+              {protocolFee}
+              <hr className="ww-divider" />
               {feeOnTop ? (
-                <>
-                  <span>{fmt(copy.pays, { account: from })}</span>
-                  <b style={{ fontSize: 14 }}>{figure(quoted?.value)}</b>
-                </>
+                <DepositFact label={fmt(copy.pays, { account: from })}>
+                  <b>{figure(quoted?.value)}</b>
+                </DepositFact>
               ) : (
-                <>
-                  <span>{fmt(copy.receives, { account: to })}</span>
-                  <b style={{ fontSize: 14 }}>≈ {figure(quoted?.net)}</b>
-                </>
+                <DepositFact label={fmt(copy.receives, { account: to })}>
+                  <b>≈ {figure(quoted?.net)}</b>
+                </DepositFact>
               )}
             </div>
             {quoting && (
@@ -533,13 +773,7 @@ export function MoveFundsSheet({
                 <Spinner size={12} color="currentColor" /> {copy.gettingFee}
               </p>
             )}
-            {direction === "in" && (
-              <p className="ww-sheet__note">
-                {position?.rate !== undefined
-                  ? fmt(copy.apy, { apy: apyPercent(position.rate) })
-                  : copy.rateUnavailable}
-              </p>
-            )}
+            {rateNote && <Warning tone={gain ? "info" : "warning"} title={rateNote} />}
             {paybackLine &&
               (slowPayback ? (
                 <Warning tone="warning" title={paybackLine} />
@@ -556,15 +790,17 @@ export function MoveFundsSheet({
         </>
       )}
 
+      {phase === "vault" && <MoveVault row={row} choices={choices} onPick={pickSource} />}
+
       {phase === "confirm" && (
         <>
           <div className="ww-fund__fields">
             <div className="ww-sheet__facts">
               <DepositFact label={copy.from}>
-                <b>{from}</b>
+                {direction === "in" ? <b>{from}</b> : savingsFact}
               </DepositFact>
               <DepositFact label={copy.to}>
-                <b>{to}</b>
+                {direction === "in" || intoRow ? vaultFact(intoRow ?? row) : <b>{to}</b>}
               </DepositFact>
               <DepositFact label={copy.amount}>
                 <b>{exact(feeOnTop ? quoted?.net : quoted?.value)}</b>
@@ -572,10 +808,7 @@ export function MoveFundsSheet({
               <DepositFact label={copy.l1Fee}>
                 <b>{exact(quoted?.fee)}</b>
               </DepositFact>
-              <ProtocolFeeNote
-                fee={quoting ? undefined : quoted?.quote.withdrawalFee}
-                beneficiary={quoted?.quote.feeBeneficiary}
-              />
+              {protocolFee}
               <hr className="ww-divider" />
               {feeOnTop ? (
                 <DepositFact label={fmt(copy.pays, { account: from })}>
@@ -583,7 +816,7 @@ export function MoveFundsSheet({
                 </DepositFact>
               ) : (
                 <DepositFact label={fmt(copy.receives, { account: to })}>
-                  <b>≈ {exact(quoted?.net)}</b>
+                  <b>≈ {figure(quoted?.net)}</b>
                 </DepositFact>
               )}
               <DepositFact label={copy.estimatedTime}>
@@ -594,17 +827,24 @@ export function MoveFundsSheet({
             {current?.error && <span className="ww-pay__error">{current.error}</span>}
             {requoted && <Warning tone="warning" title={requoted} />}
             <p className="ww-sheet__note">{copy.keepOpen}</p>
-            {direction === "in" && (
-              <SavingsTermsAccept accepted={accepted} onChange={setAccepted} />
+            {intoRow && <p className="ww-sheet__note">{copy.earnedRestarts}</p>}
+            {termsRow?.words && (
+              <SavingsTermsAccept
+                words={termsRow.words}
+                accepted={accepted}
+                onChange={(on) => setAcceptedFor(on ? termsRow.id : undefined)}
+              />
             )}
           </div>
-          <SponsoredActionNotice reason={unsponsored} />
-          <PrimaryGradientButton
-            title={busy ? busyLabel : copy.confirm}
-            isDisabled={!valid || busy || !!unsponsored || termsNeeded}
-            onClick={run}
-            style={{ width: "100%" }}
-          />
+          <div className={styles.actions}>
+            <SponsoredActionNotice reason={unsponsored} />
+            <PrimaryGradientButton
+              title={busy ? busyLabel : copy.confirm}
+              isDisabled={!valid || busy || !!unsponsored || termsNeeded}
+              onClick={run}
+              style={{ width: "100%" }}
+            />
+          </div>
         </>
       )}
 

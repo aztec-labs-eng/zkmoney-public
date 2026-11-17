@@ -45,7 +45,7 @@ const sources = vi.hoisted(() => ({ list: [] as { savings: boolean }[] }))
 vi.mock("../../../src/features/migration/oldVersionWithdraw", () => ({
   useWithdrawableSources: () => sources.list,
 }))
-import { SavingsMoveDetailModal } from "../../../src/features/savings/SavingsMoveDetailModal"
+import { SavingsMoveDetailModal } from "../../../src/features/savings/SavingsMoveDetailModal/SavingsMoveDetailModal"
 import { closeSession } from "../../../src/session/session"
 import { moveRecord } from "../../support/moves"
 import { openTestSession } from "../../support/session"

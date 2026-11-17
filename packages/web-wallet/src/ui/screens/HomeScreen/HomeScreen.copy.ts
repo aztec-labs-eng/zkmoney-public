@@ -25,7 +25,7 @@ export default {
   syncing: "Syncing deposits",
   syncingProgress: "Syncing deposits - {percent}%",
   apy: "{apy} APY",
-  apyTitle: "Current APY. The rate is variable and set by Sky.",
+  apyTitle: "Current APY across your Savings. Each vault's rate is variable.",
   earnedTitle: "What your Savings balance is worth above what it cost you, at today's share price.",
   earned: "earned",
   calculating: "Calculating earnings…",
@@ -36,6 +36,7 @@ export default {
     withdraw: "Withdraw",
     addToSavings: "Add to Savings",
     moveToMain: "Move to Main Account",
+    moveFunds: "Move funds",
   },
   depositFunds: "Deposit funds",
   shareTag: {

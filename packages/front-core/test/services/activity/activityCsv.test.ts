@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest"
 import { parseUnits, type Address } from "viem"
 import type { WithdrawalRecord } from "../../../src/core/services/bridge/types"
+import type { BridgeInRecord } from "../../../src/core/services/crossChain/types"
 import type { SipaDeposit, SIPASweep } from "../../../src/engine/sipaDeposits"
 import type { MoveRecord } from "../../../src/engine/moveTransition"
 import type { ActivityItem } from "../../../src/engine/feedRules"
@@ -199,14 +200,17 @@ describe("withdrawals", () => {
     expect(only({ items: [withdrawal(extra)] })?.type).toBe(type)
   })
 
-  it("sends what arrived, with the rest of the gross burned as the fee", () => {
-    expect(only({ items: [withdrawal()] })).toMatchObject({
-      sent: { amount: "9.5", currency: "DAI" },
-      fee: { amount: "0.5", currency: "DAI" },
-      aztecTxHash: "0xl2",
-      ethereumTxHash: "0xl1",
-    })
-  })
+  it.each(["DAI", "OXDAI"])(
+    "sends what arrived, with the rest of the gross burned as the fee, in DAI for a %s record",
+    (tokenSymbol) => {
+      expect(only({ items: [withdrawal({ tokenSymbol })] })).toMatchObject({
+        sent: { amount: "9.5", currency: "DAI" },
+        fee: { amount: "0.5", currency: "DAI" },
+        aztecTxHash: "0xl2",
+        ethereumTxHash: "0xl1",
+      })
+    },
+  )
 })
 
 describe("upgrade batches", () => {
@@ -458,6 +462,52 @@ describe("counterparty", () => {
     })
   })
 
+  it("a bridge-out names its recipient on the chain it landed on", () => {
+    const bridgeOut = { chainName: "Base" } as WithdrawalRecord["bridgeOut"]
+    expect(only({ items: [withdrawal({ bridgeOut })] })?.counterparty?.network).toBe("Base")
+  })
+
+  it("a recovered bridge-out names the address it was recovered to, on Ethereum", () => {
+    const row = only({
+      items: [
+        withdrawal({
+          bridgeOut: { chainName: "Base" } as WithdrawalRecord["bridgeOut"],
+          phase: "recovered",
+          recoveryTarget: "0x00000000000000000000000000000000000000e5",
+        }),
+      ],
+    })
+    expect(row?.counterparty).toMatchObject({
+      address: "0x00000000000000000000000000000000000000e5",
+      network: "Ethereum",
+    })
+  })
+
+  it("a deposit names its sender on Ethereum", () => {
+    expect(only({ items: [deposit()] })?.counterparty).toEqual({
+      address: "0x00000000000000000000000000000000000000cc",
+      network: "Ethereum",
+    })
+  })
+
+  it("a deposit whose funding is unread, or a fill with no bridge-in, names nobody", () => {
+    for (const funding of [undefined, "bridge"] as const)
+      expect(only({ items: [deposit({ funding })] })?.counterparty).toBeUndefined()
+  })
+
+  it("a deposit a bridge-in paid names its depositor on the origin chain", () => {
+    const bridgeIn = {
+      recipient: "0x00000000000000000000000000000000000000bb",
+      depositor: "0x00000000000000000000000000000000000000d1",
+      originChainId: 8453,
+      status: "filled",
+    } as BridgeInRecord
+    expect(only({ items: [deposit()], bridgeIns: [bridgeIn] })?.counterparty).toEqual({
+      address: "0x00000000000000000000000000000000000000d1",
+      network: "Base",
+    })
+  })
+
   it("is described by the type, the name, the address and the note", () => {
     const csv = activityCsv({
       ...EMPTY,
@@ -537,7 +587,12 @@ describe("a 6-decimal token", () => {
       deposit: { inboxIndex: 3n, amount: parseUnits("9.5", 6), at: T0 },
     }
     expect(
-      buildSavingsCsvRows({ walletToken: USDC, moves: [move], burns: new Map() }),
+      buildSavingsCsvRows({
+        walletToken: USDC,
+        moves: [move],
+        burns: new Map(),
+        prices: new Map(),
+      }),
     ).toMatchObject([{ sent: { amount: "9.5", currency: "USDC" } }])
   })
 })

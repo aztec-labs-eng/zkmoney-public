@@ -4,15 +4,10 @@ import {
   LiquidGlassPill,
   PrimaryGradientButton,
   ProgressSpinner,
+  RatePill,
   Spinner,
 } from "@obsidion/web-ds"
-import {
-  type SavingsDirection,
-  holdingEarnedPending,
-  selectHome,
-  selectHomeMain,
-  useStore,
-} from "@obsidion/front-core"
+import { type SavingsDirection, selectHome, selectHomeMain, useStore } from "@obsidion/front-core"
 import { useLocation, useNavigate } from "react-router-dom"
 import { DepositArt } from "../../DepositArt"
 import { HighGasNotice, HighL2FeeNotice } from "../../../features/fees/HighGasNotice/HighGasNotice"
@@ -29,22 +24,30 @@ import { useSession } from "../../../session/session"
 import { peekClaimStash } from "../../../features/paylink/claimStash"
 import { tabStash } from "../../../platform/storage/tabStash"
 import { ClaimLinkSheet } from "../../../features/paylink/ClaimLinkSheet/ClaimLinkSheet"
-import { AccountSwitcher, type SavingsAccount } from "../../../features/savings/AccountSwitcher"
+import {
+  AccountSwitcher,
+  type SavingsAccount,
+} from "../../../features/savings/AccountSwitcher/AccountSwitcher"
 import { EarningsCalculatorSheet, apyPercent } from "../../../features/savings/EarningsCalculator"
 import { MoveFundsSheet } from "../../../features/savings/MoveFundsSheet/MoveFundsSheet"
 import { SavingsArt } from "../../../features/savings/SavingsArt"
-import { SavingsCards } from "../../../features/savings/SavingsCards"
+import { SavingsCards } from "../../../features/savings/SavingsCards/SavingsCards"
+import { VaultDetails } from "../../../features/savings/VaultDetails/VaultDetails"
 import { useSavings } from "../../../features/savings/useSavings"
 import {
+  earnedInputsNote,
+  moveInLine,
   savingsTotal,
-  selectOtherLines,
-  selectSavingsEarned,
-  type SavingsPosition,
+  selectEarnedPending,
+  selectSavingsRate,
+  selectVaultSwappable,
+  type SavingsLine,
 } from "../../../features/savings/savingsLine"
 import {
   ESTIMATE_TITLE,
   splitTicking,
   useSavingsEstimate,
+  type SavingsEstimate,
 } from "../../../features/savings/savingsEstimate"
 import { RequestsUnavailableNotice } from "../../../features/requests/RequestsUnavailableNotice/RequestsUnavailableNotice"
 import { HIDDEN_BALANCE, usdAtomicFloor } from "../../format"
@@ -116,7 +119,8 @@ function QuickActions() {
   const row = useRef<HTMLDivElement>(null)
   const fresh = useFreshAddressAvailable() === true
   const savings = useSavings()
-  const apy = savings.position?.rate
+  const { feed } = useActivityHost()
+  const apy = selectSavingsRate(savings, feed.arriving.savingsInto)
   const slides = [
     ...(savings.available
       ? [
@@ -227,19 +231,19 @@ function CustomEndpointsPill({
 }
 
 /**
- * A Savings figure carried to now at its rate, its small digits ticking (more of them on a small
- * balance); the tick re-renders only this. `at` maps the carried value to the figure shown.
+ * A Savings figure carried to now at its lines' rates, its small digits ticking (more of them on a
+ * small balance); the tick re-renders only this. `at` picks the figure from the estimate.
  */
 function TickingUsd({
-  position,
+  savings,
   at,
 }: {
-  position: SavingsPosition | null
-  at: (value: bigint) => bigint
+  savings: SavingsLine
+  at: (estimate: SavingsEstimate) => bigint | undefined
 }) {
-  const estimate = useSavingsEstimate(position, true)
-  if (estimate.value === undefined) return null
-  const value = at(estimate.value)
+  const estimate = useSavingsEstimate(savings, true)
+  const value = at(estimate)
+  if (value === undefined) return null
   if (!estimate.ticking) return <>{usdAtomicFloor(value)}</>
   const { whole, ticking } = splitTicking(value)
   return (
@@ -281,33 +285,42 @@ function Home() {
   // Held, Main stays at what the upgrade will land, with nothing from the new version.
   const frozen = lock.state === "held"
   const savingsFrozen = frozen && lock.savings !== undefined
-  const { database, device } = useSession()
+  const { database, device, vaultSwapTargets } = useSession()
   const hideBal = useStore(device, (s) => s.hideBalances)
   const savings = useSavings()
+  const vaultSwappable = useStore(vaultSwapTargets, (targets) =>
+    selectVaultSwappable(savings, targets),
+  )
   const { pathname } = useLocation()
   // The route picks the account, so the Savings nav item and slide are shortcuts to this view.
   const account: SavingsAccount = savings.available && pathname === "/savings" ? "savings" : "main"
   const setAccount = (next: SavingsAccount) => navigate(next === "savings" ? "/savings" : "/")
-  const [sheet, setSheet] = useState<SavingsDirection | { amount?: string } | "calculator" | null>(
-    null,
-  )
+  const [sheet, setSheet] = useState<
+    | SavingsDirection
+    | { amount: string }
+    | { vault: string }
+    | { move: SavingsDirection; holdingId: string }
+    | "calculator"
+    | null
+  >(null)
   const guard = useActionGuard()
   const openMove = (direction: SavingsDirection, amount?: string) =>
     guard("savings", () =>
       setSheet(direction === "in" && amount !== undefined ? { amount } : direction),
     )
+  const openVaultMove = (move: SavingsDirection, holdingId: string) =>
+    guard("savings", () => setSheet({ move, holdingId }))
   const onSavings = account === "savings"
-  const apy = savings.position?.rate
+  const { feed, movePrice } = useActivityHost()
+  const apy = selectSavingsRate(savings, feed.arriving.savingsInto)
   const apyLabel = apy === undefined ? undefined : fmt(copy.apy, { apy: apyPercent(apy) })
-  const { feed } = useActivityHost()
   const { arriving, upgradesLoaded, hydrated, requestsUnavailable } = feed
   const { items: savingsItems, hydrated: savingsHydrated } = feed.savings
-  const savingsLedger = savings.ledger
   // What old versions still hold that no balance here shows.
   const oldVersionLeft = oldVersionLeftovers({
     moves: savingsItems.map((item) => item.move),
     items: feed.items,
-    sharePrice: savings.position?.sharePrice,
+    price: movePrice,
     network: networkId,
   })
   // Funds on their way count where they land, flat: they neither tick nor earn until they arrive.
@@ -325,67 +338,33 @@ function Home() {
     : mainShown === undefined
     ? "—"
     : usdAtomicFloor(mainShown)
-  // The last read value; the ticking figures carry it to now in their own components.
-  const estimate = useSavingsEstimate(savings.position, false)
-  // The other Sky lines count flat too, at their last read; unknown while one is unpriced.
-  const others = selectOtherLines(savings)
-  const flat = others && others.value + arriving.savings
+  // The last read figures; the ticking ones carry them to now in their own components.
+  const estimate = useSavingsEstimate(savings, false)
   const savingsShown = savingsFrozen
     ? lock.savings
-    : estimate.value === undefined || flat === undefined
+    : estimate.value === undefined
     ? undefined
-    : estimate.value + flat
+    : estimate.value + arriving.savings
   const savingsValueText = savingsShown === undefined ? undefined : usdAtomicFloor(savingsShown)
   const totalValue =
     savingsShown !== undefined && mainKnown && mainShown !== undefined
       ? mainShown + savingsShown
       : undefined
   const savingsText = hideBal ? HIDDEN_BALANCE : savingsValueText ?? "—"
-  // What every Sky line's shares have earned: their value (the first line's ticking when it ticks)
-  // less what they cost.
-  const earned =
-    estimate.value === undefined ? undefined : selectSavingsEarned(savings, estimate.value)
+  // What every line's shares have earned: their value less what they cost.
+  const { earned } = estimate
   // Figures still being read from the escrow runs: the slot says so instead of going blank.
   const calculating =
-    !!savingsLedger &&
-    estimate.value !== undefined &&
-    earned === undefined &&
-    holdingEarnedPending(savingsLedger)
+    estimate.value !== undefined && earned === undefined && selectEarnedPending(savings)
   // Nothing in the slot: the console says why, with every input, once per change.
-  const hiddenKey =
+  const hidden =
     onSavings && !hideBal && earned === undefined && !calculating
-      ? [
-          savings.hydrated,
-          savings.position?.shares,
-          savings.position?.value,
-          estimate.value,
-          savingsLedger?.counted,
-          savingsLedger?.shares,
-          savingsLedger?.basis,
-          savingsLedger?.excluded.map((e) => `${e.moveId}:${e.reason}`),
-        ].join("|")
+      ? `${earnedInputsNote(savings)}; estimate=${estimate.value ?? "none"}`
       : undefined
   // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
-    if (hiddenKey === undefined) return
-    console.info(
-      `[savings] earnings hidden: hydrated=${savings.hydrated} position=${
-        savings.position
-          ? `${savings.position.shares} shares, value ${savings.position.value}`
-          : "none"
-      } estimate=${estimate.value ?? "none"} ledger=${
-        savingsLedger
-          ? `counted ${savingsLedger.counted}, shares ${savingsLedger.shares}, basis ${
-              savingsLedger.basis
-            }, excluded [${savingsLedger.excluded
-              .map((e) => `${e.moveId} (${e.reason})`)
-              .join(", ")}]`
-          : "not read yet"
-      }`,
-    )
-    // Keyed on what the line would say, so it prints once per change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt
-  }, [hiddenKey])
+    if (hidden !== undefined) console.info(`[savings] earnings hidden: ${hidden}`)
+  }, [hidden])
   const totalText = hideBal
     ? HIDDEN_BALANCE
     : totalValue === undefined
@@ -434,7 +413,7 @@ function Home() {
           run: () => openMove("in"),
         },
         {
-          title: copy.actions.moveToMain,
+          title: vaultSwappable ? copy.actions.moveFunds : copy.actions.moveToMain,
           icon: "payments-arrows-horizontal",
           run: () => openMove("out"),
         },
@@ -520,12 +499,11 @@ function Home() {
             data-testid={onSavings ? "savings-balance" : "wallet-balance"}
             aria-busy={syncing || updating}
           >
-            {onSavings &&
-            !hideBal &&
-            savingsValueText !== undefined &&
-            flat !== undefined &&
-            !savingsFrozen ? (
-              <TickingUsd position={savings.position} at={(value) => value + flat} />
+            {onSavings && !hideBal && savingsValueText !== undefined && !savingsFrozen ? (
+              <TickingUsd
+                savings={savings}
+                at={({ value }) => (value === undefined ? undefined : value + arriving.savings)}
+              />
             ) : (
               balanceText
             )}
@@ -533,11 +511,7 @@ function Home() {
         )}
         {onSavings && (apyLabel || (!hideBal && (earned !== undefined || calculating))) && (
           <div className={styles.homeBalanceMeta}>
-            {apyLabel && (
-              <span className={`${styles.pill} ${styles.pillGreen}`} title={copy.apyTitle}>
-                {apyLabel}
-              </span>
-            )}
+            {apyLabel && <RatePill label={apyLabel} title={copy.apyTitle} />}
             {!hideBal && earned !== undefined && (
               <span className="ww-home__earned" title={copy.earnedTitle}>
                 <b data-positive={earned > 0n || undefined}>
@@ -545,10 +519,7 @@ function Home() {
                   {earned < 0n ? (
                     usdAtomicFloor(earned)
                   ) : (
-                    <TickingUsd
-                      position={savings.position}
-                      at={(value) => selectSavingsEarned(savings, value) ?? earned}
-                    />
+                    <TickingUsd savings={savings} at={(now) => now.earned ?? earned} />
                   )}{" "}
                   {copy.earned}
                 </b>
@@ -634,7 +605,10 @@ function Home() {
         ) : onSavings ? (
           <div className={styles.savingsMain}>
             {card}
-            <SavingsCards onCalculator={() => setSheet("calculator")} />
+            <SavingsCards
+              onVault={(vault) => setSheet({ vault })}
+              onCalculator={() => setSheet("calculator")}
+            />
           </div>
         ) : (
           card
@@ -733,16 +707,32 @@ function Home() {
       {(sheet === "in" || sheet === "out") && (
         <MoveFundsSheet direction={sheet} onClose={() => setSheet(null)} />
       )}
-      {sheet !== null && typeof sheet === "object" && (
+      {sheet !== null && typeof sheet === "object" && "amount" in sheet && (
         <MoveFundsSheet
           direction="in"
           initialAmount={sheet.amount}
           onClose={() => setSheet(null)}
         />
       )}
+      {sheet !== null && typeof sheet === "object" && "vault" in sheet && (
+        <VaultDetails
+          holdingId={sheet.vault}
+          onAdd={() => openVaultMove("in", sheet.vault)}
+          onMoveOut={() => openVaultMove("out", sheet.vault)}
+          onClose={() => setSheet(null)}
+        />
+      )}
+      {sheet !== null && typeof sheet === "object" && "move" in sheet && (
+        <MoveFundsSheet
+          direction={sheet.move}
+          holdingId={sheet.holdingId}
+          onClose={() => setSheet(null)}
+        />
+      )}
       {sheet === "calculator" && (
         <EarningsCalculatorSheet
-          apy={apy}
+          // Unfunded, it assumes the rate of the vault its move goes to.
+          apy={apy ?? moveInLine(savings)?.price?.rate}
           balances={{
             savings: savingsTotal(savings),
             main: balance.known ? balance.main?.atomic ?? 0n : undefined,

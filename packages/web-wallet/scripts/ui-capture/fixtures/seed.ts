@@ -21,6 +21,13 @@ import { saveIdentity } from "../../../src/session/account"
 import { WebPasskeyIdentityMap } from "../../../src/platform/auth/WebPasskeyIdentityMap"
 import { writeDeviceKeys } from "../../../src/platform/storage/deviceKeys"
 import { backupFixture, keyPubkey, sessionPubkeyHex } from "./backup-passkey"
+import {
+  savingsDeployment,
+  savingsFixture,
+  savingsListed,
+  savingsWords,
+  seedSavings,
+} from "./savings-seed"
 export * from "../../../src/dev/seedDemo"
 export const seedDemo: typeof actual = async (scenario, boot, _primed, pace) => {
   // The swap stack's contracts, so the withdrawal offers its swapped coins and gas step.
@@ -32,10 +39,23 @@ export const seedDemo: typeof actual = async (scenario, boot, _primed, pace) => 
     accountFactory: "0xacc0000000000000000000000000000000000fac",
     l2Broadcaster: `0x${"b0".repeat(32)}`,
   }
+  const savings = savingsFixture()
+  const deployment = savings ? savingsDeployment(savings) : DEMO_OXIDE_DEPLOYMENT
+  // A savings fixture's profile lists its holdings and names them.
+  const opened = savings
+    ? {
+        ...boot,
+        config: {
+          ...boot.config,
+          holdings: savingsListed(savings),
+          holdingCopy: savingsWords(savings),
+        },
+      }
+    : boot
   const seeded = await actual(
     scenario,
-    boot,
-    fixtureState() ? { tuple, deployment: DEMO_OXIDE_DEPLOYMENT } : undefined,
+    opened,
+    fixtureState() ? { tuple, deployment } : undefined,
     pace,
   )
   if (seeded) captureOn(seeded)
@@ -61,11 +81,20 @@ export const seedDemo: typeof actual = async (scenario, boot, _primed, pace) => 
   if (balance) {
     if (!/^\d+(\.\d+)?$/.test(balance)) throw new Error(`Unknown balance fixture: ${balance}`)
     const { balanceStore } = session
-    if (!balanceStore) throw new WalletError("wallet.notReady", "the balance fixture seeds an account session")
+    if (!balanceStore)
+      throw new WalletError("wallet.notReady", "the balance fixture seeds an account session")
     const scope = `${config.network}:${DEMO_COMPLETE_ADDRESS}`
     const atomic = parseUnits(balance, 18)
-    await balanceStore.write(scope, DEMO_L2_TOKEN, atomic, undefined, undefined, WALLET_TOKEN_SYMBOL)
+    await balanceStore.write(
+      scope,
+      DEMO_L2_TOKEN,
+      atomic,
+      undefined,
+      undefined,
+      WALLET_TOKEN_SYMBOL,
+    )
   }
+  if (savings) await seedSavings(session, savings)
   // `?backupFixture=<name>`: the session signs with the demo passkey, whose record Settings reads the
   // one-device verdict from, and the fixture's keys carry their names and managers on this device.
   const backup = backupFixture()

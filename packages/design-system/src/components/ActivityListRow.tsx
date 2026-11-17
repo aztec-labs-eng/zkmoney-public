@@ -57,6 +57,10 @@ export const STATUS_STYLE = {
   // A Savings move's burn, the same leg in the move's words.
   "Moving to Savings": "pending",
   "Moving to Main Account": "pending",
+  // A Savings switch from one vault to another.
+  "Switching": "pending",
+  // A Savings move whose release the relayer dropped.
+  "Delayed": "pending",
   "Swapping": "pending",
   // An upgrade batch before its refund is sent.
   "Waiting for approval": "pending",

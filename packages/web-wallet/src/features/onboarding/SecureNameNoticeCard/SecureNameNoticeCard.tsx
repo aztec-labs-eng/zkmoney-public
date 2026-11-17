@@ -20,6 +20,7 @@ import { Card, Icon, PrimaryGradientButton, Spinner } from "@obsidion/web-ds"
 import { WALLET_TOKEN_SYMBOL, tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import paylinkCoins from "../../../assets/home/paylink-coins.webp"
 import { DepositDetailModal } from "../../../ui/screens/DepositDetailModal/DepositDetailModal"
+import { readsBridgeFills } from "../../../session/bridgeFillDetectors"
 import rowCopy from "../../../ui/activity/ActivityRow.copy"
 import { registrationRecordForSipa } from "../../registration/webRegistration"
 import { DepositExitModal } from "../../deposit/DepositExitModal/DepositExitModal"
@@ -82,7 +83,7 @@ const NO_STATES = memoryStore<ReadonlyMap<string, SipaProcessingState>>(new Map(
 
 /** The registration's deposit as the activity feed shows it, kept current while open. */
 function LiveDepositDetail(props: { sipaAddress: string; tag: string; onClose: () => void }) {
-  const { sipaDeposits, registrations } = useSession()
+  const { sipaDeposits, registrations, page } = useSession()
   const deposit = useStore(sipaDeposits.view, (set) => selectSipaDeposit(set, props.sipaAddress))
   // Records that cannot be read offer no exit: which sweep the address takes is unknown.
   const unread = useStore(registrations.view, (view) => view.failed)
@@ -109,6 +110,7 @@ function LiveDepositDetail(props: { sipaAddress: string; tag: string; onClose: (
       })
   return (
     <DepositDetailModal
+      readsFills={readsBridgeFills(page.config)}
       record={deposit}
       registrationTag={props.tag}
       exit={

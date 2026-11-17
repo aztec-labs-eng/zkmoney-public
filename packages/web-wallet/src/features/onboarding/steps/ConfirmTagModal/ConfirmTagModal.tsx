@@ -329,7 +329,7 @@ export function ConfirmTagModal({
   )
   const foot = start ? (
     <p className="ww-invite-modal-foot">
-      {copy.cantFind}{" "}
+      {copy.forgotTag}{" "}
       <button
         type="button"
         className="zkm-btn-reset ww-invite__link"

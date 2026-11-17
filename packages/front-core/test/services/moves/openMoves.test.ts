@@ -419,7 +419,7 @@ describe("openMoves", () => {
       expect(world.l1.executorRecoveries).toEqual([])
     })
 
-    it("settles a released vault move in one pass, from burned to its deposit", async () => {
+    it("settles a released vault move in one pass, from burned to its claim", async () => {
       const world = await vaultWorld()
       const move = await moveOn(world, "in")
       const phases: string[] = []
@@ -429,7 +429,7 @@ describe("openMoves", () => {
       await runVaultRoute(world, move, ROUTE)
       await world.settle()
       unsubscribe()
-      expect(await world.read(move.id)).toMatchObject({ phase: "depositSeen", assets: 900n })
+      expect(await world.read(move.id)).toMatchObject({ phase: "claimed", assets: 900n })
       expect(phases).not.toContain("released")
     })
 

@@ -852,9 +852,6 @@ export async function buildBackupSweep(
   return operation
 }
 
-/** Credited on top of the subsidy's minimum, so a rounding or a fee bump never leaves it short. */
-export const BACKUP_FUNDING_MARGIN = 5n * 10n ** 17n
-
 export interface FundingAmount {
   /** What the one-key account withdraws to the SIPA. */
   amount: bigint
@@ -866,14 +863,13 @@ export interface FundingAmount {
     relayerTip: bigint
     sweepTip: bigint
     beneficiaryFee: bigint
-    minCredited: bigint
-    margin: bigint
   }
 }
 
 /**
- * The withdrawal that funds the sweep: every charge on the way to L2 plus a credit the subsidy pays
- * for. The withdrawal fee is the plain executor's own, not the deposit row's. Refuses a route no
+ * The withdrawal that funds the sweep: every charge on the way to L2 plus the least credit a sweep
+ * can bridge, one unit, since the portal refuses an empty deposit. The row's tip alone pays the
+ * relayer. The withdrawal fee is the plain executor's own, not the deposit row's. Refuses a route no
  * relayer is paid to sweep.
  */
 export async function fundingAmount(
@@ -891,9 +887,8 @@ export async function fundingAmount(
     }),
   ])
   if (!route.live) throw new RotationRouteNotLiveError(route.reason)
-  const { row, config } = route
-  const minCredited = config.minCreditedAmount > 1n ? config.minCreditedAmount : 1n
-  const credited = minCredited + BACKUP_FUNDING_MARGIN
+  const { row } = route
+  const credited = 1n
   const amount =
     withdrawalFee + proverTip + WITHDRAW_RELAYER_TIP + row.sweepTip + row.beneficiaryFee + credited
   assertPlainWithdrawalTip(amount, proverTip, WITHDRAW_RELAYER_TIP, withdrawalFee)
@@ -906,8 +901,6 @@ export async function fundingAmount(
       relayerTip: WITHDRAW_RELAYER_TIP,
       sweepTip: row.sweepTip,
       beneficiaryFee: row.beneficiaryFee,
-      minCredited,
-      margin: BACKUP_FUNDING_MARGIN,
     },
   }
 }

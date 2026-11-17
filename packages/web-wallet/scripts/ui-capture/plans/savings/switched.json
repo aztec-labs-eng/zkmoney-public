@@ -1,0 +1,55 @@
+{
+  "scenario": "fresh",
+  "bootstrap": "/activity?account=savings&demo=fresh&flowFixture=success&savingsFixture=switched",
+  "path": "/activity?account=savings&demo=fresh&flowFixture=success&savingsFixture=switched",
+  "ready": { "role": "button", "name": "Open move details", "first": true },
+  "steps": [
+    {
+      "action": "screenshot",
+      "file": "switched-list.png",
+      "state": "Savings activity: a switch pending, done, delayed and recovered"
+    },
+    { "action": "click", "role": "button", "name": "Open move details", "nth": 0 },
+    { "action": "waitFor", "role": "dialog", "name": "Move details" },
+    { "action": "screenshot", "file": "switched-pending.png", "state": "A pending switch" },
+    { "action": "press", "role": "dialog", "name": "Move details", "key": "Escape" },
+    { "action": "click", "role": "button", "name": "Open move details", "nth": 1 },
+    { "action": "waitFor", "role": "dialog", "name": "Move details" },
+    { "action": "screenshot", "file": "switched-done.png", "state": "A switch that landed" },
+    { "action": "press", "role": "dialog", "name": "Move details", "key": "Escape" },
+    { "action": "click", "role": "button", "name": "Open move details", "nth": 2 },
+    { "action": "waitFor", "role": "dialog", "name": "Move details" },
+    {
+      "action": "screenshot",
+      "file": "switched-recovered.png",
+      "state": "A switch whose shares came back to the recovery address"
+    },
+    { "action": "press", "role": "dialog", "name": "Move details", "key": "Escape" },
+    { "action": "click", "role": "button", "name": "Open move details", "nth": 3 },
+    { "action": "waitFor", "role": "dialog", "name": "Move details" },
+    {
+      "action": "screenshot",
+      "file": "switched-delayed.png",
+      "state": "A switch the relayer dropped"
+    },
+    {
+      "action": "goto",
+      "path": "/activity?demo=fresh&flowFixture=success&savingsFixture=switched"
+    },
+    { "action": "waitFor", "role": "button", "name": "Open move details", "first": true },
+    {
+      "action": "screenshot",
+      "file": "switched-activity.png",
+      "state": "Activity: the same switches"
+    },
+    { "action": "goto", "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=switched" },
+    { "action": "waitFor", "selector": "[data-testid=savings-holdings][data-hydrated]" },
+    {
+      "action": "screenshot",
+      "file": "switched-page.png",
+      "state": "Savings with a switch pending: on the USDC vault's line until it lands",
+      "fullPage": true
+    }
+  ],
+  "finalScreenshot": false
+}

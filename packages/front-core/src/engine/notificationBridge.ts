@@ -11,6 +11,7 @@ import {
   type BridgeActivityItem,
 } from "./feedRules"
 import type { WithdrawalPhase, WithdrawalRecord } from "../core/services/bridge/types"
+import type { MoveRecord } from "./moveTransition"
 import {
   isWithdrawalGroupTerminal,
   withdrawalGroupAmount,
@@ -72,6 +73,9 @@ export type BridgeTarget =
   | { type: "bridge.txDetail"; bridgeKind: "deposit"; sourceId: string }
   | { type: "bridge.txDetail"; bridgeKind: "withdrawal"; sourceId: string; l2TxHash?: string }
 
+/** The move a vault move's burn funds: its way, and a swap's destination. The burn holds neither. */
+export type BurnMove = Pick<MoveRecord, "direction" | "intoHoldingId">
+
 export type BridgeAbout =
   | {
       kind: "bridgeLive"
@@ -79,12 +83,14 @@ export type BridgeAbout =
       migration: boolean
       /** A deposit's stated reason for waiting on its sweep. */
       reason?: SipaProcessingKind
+      move?: BurnMove
     }
   | {
       kind: "bridgeEnded"
       item: BridgeActivityItem
       outcome: "done" | "failed"
       migration: boolean
+      move?: BurnMove
     }
   /** `value`: the run's dollar value, unknown until its tokens and Savings price are, if ever. */
   | { kind: "upgradeRun"; run: UpgradeRun; done: boolean; value?: bigint }
@@ -111,6 +117,8 @@ export interface BridgeSources {
     loaded: boolean
   }
   processing: ReadonlyMap<string, SipaProcessingState>
+  /** The holdings' moves: a vault move's burn is worded by its move. */
+  moves: readonly MoveRecord[]
   /** A rotated wallet's previous account. */
   previousAccount?: string
   /**
@@ -300,6 +308,13 @@ export function bridgeEntries(sources: BridgeSources, now: number): BridgeEntry[
   const ofRun = (item: BridgeActivityItem) =>
     item.kind === "bridge.sipaDeposit" && runArrivals.has(item.record.sipaAddress.toLowerCase())
   const isMigration = migrationMatcher(bridge, runArrivals)
+  const moveOf = (item: BridgeActivityItem): { move?: BurnMove } => {
+    if (item.kind !== "bridge.withdrawal" || !item.record.vaultMove) return {}
+    const move = sources.moves.find((m) => m.withdrawalLocalId === item.record.localId)
+    if (!move) return {}
+    const { direction, intoHoldingId } = move
+    return { move: { direction, ...(intoHoldingId === undefined ? {} : { intoHoldingId }) } }
+  }
   const out: BridgeEntry[] = []
 
   for (const item of bridge) {
@@ -308,7 +323,7 @@ export function bridgeEntries(sources: BridgeSources, now: number): BridgeEntry[
     if (!live) continue
     out.push({
       id: bridgeLiveId(item),
-      about: { kind: "bridgeLive", item, migration: isMigration(item), ...live },
+      about: { kind: "bridgeLive", item, migration: isMigration(item), ...live, ...moveOf(item) },
       timestampMs: item.record.startTime,
       severity: "info",
       icon: item.kind === "bridge.withdrawal" ? "arrow.up.right" : "arrow.down.left",
@@ -368,7 +383,7 @@ export function bridgeEntries(sources: BridgeSources, now: number): BridgeEntry[
     const dropped = item.kind === "bridge.withdrawal" && item.record.droppedBurn
     out.push({
       id: endedId(item, outcome),
-      about: { kind: "bridgeEnded", item, outcome, migration },
+      about: { kind: "bridgeEnded", item, outcome, migration, ...moveOf(item) },
       timestampMs: endTime,
       ...(outcome === "done" ? DONE : FAILED),
       pending: false,

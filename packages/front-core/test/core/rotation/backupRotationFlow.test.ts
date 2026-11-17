@@ -1,6 +1,5 @@
 import { TxStatus } from "@aztec-labs/stdlib/tx"
 import {
-  BACKUP_FUNDING_MARGIN,
   BackupSetConflictError,
   VerificationUnavailableError,
   type TxHashCallback,
@@ -582,18 +581,6 @@ describe("funding", () => {
     expect(deps.fund).toHaveBeenCalledTimes(1)
     world.balance = FLOOR
     await store.put(signedRecord("published", { plan: DEPOSITING }))
-    expect((await fundRotation(deps, (await store.get(OWNER))!)).record.phase).toBe("funded")
-    expect(deps.fund).toHaveBeenCalledTimes(1)
-  })
-
-  it("sends the funding over nothing, and none over any money, for a plan whose deposit is within the margin", async () => {
-    const { deps, store, world } = harness()
-    const plan = { ...PLAN, deposited: BACKUP_FUNDING_MARGIN.toString() }
-    await store.put(signedRecord("published", { plan }))
-    expect((await fundRotation(deps, (await store.get(OWNER))!)).record.phase).toBe("funded")
-    expect(deps.fund).toHaveBeenCalledTimes(1)
-    world.balance = 1n
-    await store.put(signedRecord("published", { plan }))
     expect((await fundRotation(deps, (await store.get(OWNER))!)).record.phase).toBe("funded")
     expect(deps.fund).toHaveBeenCalledTimes(1)
   })

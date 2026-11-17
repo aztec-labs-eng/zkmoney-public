@@ -63,10 +63,9 @@ export interface BackupRotationPlan {
   /** Atomic token units, as decimal strings. */
   fundingAmount: string
   /**
-   * What reaches the deposit address: the funding less the withdrawal's own charges. Less the
-   * funding margin, it is the floor below which the flow takes money there as someone else's. The
-   * recovery card shows it, not the funding, which never all lands. A record without it shows no
-   * amount.
+   * What reaches the deposit address: the funding less the withdrawal's own charges. It is the floor
+   * below which the flow takes money there as someone else's. The recovery card shows it, not the
+   * funding, which never all lands. A record without it shows no amount.
    */
   deposited?: string
   credited: string

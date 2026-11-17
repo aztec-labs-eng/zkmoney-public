@@ -7,15 +7,18 @@ import type { MoveEvent, MoveQuote, MoveRail, MoveRecord } from "../../../engine
 import { task, type Task } from "../../../engine/runtime"
 import type { Service } from "../../../engine/service"
 import { WITHDRAWAL_SUBMIT_TIMEOUT_MS, type Withdrawals } from "../../../engine/withdrawals"
-import type {
-  BlockRange,
-  MovePorts,
-  MoveRoute,
-  MoveRoutes,
-  MovesAccount,
-  RailFields,
-  RailMove,
-  RouteHolding,
+import {
+  railHoldings,
+  type BlockRange,
+  type MovePorts,
+  type MoveRoute,
+  type MoveRoutes,
+  type MovesAccount,
+  type RailFields,
+  type RailMove,
+  type RailPorts,
+  type RouteHolding,
+  type VaultSwapRoutes,
 } from "./types"
 
 export const MOVES_SETTLE_MS = 10_000
@@ -37,11 +40,33 @@ export interface SettleDeps extends MovesDeps {
   refreshBalance: () => Promise<void>
 }
 
-/** A holding with its rail's port and its route as that port reads it, in the port's types. */
+/**
+ * A holding with its rail's port and its route as that port reads it, in the port's types. `into`:
+ * a swap's destination holding, its route, and the port's swap.
+ */
 export interface HoldingRoute<H extends RouteHolding, R extends MoveRoute, Q extends MoveQuote> {
   holding: H
   routes: MoveRoutes<H, R, Q>
   route: R
+  into?: { holding: H; route: R; vaultSwaps: VaultSwapRoutes<H, R, Q> }
+}
+
+/**
+ * `at` with `move`'s destination, when `move` is a swap: one of `holdings`, its route read by
+ * `read`. A destination the rail no longer serves leaves `into` unset: only the swap's recovery,
+ * which pays the source's shares, can then be read.
+ */
+export async function withInto<H extends RouteHolding, R extends MoveRoute, Q extends MoveQuote>(
+  at: HoldingRoute<H, R, Q>,
+  move: Pick<MoveRecord, "id" | "intoHoldingId">,
+  holdings: readonly H[],
+  read: (holding: H) => Promise<R>,
+): Promise<HoldingRoute<H, R, Q>> {
+  if (move.intoHoldingId === undefined) return at
+  const holding = holdings.find((h) => h.id === move.intoHoldingId)
+  const vaultSwaps = at.routes.vaultSwap
+  if (!holding || !vaultSwaps) return at
+  return { ...at, into: { holding, route: await read(holding), vaultSwaps } }
 }
 
 /** Whether `move` runs on `rail`, which the port serving its holding names. */
@@ -73,7 +98,7 @@ async function releaseSeen<R extends MoveRoute>(
  * it.
  */
 export async function chainEvents<H extends RouteHolding, R extends MoveRoute, Q extends MoveQuote>(
-  { routes, route }: Pick<HoldingRoute<H, R, Q>, "routes" | "route">,
+  { routes, route, into }: Pick<HoldingRoute<H, R, Q>, "routes" | "route" | "into">,
   move: MoveRecord,
   rail: RailFields<H["rail"]>,
   withdrawalId: Hex | undefined,
@@ -88,35 +113,27 @@ export async function chainEvents<H extends RouteHolding, R extends MoveRoute, Q
   const released: MoveEvent[] = []
   if (move.phase === "burning" || move.phase === "burned") {
     if (withdrawalId === undefined) return []
-    if (!(await routes.withdrawalSpent(route, move.direction, withdrawalId))) {
-      return [{ type: "observed", limits: await routes.limits(route), at }]
-    }
+    if (!(await routes.withdrawalSpent(route, move.direction, withdrawalId))) return []
     const seen = range && (await releaseSeen(routes, route, move, withdrawalId, range))
     if (seen) released.push(seen)
+    const funds = { ...rail, recipientCommitment: move.recipientCommitment, withdrawalId }
     const outcome =
       range &&
-      (await routes.outcome(
-        route,
-        {
-          ...rail,
-          direction: move.direction,
-          recipientCommitment: move.recipientCommitment,
-          withdrawalId,
-        },
-        range,
-        signal,
-      ))
+      (into
+        ? await into.vaultSwaps.outcome(route, into.route, funds, range, signal)
+        : await routes.outcome(route, { ...funds, direction: move.direction }, range, signal))
     if (outcome?.kind === "recovered") {
       return [{ type: "recovered", txHash: outcome.txHash, to: outcome.to, at }]
     }
-    if (outcome?.kind !== "ran") {
-      return [...released, ...scanned, { type: "observed", limits: await routes.limits(route), at }]
-    }
+    // Its destination unserved, a swap's run cannot be read: the cursor waits for it.
+    if (move.intoHoldingId !== undefined && !into) return []
+    if (outcome?.kind !== "ran") return [...released, ...scanned]
     released.push({ type: "released", txHash: releaseTx, assets: outcome.assets })
   }
+  // A swap's deposit is a move into its destination's.
+  const [lands, direction] = into ? [into.route, "in" as const] : [route, move.direction]
   const found =
-    range &&
-    (await routes.findDeposit(route, move.direction, move.recipientCommitment, range, signal))
+    range && (await routes.findDeposit(lands, direction, move.recipientCommitment, range, signal))
   if (!found) return [...released, ...scanned]
   return [...released, { type: "depositSeen", txHash: found.txHash, deposit: found.deposit }]
 }
@@ -230,7 +247,8 @@ async function settleMove<H extends RouteHolding, R extends MoveRoute, Q extends
   // early is the move's own fault, left to the next pass.
   const { messageKey } = record.deposit
   if (messageKey && !(await account.messageReady(messageKey))) return
-  const destination = record.direction === "in" ? at.holding.held : at.holding.base
+  const lands = at.into?.holding ?? (record.direction === "in" ? at.holding : undefined)
+  const destination = lands ? lands.held : at.holding.base
   const { recipient } = account.salts(record.nonce, record.rail)
   await account.claim(destination, { ...record.deposit, secret: recipient }, signal)
   await deps.moves.apply(record.id, { type: "claimed", at: deps.now() })
@@ -246,18 +264,64 @@ async function settleHolding<H extends RouteHolding, R extends MoveRoute, Q exte
   deps: SettleDeps,
   account: MovesAccount,
   { routes, holding }: Pick<HoldingRoute<H, R, Q>, "routes" | "holding">,
+  rail: { holdings: readonly H[]; read: (holding: H) => Promise<R> },
   moves: readonly (MoveRecord & RailMove<H["rail"]>)[],
   head: () => Promise<bigint>,
   signal: AbortSignal,
 ): Promise<void> {
-  const at = { holding, routes, route: await routes.read(holding) }
+  const at = { holding, routes, route: await rail.read(holding) }
   if (moves.some((move) => move.phase !== "depositSeen")) await head()
+  const settle = async (move: MoveRecord & RailMove<H["rail"]>) =>
+    settleMove(
+      deps,
+      account,
+      await withInto(at, move, rail.holdings, rail.read),
+      move,
+      head,
+      signal,
+    )
   for (const move of moves) {
     // An abort is the pass's end, not a move's fault.
     signal.throwIfAborted()
-    await bestEffort("unknown", settleMove(deps, account, at, move, head, signal))
+    await bestEffort("unknown", settle(move))
   }
   signal.throwIfAborted()
+}
+
+/** Settles the rail's open moves among `open`; resolves to how many it served and what failed. */
+async function settleRail<H extends RouteHolding, R extends MoveRoute, Q extends MoveQuote>(
+  deps: SettleDeps,
+  account: MovesAccount,
+  rail: RailPorts<H, R, Q>,
+  open: readonly MoveRecord[],
+  head: () => Promise<bigint>,
+  signal: AbortSignal,
+): Promise<{ served: number; failures: unknown[] }> {
+  const { routes } = rail
+  const holdings = railHoldings(rail)
+  // A swap's destination route is read once a pass, as each holding's is.
+  const reads = new Map<string, Promise<R>>()
+  const read = (holding: H) => {
+    const cached = reads.get(holding.id) ?? routes.read(holding)
+    reads.set(holding.id, cached)
+    return cached
+  }
+  const result = { served: 0, failures: [] as unknown[] }
+  for (const holding of holdings) {
+    const moves = open.filter(
+      (move): move is MoveRecord & RailMove<H["rail"]> =>
+        move.holdingId === holding.id && onRail(move, routes.rail),
+    )
+    result.served += moves.length
+    if (moves.length === 0 || signal.aborted) continue
+    try {
+      const served = { holdings, read }
+      await settleHolding(deps, account, { routes, holding }, served, moves, head, signal)
+    } catch (error) {
+      result.failures.push(error)
+    }
+  }
+  return result
 }
 
 /**
@@ -277,21 +341,9 @@ export async function settlePass(
   let served = 0
   for (const bound of ports.rails.get()) {
     const head = () => (read ??= bound(({ routes }) => routes.head()))
-    await bound(async ({ routes, holdings }) => {
-      for (const holding of holdings) {
-        const moves = open.filter(
-          (move): move is MoveRecord & RailMove<typeof routes.rail> =>
-            move.holdingId === holding.id && onRail(move, routes.rail),
-        )
-        served += moves.length
-        if (moves.length === 0 || signal.aborted) continue
-        try {
-          await settleHolding(deps, ports.account, { routes, holding }, moves, head, signal)
-        } catch (error) {
-          failures.push(error)
-        }
-      }
-    })
+    const rail = await bound((r) => settleRail(deps, ports.account, r, open, head, signal))
+    served += rail.served
+    failures.push(...rail.failures)
   }
   if (failures.length > 0) throw failures[0]
   if (served < open.length) {

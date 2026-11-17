@@ -168,7 +168,7 @@ describe("ClaimFPC per-call inventory", () => {
     )
     expect(claimFpcCallGas({ name: "gift_voucher" })).toEqual(budgets.mGift)
     expect(claimFpcCallGas({ name: "transfer" })).toEqual(budgets.mTransfer)
-    expect(claimFpcCallGas({ name: "withdraw", recoveryChunks: 6 })).toEqual(budgets.mWithdraw)
+    expect(claimFpcCallGas({ name: "withdraw", recoveryChunks: 7 })).toEqual(budgets.mWithdraw)
     expect(claimFpcCallGas({ name: "deposit" })).toEqual(budgets.mPaylinkDeposit)
     expect(claimFpcCallGas({ name: "claim" })).toEqual(budgets.mPaylinkClaim)
     expect(claimFpcCallGas({ name: "refund" })).toEqual(budgets.mPaylinkClaim)
@@ -247,8 +247,8 @@ describe("ClaimFPC withdraw declarations", () => {
   it("prices a longer burn by its chunks, up to the budget's, and refuses more", () => {
     const four = claimFpcCallGas({ name: "withdraw", recoveryChunks: 4 })
     expect(four.l2Gas).toBeGreaterThan(ESCROW_BURN.l2Gas)
-    expect(four.l2Gas).toBeLessThan(claimFpcCallGas({ name: "withdraw", recoveryChunks: 6 }).l2Gas)
-    expect(() => claimFpcCallGas({ name: "withdraw", recoveryChunks: 7 })).toThrow(/6 recovery/)
+    expect(four.l2Gas).toBeLessThan(claimFpcCallGas({ name: "withdraw", recoveryChunks: 7 }).l2Gas)
+    expect(() => claimFpcCallGas({ name: "withdraw", recoveryChunks: 8 })).toThrow(/7 recovery/)
   })
 })
 

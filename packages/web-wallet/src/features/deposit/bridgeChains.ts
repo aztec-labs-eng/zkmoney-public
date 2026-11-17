@@ -10,21 +10,24 @@ import {
   TimeoutError,
   type Address,
   type Chain,
+  type Hex,
   type PublicClient,
   type Transport,
   formatUnits,
   zeroAddress,
 } from "viem"
 import {
-  acrossFillIn,
   AcrossBridgeIn,
+  bridgeFillIn,
   WalletError,
   type AcrossContracts,
   type BridgeInDepositLookup,
   type BridgeInProvider,
   type BridgeInQuote,
   type BridgeInQuoteRequest,
+  type BridgeFillDetector,
   type FillReader,
+  type ReceiptLog,
   type OriginChain,
   type QueryFactory,
   type Service,
@@ -37,6 +40,7 @@ import { l1PublicClient } from "../../config/oxideTuple"
 import { amountError, usdFigure } from "../../ui/format"
 import { coinFigure } from "../../ui/coinDecimals"
 import { groupedCents } from "../../ui/groupedCents"
+import { bridgeFillDetectors } from "../../session/bridgeFillDetectors"
 import { bridgeChainFor, acrossBridge } from "../../session/walletChains"
 import type { DepositTokenOption } from "../sipa/loadDepositFacts"
 
@@ -502,19 +506,30 @@ export function listedBridgeSymbol(
   return chain?.in.find((t) => isAddressEqual(tokenAddress(t), token))?.symbol
 }
 
-/** Reads bridge fills from funding receipts on `client`'s L1. */
-export function fillReader(client: Pick<PublicClient, "getTransactionReceipt">): FillReader {
+/** Reads `detectors`' fills from funding receipts on `client`'s L1. */
+export function fillReader(
+  client: Pick<PublicClient, "getTransactionReceipt">,
+  detectors: readonly BridgeFillDetector[],
+): FillReader {
   return {
     fill: async (hash, recipient) =>
-      acrossFillIn((await client.getTransactionReceipt({ hash })).logs, recipient),
+      bridgeFillIn(detectors, (await client.getTransactionReceipt({ hash })).logs, recipient),
   }
 }
 
-/** Bridge fills on `config`'s L1, over a client built on the first read. */
-export function bridgeFills(config: WebWalletConfig): FillReader {
-  let reader: FillReader | undefined
+/**
+ * The profile's bridge fills on `config`'s L1. Each receipt is read once a page: a mined one does
+ * not change. Undefined where the profile names no bridge to read: a fill would read as a plain
+ * transfer.
+ */
+export function bridgeFills(config: WebWalletConfig, query: QueryFactory): FillReader | undefined {
+  const detectors = bridgeFillDetectors(config)
+  if (detectors.length === 0) return undefined
+  const logs = query<[Hex], readonly ReceiptLog[]>("fundingReceiptLogs", {
+    load: async (hash) => (await l1PublicClient(config).getTransactionReceipt({ hash })).logs,
+    final: () => true,
+  })
   return {
-    fill: (hash, recipient) =>
-      (reader ??= fillReader(l1PublicClient(config))).fill(hash, recipient),
+    fill: async (hash, recipient) => bridgeFillIn(detectors, await logs(hash).read(), recipient),
   }
 }

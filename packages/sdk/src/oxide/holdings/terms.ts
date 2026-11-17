@@ -3,7 +3,7 @@
 import type { ExecutorHolding, MultiStepExecutor, TermsKind } from "@obsidion/core/oxide"
 import { WalletError } from "@obsidion/core/errors"
 import type { Step } from "@oxide/l1-contracts/multi_step/index.js"
-import type { Address, PublicClient } from "viem"
+import type { PublicClient } from "viem"
 import type { MoveDirection } from "./conversion.js"
 import type { HoldingDeployment } from "./holdingDeployment.js"
 
@@ -11,8 +11,6 @@ export type TermsClient = Pick<PublicClient, "readContract">
 
 /** The reads a move prices its terms step with. */
 export interface TermsReader {
-  maxDeposit(receiver: Address): Promise<bigint>
-  maxRedeem(owner: Address): Promise<bigint>
   /** The shares a deposit of `assets` mints now, after any fee the vault takes. */
   previewDeposit(assets: bigint): Promise<bigint>
   /** The assets a redeem of `shares` pays now, after any fee the vault takes. */

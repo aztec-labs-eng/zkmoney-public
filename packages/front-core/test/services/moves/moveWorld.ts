@@ -1,5 +1,6 @@
 // One account's moves over one fake L1: the real stores on a memory database, the fake ports, and
 // the service and passes built over them. A second device shares the L1 and the account's burns.
+import type { ExecutorHolding } from "@obsidion/core/oxide"
 import type { Address } from "viem"
 import { executorRoutes } from "../../../src/core/services/moves/executorRoutes"
 import { openMoves } from "../../../src/core/services/moves/openMoves"
@@ -27,6 +28,7 @@ import {
   fakeL1,
   frontAccount,
   SKY_HOLDING,
+  SKY_VIEW,
   VAULT_HOLDING,
   type FakeEscrowHolding,
   type FakeEscrowQuote,
@@ -49,10 +51,15 @@ export interface WorldOptions {
   routes?: (routes: EscrowRoutes) => EscrowRoutes
   /** The holdings the wallet lists; the rail's holding by default. */
   listed?: readonly string[]
-  /** The rail the world moves on: Sky's escrows by default, or a vault's multi-step executor. */
-  rail?: "skyEscrow" | "executor"
+  /**
+   * The rail the world moves on: Sky's escrows by default, or a vault's multi-step executor. `both`
+   * binds the two, the executor swapping Sky's holding as `SKY_VIEW`.
+   */
+  rail?: "skyEscrow" | "executor" | "both"
   /** Binds no rail until `bind()`, as a wallet does for a rail it learns to bind later. */
   unbound?: boolean
+  /** The executor rail's holdings; `VAULT_HOLDING` by default. */
+  vaults?: readonly ExecutorHolding[]
 }
 
 export async function moveWorld(opts: WorldOptions = {}) {
@@ -65,19 +72,27 @@ export async function moveWorld(opts: WorldOptions = {}) {
   const account = opts.account ?? fakeAccount(l1, opts.balances ?? { [DAI_PORTAL]: 1_000n }, now)
   const escrow = fakeEscrowRoutes(l1)
   const routes = opts.routes ? opts.routes(escrow) : escrow
-  const rail =
-    opts.rail === "executor"
-      ? bindRail({
-          routes: executorRoutes({ l1: l1.client, eth: { feed: FEED } }),
-          holdings: [VAULT_HOLDING],
-          listed: new Set(opts.listed ?? [VAULT_HOLDING.id]),
-        })
-      : bindRail({
-          routes,
-          holdings: [SKY_HOLDING],
-          listed: new Set(opts.listed ?? [SKY_HOLDING.id]),
-        })
-  const rails = memoryStore<readonly BoundRail[]>(opts.unbound ? [] : [rail])
+  const vaults = opts.vaults ?? [VAULT_HOLDING]
+  const both = opts.rail === "both"
+  const listedIds = (ids: string[]) => new Set(opts.listed ?? ids)
+  const executorRail = bindRail({
+    // The fake account claims only the deposits whose commitment the fake L1 stubbed.
+    routes: {
+      ...executorRoutes({ l1: l1.client, eth: { feed: FEED } }),
+      commitment: async (secret, recipient) => l1.commitment(secret, recipient),
+    },
+    holdings: vaults,
+    ...(both ? { vaultSwapOnly: [SKY_VIEW] } : {}),
+    listed: listedIds([...(both ? [SKY_HOLDING.id] : []), ...vaults.map((h) => h.id)]),
+  })
+  const escrowRail = bindRail({
+    routes,
+    holdings: [SKY_HOLDING],
+    listed: listedIds([SKY_HOLDING.id, ...(both ? vaults.map((h) => h.id) : [])]),
+  })
+  const bound =
+    opts.rail === "executor" ? [executorRail] : both ? [escrowRail, executorRail] : [escrowRail]
+  const rails = memoryStore<readonly BoundRail[]>(opts.unbound ? [] : bound)
   const ports: MovePorts = {
     rails: rails.readonly,
     account: frontAccount(account, withdrawals, now, opts.burns),
@@ -103,7 +118,7 @@ export async function moveWorld(opts: WorldOptions = {}) {
     read,
     settle: () => settlePass({ ...deps, refreshBalance: async () => undefined }, ports, signal),
     replay: () => replayPass(deps, ports, signal),
-    bind: () => rails.set([rail]),
+    bind: () => rails.set(bound),
     /** The move's withdrawal id, as its burn's record holds it. */
     withdrawalId: async (move: MoveRecord) =>
       move.withdrawalId ?? (await withdrawals.get(move.withdrawalLocalId ?? ""))?.withdrawalId,

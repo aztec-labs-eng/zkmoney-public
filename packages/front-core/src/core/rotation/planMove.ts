@@ -1,14 +1,16 @@
 /**
  * Cuts the forward of a one-key account's balance into chunks one sponsored transfer can prove. The
- * token spends its largest notes first and deposits for the rest, and one proof reaches at most 18
- * of each, so a chunk is proven when the next 18 largest notes and, with a known deposit set, the 18
- * smallest deposits cover it. Which deposits a chunk spends is only known from the next read, so a
- * plan over deposits is an upper bound and each chunk is re-cut from the live shape.
+ * token spends its largest notes first and deposits for the rest, and one sponsored proof reaches at
+ * most 18 of each, so a chunk is proven when the next 18 largest notes and, with a known deposit set,
+ * the 18 smallest deposits cover it. Which deposits a chunk spends is only known from the next read,
+ * so a plan over deposits is an upper bound and each chunk is re-cut from the live shape.
  */
-import type { SpendShape } from "@obsidion/sdk"
+import { SPEND_LADDER, SPONSORED_SPEND_RECURSIONS, type SpendShape } from "@obsidion/sdk"
 
-export const MOVE_NOTES_PER_CHUNK = 18
-export const MOVE_DEPOSITS_PER_CHUNK = 18
+export const MOVE_NOTES_PER_CHUNK =
+  SPEND_LADDER.initialNotes + SPONSORED_SPEND_RECURSIONS * SPEND_LADDER.recursiveNotes
+export const MOVE_DEPOSITS_PER_CHUNK =
+  SPEND_LADDER.initialDeposits + SPONSORED_SPEND_RECURSIONS * SPEND_LADDER.recursiveDeposits
 
 /** The unspent deposits behind `depositTotal`: exact when their amounts sum to it. */
 export type MoveDeposits = { kind: "exact"; amounts: bigint[] } | { kind: "unknown" }
@@ -96,7 +98,9 @@ export function withNotes(shape: SpendShape, amounts: readonly bigint[]): SpendS
 /**
  * The chunks that move `shape.balance`, each cut over what the previous ones leave: notes largest
  * first, then deposits smallest first, the change of a chunk back as a note. With an unknown set the
- * notes are cut while they cover a chunk, then each remainder is one unproven attempt of the cap.
+ * notes are cut while they cover a chunk, until the rest fits one transfer as `fundingFits` judges
+ * it: then the notes and the deposits behind them go as one unproven attempt. Past that, each
+ * remainder is one unproven attempt of the cap.
  */
 export function planMove(shape: SpendShape, cap: bigint, deposits: MoveDeposits): MovePlan {
   if (cap <= 0n) throw new Error("planMove: the chunk cap must be positive")
@@ -107,6 +111,17 @@ export function planMove(shape: SpendShape, cap: bigint, deposits: MoveDeposits)
   let spentDeposits = false
   while (remaining > 0n) {
     const proven = provableChunk(cap, notes, pool ? { kind: "exact", amounts: pool } : deposits)
+    if (
+      !pool &&
+      proven > 0n &&
+      proven < remaining &&
+      fundingFits(remaining, cap, { notes, depositTotal: shape.depositTotal }, deposits).kind ===
+        "fits"
+    ) {
+      chunks.push({ amount: remaining, proven: false })
+      spentDeposits = true
+      break
+    }
     if (proven > 0n) {
       const amount = min(proven, remaining)
       chunks.push({ amount, proven: true })

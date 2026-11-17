@@ -17,6 +17,7 @@ import {
 import { backupPasskeySettingsEnabled } from "../config/features"
 import type { AccountKeys, Row } from "../features/backupPasskey/accountKeys"
 import { BackupPasskeyHost } from "../features/backupPasskey/BackupPasskeyHost/BackupPasskeyHost"
+import type { SheetFrom } from "../features/backupPasskey/backupFunnel"
 import { panelCopy } from "../features/backupPasskey/backupPasskeyCopy"
 import type { EntryAction } from "../features/backupPasskey/backupPasskeyEntry"
 import { useBackupRotation } from "../features/backupPasskey/backupRotations"
@@ -143,9 +144,12 @@ function KeyRow({
 
 /** The passkeys installed on the account, read from L1, with the one signing this session marked. */
 export function PasskeysModal({
+  from,
   onClose,
   onAction,
 }: {
+  /** What opened it, which the backup's first screen is reported with. */
+  from?: SheetFrom
   onClose: () => void
   /** Where an entry condition sends the user. */
   onAction?: (action: EntryAction) => void
@@ -201,14 +205,14 @@ export function PasskeysModal({
           count: keys.authKeyCount,
         }
       : keys
+  const record = pendingRecord(read, saved)
   const list =
     (keys === "unverified" || typeof keys === "object") &&
-    !hostSheetShows(keys === "unverified" ? 0 : keys.rows.length, saved)
+    !hostSheetShows(keys === "unverified" ? 0 : keys.rows.length, record)
   // The modal's title stays over its own list and its key-read lines. With the flag on, the
   // backup's own sheet says the keys did not read.
   const unreadLine = keys === "unreadable" && !backupPasskeySettingsEnabled
   const own = list || keys === undefined || unreadLine
-  const record = pendingRecord(read, saved)
   const drive = useRotationDrive(record?.owner ?? "")
   const closing = selectSheetClose(record, drive)
   const [leaving, setLeaving] = useState(false)
@@ -277,11 +281,19 @@ export function PasskeysModal({
             {...(onAction && { onAction })}
             onReadKeys={readAgain}
             onClose={onClose}
+            {...(from && { from })}
           />
         </div>
       </Modal>
       {/* A sibling: nested, it would be copied open into this sheet's closing animation. */}
-      {leaving && <LeaveSheet kind="leave" onStay={() => setLeaving(false)} onConfirm={onClose} />}
+      {leaving && (
+        <LeaveSheet
+          kind="leave"
+          phase={record?.phase}
+          onStay={() => setLeaving(false)}
+          onConfirm={onClose}
+        />
+      )}
     </>
   )
 }

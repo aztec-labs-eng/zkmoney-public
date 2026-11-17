@@ -10,6 +10,7 @@ import { BackupPasskeyRefusedError } from "@obsidion/passkey-web"
 import { useSubmit } from "../../../../ui/hooks"
 import { useDomEffect } from "../../../../ui/useDomEffect"
 import { failureLine } from "../../backupFailure"
+import { reportFailureAnswered } from "../../backupFunnel"
 import { attentionLine, panelCopy } from "../../backupPasskeyCopy"
 import type { BackupScreenProps } from "../../backupScreen"
 import copy from "./FailedScreen.copy"
@@ -70,12 +71,13 @@ export function FailedScreen({ screen, actions }: BackupScreenProps<"failed">) {
     cancel: {
       label: kind === "damaged" ? copy.startOver : panelCopy.cancel,
       // A sheet whose only way on is dropping the attempt drops it at once.
-      onClick: () => (primary === "cancel" ? actions.cancel() : actions.askCancel()),
+      onClick: () =>
+        primary === "cancel" ? actions.cancel("failure_sheet") : actions.askCancel("failure_sheet"),
     },
     keys: {
       label: copy.check,
       onClick: () => {
-        if (canCancel) actions.cancel()
+        if (canCancel) actions.cancel("check_passkeys")
         else actions.dismiss()
         actions.retryRead("keys")
       },
@@ -91,6 +93,10 @@ export function FailedScreen({ screen, actions }: BackupScreenProps<"failed">) {
   const action = (move?: SheetMove): SheetAction | undefined =>
     move && {
       ...moves[move],
+      onClick: () => {
+        reportFailureAnswered(kind, move)
+        moves[move].onClick()
+      },
       disabled: busy || moves[move].disabled,
       testId: `backup-failed-${move}`,
     }

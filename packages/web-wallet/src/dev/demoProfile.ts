@@ -5,6 +5,7 @@
  * a placeholder: the PXE never boots, `fakeL1Rpc` answers the L1 URL, and the oxide tuple is primed
  * from `DEMO_OXIDE_TUPLE` (whose portal this pointer names) before anything could dial the manifest.
  */
+import { featuresUrlOf } from "@obsidion/config-client/features-url"
 import type { ResolveBootConfigInput } from "../config/env"
 import { DEMO_ACROSS_EXIT, DEMO_OXIDE_TUPLE } from "./demoFixtures"
 
@@ -34,6 +35,8 @@ export function demoProfile(): Record<string, unknown> {
           manifestUrl: "http://demo.invalid/oxide/sandbox.json",
           portal: DEMO_OXIDE_TUPLE.portal,
         },
+        // Without it, the Across feature's binding of the demo bridge hides it from deposits.
+        portals: { main: [DEMO_OXIDE_TUPLE.portal], savings: [] },
         contracts: {
           obsidionAccountAlpha: { classId: F32(1) },
           paylinkDirect: { classId: F32(2) },
@@ -82,7 +85,8 @@ export function demoFeatures(): Record<string, unknown> {
 export function demoBootInput(
   base: Record<string, string | undefined> = import.meta.env,
 ): Pick<ResolveBootConfigInput, "env" | "fetchImpl" | "demoStorage"> {
-  if (base.MODE === "ui-capture") return { env: base, demoStorage: true }
+  if (base.MODE === "ui-capture")
+    return { env: base, demoStorage: true, fetchImpl: captureFetch(base) }
   return {
     demoStorage: true,
     env: {
@@ -97,4 +101,18 @@ export function demoBootInput(
         { status: 200, headers: { "content-type": "application/json" } },
       )) as unknown as typeof fetch,
   }
+}
+
+/** The harness's own requests, but for the features document beside its profile: demo mode's. */
+function captureFetch(env: Record<string, string | undefined>): typeof fetch {
+  const features = featuresUrlOf(env.VITE_CONFIG_PROFILE_URL ?? "")
+  return (input, init) =>
+    String(input) === features
+      ? Promise.resolve(
+          new Response(
+            JSON.stringify({ ...demoFeatures(), profileId: env.VITE_CONFIG_EXPECTED_PROFILE_ID }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+        )
+      : fetch(input, init)
 }

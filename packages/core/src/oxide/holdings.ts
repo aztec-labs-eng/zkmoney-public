@@ -1,9 +1,10 @@
 // A holding is a private balance on its own bridge, moved to and from its base's bridge. The
 // pinned deployment's features say which holdings exist: a `sky` feature is Sky's savings, moved
 // through an escrow per move; a `position` feature is a vault, moved through the deployment's one
-// `multistep` executor. A savings portal the profile names under its own id is a vault too. The profile's
-// `holdings` say which the wallet shows. A profile that names none shows Sky's savings on the
-// pinned bridge, unless its savings portals leave them out.
+// `multistep` executor. A savings portal the profile names under its own id is a vault too. A
+// swap between Sky's savings and a vault runs on the executor too. The profile's `holdings` say
+// which the wallet shows. A profile that names none shows Sky's savings on the pinned bridge, unless
+// its savings portals leave them out.
 
 import type { Failure } from "../errors/index.js"
 import { isWellFormedNonZeroL1Address } from "./address.js"
@@ -40,6 +41,11 @@ interface HoldingCommon {
 export interface SkyEscrowHolding extends HoldingCommon {
   rail: "skyEscrow"
   escrow: { factory: string; withdrawalExecutor: string }
+  /**
+   * The holding on the deployment's executor, when it has every adapter Sky's steps need: what a
+   * swap to or from a vault runs through. Moves in and out stay on the escrow.
+   */
+  executorView?: ExecutorHolding
 }
 
 /** The deployment's `MultiStepExecutor`, from its `multistep` feature. */
@@ -131,10 +137,23 @@ function roleBridge(
   )
 }
 
-/** Sky's savings: sUSDS on its bridge, moved to and from DAI through the factory's escrows. */
+/** The executor adapter `holding`'s moves need that `executor` lacks. */
+function missingAdapter(
+  executor: MultiStepExecutor,
+  { terms, conversion }: Pick<HoldingCommon, "terms" | "conversion">,
+): string | undefined {
+  const needs = [...MOVE_ADAPTERS, ...TERMS_ADAPTERS[terms], ...CONVERSION_ADAPTERS[conversion]]
+  return needs.find((kind) => executor.adapters[kind] === undefined)
+}
+
+/**
+ * Sky's savings: sUSDS on its bridge, moved to and from DAI through the factory's escrows, and on
+ * `executor` when it can run their steps.
+ */
 function skyHolding(
   deployment: OxideDeployment,
   feature: OxideFeature,
+  executor: MultiStepExecutor | Problem | undefined,
 ): SkyEscrowHolding | Problem {
   const base = roleBridge(deployment, feature, SKY_ROLES.base)
   if ("code" in base) return base
@@ -147,7 +166,7 @@ function skyHolding(
   if (!isWellFormedNonZeroL1Address(withdrawalExecutor)) {
     return { code: "holding.unusableAddress", detail: "skyWithdrawalExecutor" }
   }
-  return {
+  const common = {
     id: feature.id,
     kind: "yield",
     l2Token: held.l2Token,
@@ -155,8 +174,14 @@ function skyHolding(
     held,
     terms: "erc4626",
     conversion: "DaiUsds",
+  } as const
+  const viewed =
+    executor !== undefined && !("code" in executor) && !missingAdapter(executor, common)
+  return {
+    ...common,
     rail: "skyEscrow",
     escrow: { factory, withdrawalExecutor },
+    ...(viewed ? { executorView: { ...common, rail: "executor", executor } } : {}),
   }
 }
 
@@ -215,8 +240,7 @@ function vaultHolding(
   }
   if ("code" in executor) return executor
   const terms = "erc4626"
-  const needs = [...MOVE_ADAPTERS, ...TERMS_ADAPTERS[terms], ...CONVERSION_ADAPTERS[conversion]]
-  const missing = needs.find((kind) => executor.adapters[kind] === undefined)
+  const missing = missingAdapter(executor, { terms, conversion })
   if (missing !== undefined) {
     return { code: "holding.unusableAddress", detail: `${executor.id} ${missing}Adapter` }
   }
@@ -292,7 +316,7 @@ export function deploymentHoldings(
     const entry = own ? undefined : savings.find(({ id }) => id === feature.id)
     const read =
       feature.project === SKY_PROJECT
-        ? skyHolding(deployment, feature)
+        ? skyHolding(deployment, feature, executor)
         : feature.project === VAULT_PROJECT && executor
         ? vaultHolding(deployment, feature, executor, own)
         : undefined

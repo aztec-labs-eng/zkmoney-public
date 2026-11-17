@@ -24,6 +24,7 @@ import {
   createXmtpInbox,
   createOwedClaims,
   createWithdrawFunnel,
+  createBackupFunnel,
   createBurnDurations,
   createIdentity,
   type AccountRecord,
@@ -114,8 +115,11 @@ export interface PreviousAccountParts {
     ): Promise<{ completed: boolean }>
     historyFor(recipient: AztecAddress): Promise<{ completed: boolean }>
   } | null
-  /** What Savings' `shares` redeem for; undefined where the session has no price. */
-  savingsValue(shares: bigint): Promise<bigint | undefined>
+  /**
+   * What `shares` of the holding whose share token is `token` redeem for, in dollars; undefined
+   * where the deployment has no such holding.
+   */
+  savingsValue(token: string, shares: bigint): Promise<bigint | undefined>
 }
 
 /** What an account's session reads beside what every session does. */
@@ -308,6 +312,7 @@ function openCore(deps: SessionDeps, wake: Runtime["wake"], detect: () => void) 
     ? createBackupRotations({ db, onUnreadable: signIn.backupRotationUnreadable })
     : null
   const backupNudges = signIn && backupPasskeySettingsEnabled ? createBackupNudges({ db }) : null
+  const backupFunnel = signIn ? createBackupFunnel({ db }) : null
   const moves = createMoveStore(db, {
     withdrawals: withdrawals.ready,
     sky: async () =>
@@ -372,6 +377,7 @@ function openCore(deps: SessionDeps, wake: Runtime["wake"], detect: () => void) 
     contacts,
     backupRotations,
     backupNudges,
+    backupFunnel,
     moves,
     receiveCodes,
     xmtpCursors,
@@ -517,6 +523,8 @@ export function openSession(deps: SessionDeps): Session {
     backupRotations: core.backupRotations,
     /** When the account's nudges to add a backup passkey were put off; none without the add. */
     backupNudges: core.backupNudges,
+    /** The backup passkey funnel steps already reported; a visitor has none. */
+    backupFunnel: core.backupFunnel,
     /** The account's holding moves; a visitor's stays empty. */
     moves: core.moves,
     /** The account's Receive codes; a visitor has none. */

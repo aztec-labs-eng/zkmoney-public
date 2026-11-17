@@ -1,0 +1,114 @@
+{
+  "scenario": "fresh",
+  "bootstrap": "/savings?demo=fresh&flowFixture=success&savingsFixture=funded",
+  "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=funded",
+  "ready": {
+    "testId": "savings-holdings"
+  },
+  "steps": [
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=savings-holdings][data-hydrated]"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-main",
+      "top": "end"
+    },
+    {
+      "action": "click",
+      "selector": "[data-testid=savings-holdings] > button:nth-of-type(1)"
+    },
+    {
+      "action": "waitFor",
+      "testId": "vault-details"
+    },
+    {
+      "action": "wait",
+      "ms": 400
+    },
+    {
+      "action": "screenshot",
+      "file": "details-funded.png",
+      "state": "Sky's details, funded"
+    },
+    {
+      "action": "goto",
+      "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=fresh"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=savings-holdings][data-hydrated]"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-main",
+      "top": "end"
+    },
+    {
+      "action": "click",
+      "selector": "[data-testid=savings-holdings] > button:nth-of-type(2)"
+    },
+    {
+      "action": "waitFor",
+      "testId": "vault-details"
+    },
+    {
+      "action": "wait",
+      "ms": 400
+    },
+    {
+      "action": "screenshot",
+      "file": "details-new.png",
+      "state": "A new vault's details, nothing held"
+    },
+    {
+      "action": "goto",
+      "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=exit"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=savings-holdings][data-hydrated]"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-main",
+      "top": "end"
+    },
+    {
+      "action": "click",
+      "selector": "[data-testid=savings-holdings] > button:nth-of-type(2)"
+    },
+    {
+      "action": "waitFor",
+      "testId": "vault-details"
+    },
+    {
+      "action": "wait",
+      "ms": 400
+    },
+    {
+      "action": "screenshot",
+      "file": "details-exit-only.png",
+      "state": "A vault the profile no longer lists, held"
+    },
+    {
+      "action": "goto",
+      "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=vaults"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=savings-holdings][data-hydrated]"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-main",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "list-rows-open.png",
+      "state": "Two lines, each row opening its details"
+    }
+  ]
+}

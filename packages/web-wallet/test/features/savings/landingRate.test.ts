@@ -19,6 +19,7 @@ const PRICE_NOW = 1_050_000_000_000_000_000n
 const PRICE_THEN = 1_049_000_000_000_000_000n
 const DECIMALS = toFunctionSelector("decimals()")
 const ASSET = toFunctionSelector("asset()")
+const SYMBOL = toFunctionSelector("symbol()")
 const USDS = `0x${"d3".repeat(20)}` as const
 const CONVERT = toFunctionSelector("convertToAssets(uint256)")
 const uint = (value: bigint | number) => encodeAbiParameters([{ type: "uint256" }], [BigInt(value)])
@@ -75,7 +76,10 @@ let config: Awaited<ReturnType<typeof sandboxConfig>>
 let l1Down: boolean
 let l1Asked: number
 
-/** An L1 node's answer to each read: the head, and the vault's decimals, asset and share price. */
+/**
+ * An L1 node's answer to each read: the head, and the vault's decimals, asset, the asset's symbol
+ * and share price.
+ */
 function answer({ id, method, params }: Call) {
   const result = (value: string) => ({ jsonrpc: "2.0", id, result: value })
   calls.push(method)
@@ -84,6 +88,7 @@ function answer({ id, method, params }: Call) {
   const [{ data }, block] = params
   if (data.startsWith(DECIMALS)) return result(uint(18))
   if (data.startsWith(ASSET)) return result(encodeAbiParameters([{ type: "address" }], [USDS]))
+  if (data.startsWith(SYMBOL)) return result(encodeAbiParameters([{ type: "string" }], ["USDS"]))
   if (!data.startsWith(CONVERT)) throw new Error(`unexpected read: ${data}`)
   const pinned = block !== undefined && block !== "latest"
   return result(uint(pinned ? PRICE_THEN : PRICE_NOW))

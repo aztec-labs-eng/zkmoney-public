@@ -7,6 +7,7 @@
 import {
   depositAmounts,
   depositPhaseCopy,
+  fundingUnread,
   neverCreditsL2,
   type SIPADepositPhase,
   type BridgeInRecord,
@@ -65,6 +66,7 @@ export function depositStatus(record: SipaDeposit): {
 
 export function DepositDetailModal({
   record,
+  readsFills,
   registrationTag,
   bridgeIn,
   exit,
@@ -75,6 +77,8 @@ export function DepositDetailModal({
   /** Full text of the notification that opened this detail. */
   notice?: string
   record: SipaDeposit
+  /** Whether the profile reads deposits' funding for bridge fills. */
+  readsFills: boolean
   /** Set when this SIPA registered a name: the detail names the registration identity. */
   registrationTag?: string
   /** The bridge-in that paid this deposit: the user sent on its origin chain, not on Ethereum. */
@@ -93,8 +97,9 @@ export function DepositDetailModal({
   // A deposit that never credits L2 was charged no fee and receives nothing.
   const showBreakdown = !neverCreditsL2(record.phase) && amounts.feeKnown && amounts.netAtomic > 0n
   const status = depositStatus(record)
-  const { fundingTxHash } = depositAttribution(record)
-  const { title, address } = depositHeadline(record)
+  const { fundingTxHash } = depositAttribution(record, readsFills)
+  const { title, address } = depositHeadline(record, readsFills)
+  const unread = fundingUnread(record, readsFills)
   const sentFigure =
     amounts.grossAtomic > 0n ? depositGrossFigure(record, "full", rowDecimals) : "--"
   // The sheet leads with what lands on L2; the gross the wallet was charged is the Sent row. A
@@ -249,6 +254,8 @@ export function DepositDetailModal({
                 />
                 {bridgeIn?.chainName ?? "--"}
               </>
+            ) : unread ? (
+              "--"
             ) : (
               <>
                 <img src={ethIcon} alt="" width={16} height={16} />

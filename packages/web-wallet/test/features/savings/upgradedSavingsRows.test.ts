@@ -4,13 +4,14 @@ import {
   createMoveStore,
   createWithdrawals,
   loadRecords,
+  type HoldingPrice,
   memoryBackend,
   openDatabase,
 } from "@obsidion/front-core"
 import type { Address } from "viem"
 import { describe, expect, it, vi } from "vitest"
 import base from "../../../../front-core/test/fixtures/savingsStore.base.json"
-import { savingsMoveFigure } from "../../../src/features/savings/SavingsMoveRow"
+import { savingsMoveFigure } from "../../../src/features/savings/savingsMove"
 
 const SKY = { id: "fea-sky-v6", factory: base.addresses.factory as Address, fromBlock: 0n }
 /** No move of the store lacks its search floor, so none reads L1. */
@@ -27,13 +28,17 @@ describe("an upgraded device's Savings rows", () => {
       blockAt: noL1,
     })
     const records = await loadRecords(moves.view)
-    const sharePrice = BigInt(base.base.sharePrice)
+    const price = {
+      sharePrice: BigInt(base.base.sharePrice),
+      shareDecimals: 18,
+      assetDecimals: 18,
+    } as HoldingPrice
     const shown = Object.fromEntries(
       records.map((move) => [
         move.id,
         {
-          savings: savingsMoveFigure(move, "savings", sharePrice)?.toString(),
-          main: savingsMoveFigure(move, "main", sharePrice)?.toString(),
+          savings: savingsMoveFigure(move, "savings", price)?.toString(),
+          main: savingsMoveFigure(move, "main", price)?.toString(),
         },
       ]),
     )

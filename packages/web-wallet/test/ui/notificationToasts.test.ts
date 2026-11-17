@@ -156,6 +156,7 @@ describe("the bell's starting list beside an upgrade waiting on its price", () =
     withdrawals: { records: [], hydrated: true },
     bridgeIns: { records: [], hydrated: true },
     upgrades: { items: [batch], recipients: new Set([SIPA]), loaded: true },
+    moves: [],
     upgradePricing,
     processing: new Map(),
     registrations: [],

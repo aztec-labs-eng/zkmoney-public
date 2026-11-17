@@ -101,6 +101,27 @@
   font-size: 8px;
   color: var(--text-primary);
 }
+.slot {
+  position: static;
+  display: flex;
+  flex: none;
+}
+/* Hung under the card. */
+.menu {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  padding: 6px;
+  border-radius: 16px;
+  background: var(--surface-sheet);
+  box-shadow: 0 0 12px 6px rgba(0, 0, 0, 0.25);
+}
+/* The card with its choices open paints above the one below. */
+.open {
+  z-index: 2;
+}
 .chip,
 :global(.zkm-btn-reset).chip {
   display: flex;

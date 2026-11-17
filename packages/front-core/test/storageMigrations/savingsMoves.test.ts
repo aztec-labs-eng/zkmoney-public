@@ -570,14 +570,17 @@ describe("an upgraded device shows what the base build showed", () => {
       now: base.now,
     }
     const sharePrice = BigInt(base.base.sharePrice)
-    // The app prices each move at its own holding's price: every holding here is Sky's.
+    // The app prices each move at its own holding's price, and holds it once that holding's
+    // shares are read: every holding here is the one the base build read as Savings.
     const price = { sharePrice, shareDecimals: 18, assetDecimals: 18, readAt: 0 }
     const feed = selectFeed(sources, {
       contacts: { rows: [], hydrated: true, failed: false },
       registrations: { records: [] },
-      sharePrice,
       holdingPrices: new Map(moves.map((move) => [move.holdingId, price])),
-      balanceReadAt: readAt,
+      balanceReadAt: {
+        main: readAt.main,
+        holdings: new Map(moves.map((move) => [move.holdingId, readAt.savings])),
+      },
     })
     const ledger = holdingLedger(moves, new Map(withdrawals.map((w) => [w.localId, w])))
     return { feed, ledger, sharePrice }
@@ -610,6 +613,8 @@ describe("an upgraded device shows what the base build showed", () => {
     expect(feed.arriving).toEqual({
       main: BigInt(base.base.arriving.main),
       savings: BigInt(base.base.arriving.savings),
+      vaultSwapping: new Map(),
+      savingsInto: new Map([["fea-sky-v6", BigInt(base.base.arriving.savings)]]),
     })
   })
 

@@ -202,7 +202,7 @@ export interface SipaDeposit {
   /**
    * On-chain funding attribution, read from the token's `Transfer(to = sipa)`. The self-initiated
    * flow also stamps `fundingTxHash` from its own receipt, which lands first; the sender address is
-   * only ever the log's.
+   * only ever the log's. A bridge fill's is its relayer: `depositFunder` reads who sent a deposit.
    */
   fundingTxHash?: Hash
   fundingFromAddress?: Address
@@ -212,10 +212,12 @@ export interface SipaDeposit {
    */
   fundingTokenSymbol?: string
   /**
-   * What the funding transaction was: a plain token transfer, or an Across fill that delivered a
-   * bridge-in. Set once, from its receipt.
+   * What the funding transaction was: a plain token transfer, or a bridge's fill. Set once, by the
+   * sheet that sent it or from its receipt.
    */
-  funding?: "transfer" | "bridge"
+  funding?: "plain" | "bridge"
+  /** ms; until when the bridge is asked for the origin call of the fill's rebuilt bridge-in. */
+  fundingLookupUntil?: number
   /**
    * Sender-wallet display identity: the connected wallet on self-initiated deposits, backfilled from
    * `fundingFromAddress` on third-party ones once the funding transfer is observed.
@@ -441,7 +443,7 @@ export function createSipaDeposits(deps: SipaDepositsDeps): SipaDeposits {
   const { db } = deps
   const store = persistentStore<SipaDeposit, "recipient">(db, {
     prefix: PREFIX,
-    version: 3,
+    version: 4,
     id: (record) => sipaDepositId(record.sipaAddress),
     migrate: (from, w) => migrateSipaDeposits(from, w, { db, prefix: PREFIX, legacy: deps.legacy }),
     indexes: {

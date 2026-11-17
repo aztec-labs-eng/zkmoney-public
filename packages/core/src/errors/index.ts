@@ -155,6 +155,8 @@ export type ErrorCode =
   | "move.noRecovery"
   /** The wallet does not list the holding, so it takes no move in; its funds can still leave. */
   | "move.exitOnly"
+  /** The two holdings are not on one rail that swaps between its holdings; Sky's does not. */
+  | "move.noVaultSwap"
   /** A move route's escrow factory or executor serves other portals than its holding's bridges. */
   | "move.routeMismatch"
   /** A move's route makes its burn's recovery data longer than a withdrawal is budgeted for. */
@@ -221,6 +223,45 @@ export async function bestEffort<T>(code: ErrorCode, work: Promise<T>): Promise<
     console.warn(`[${code}]`, e)
     return undefined
   }
+}
+
+/** No rule's work grows past this much text, and nothing beyond it helps triage. */
+const SCRUB_LIMIT = 4_096
+
+const SCRUBS: readonly (readonly [RegExp, string])[] = [
+  [/\bMozilla\/\d[^\n]*/g, "[user-agent]"],
+  [/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, "[url]"],
+  // No part crosses an `@`, so a run of them cannot make the match backtrack for seconds.
+  [/[^\s@]+@[^\s@]+/g, "[email]"],
+  [/@[\w.-]+/g, "[tag]"],
+  // Shortened around an ellipsis, as the wallet shows an address, or longer than a selector. It
+  // needs no word boundary: an id can hold an address.
+  [/0x(?:[0-9a-f]+(?:…|\.{2,})[0-9a-f]+|[0-9a-f]{9,})/gi, "[hex]"],
+]
+
+/**
+ * An amount: grouped or decimal digits, or six and more. Never the digits inside a word. The first
+ * group is a long key, id or encoded token: it holds a letter, and it stays whole so that a report
+ * can be traced by it.
+ */
+const AMOUNT = /((?=[\d_-]*[A-Za-z])[\w-]{32,})|\b(?:\d+(?:[.,]\d+)+|\d{6,})/g
+
+/**
+ * Error text fit to leave for a third party: user agents, URLs, emails, tags, `0x` addresses and
+ * hashes, and amounts become labels. A 4-byte selector, a short code and a long key or id stay, and
+ * a label survives a second scrub. Text past `SCRUB_LIMIT` characters is dropped.
+ */
+export function scrubErrorText(text: string): string {
+  let kept = text
+  if (text.length > SCRUB_LIMIT) {
+    // A cut can split a secret into a shape no rule knows, so the cut-off word goes with it.
+    kept = text.slice(0, Math.max(0, text.slice(0, SCRUB_LIMIT + 1).search(/\s\S*$/)))
+    if (!kept.trim()) kept = "[truncated]"
+  }
+  return SCRUBS.reduce(
+    (scrubbed, [pattern, label]) => scrubbed.replace(pattern, label),
+    kept,
+  ).replace(AMOUNT, (_match, token?: string) => token ?? "[number]")
 }
 
 /** `bestEffort` for synchronous work: a throw is logged and `fallback` returned. */

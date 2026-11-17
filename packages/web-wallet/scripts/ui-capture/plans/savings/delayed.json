@@ -1,0 +1,29 @@
+{
+  "scenario": "fresh",
+  "bootstrap": "/activity?demo=fresh&flowFixture=success&savingsFixture=delayed",
+  "path": "/activity?demo=fresh&flowFixture=success&savingsFixture=delayed",
+  "ready": { "role": "button", "name": "Open move details", "first": true },
+  "steps": [
+    {
+      "action": "screenshot",
+      "file": "delayed-rows.png",
+      "state": "Activity with a move the relayer dropped"
+    },
+    { "action": "click", "role": "button", "name": "Open move details", "nth": 0 },
+    { "action": "waitFor", "role": "dialog", "name": "Move details" },
+    {
+      "action": "screenshot",
+      "file": "delayed-dropped.png",
+      "state": "A move in to Sky, past the relayer's max pending age"
+    },
+    { "action": "press", "role": "dialog", "name": "Move details", "key": "Escape" },
+    { "action": "click", "role": "button", "name": "Open move details", "nth": 1 },
+    { "action": "waitFor", "role": "dialog", "name": "Move details" },
+    {
+      "action": "screenshot",
+      "file": "vault-move-shares.png",
+      "state": "A claimed move in to the vault, its shares in the vault's own symbol"
+    }
+  ],
+  "finalScreenshot": false
+}

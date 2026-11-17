@@ -1,0 +1,37 @@
+{
+  "scenario": "fresh",
+  "bootstrap": "/savings?demo=fresh&flowFixture=success&savingsFixture=funded",
+  "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=funded",
+  "ready": { "testId": "savings-balance" },
+  "steps": [
+    {
+      "action": "screenshot",
+      "file": "savings.png",
+      "state": "Savings with one funded Sky holding"
+    },
+    { "action": "scroll", "selector": ".ww-main", "top": "end" },
+    {
+      "action": "screenshot",
+      "file": "savings-cards.png",
+      "state": "The cards under the Savings card"
+    },
+    { "action": "scroll", "selector": ".ww-main", "top": 0 },
+    { "action": "click", "role": "button", "name": "Select account", "exact": true },
+    { "action": "screenshot", "file": "accounts.png", "state": "Account menu with both balances" },
+    {
+      "action": "press",
+      "role": "button",
+      "name": "Select account",
+      "exact": true,
+      "key": "Escape"
+    },
+    { "action": "click", "role": "button", "name": "Add to Savings", "exact": true },
+    { "action": "fill", "label": "Amount to move", "value": "1" },
+    { "action": "waitFor", "selector": "dialog button:has-text(\"Review\"):enabled" },
+    { "action": "screenshot", "file": "move-amount.png", "state": "Move in, amount priced" },
+    { "action": "click", "role": "button", "name": "Review", "exact": true },
+    { "action": "waitFor", "role": "checkbox" },
+    { "action": "screenshot", "file": "move-review.png", "state": "Move in, review with the terms" }
+  ],
+  "finalScreenshot": false
+}

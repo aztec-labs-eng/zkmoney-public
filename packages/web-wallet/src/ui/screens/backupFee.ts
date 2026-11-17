@@ -10,7 +10,7 @@ import { formatUnits } from "viem"
 import { recoveryCopy } from "../../features/backupPasskey/backupPasskeyCopy"
 import { fmt } from "../../lib/fmt"
 import rowCopy from "../activity/ActivityRow.copy"
-import { usdFigure } from "../format"
+import { toCents, usdFigure } from "../format"
 import copy from "./WithdrawalDetailModal.copy"
 
 /**
@@ -49,10 +49,17 @@ export function backupFeeStatus({
     : undefined
 }
 
+/** A backup passkey fee's hold in dollars; none below a cent, as when the funding paid only the fee. */
+export function backupHold(fee: BackupFee, decimals: number): string | undefined {
+  return toCents(fee.hold, decimals, false) > 0n
+    ? usdFigure(formatUnits(fee.hold, decimals))
+    : undefined
+}
+
 /** A backup passkey fee row's line in place of its time: the hold, until it is back. */
-export function backupHoldLine(fee: BackupFee, decimals: number): string {
-  const amount = usdFigure(formatUnits(fee.hold, decimals))
-  return fmt(fee.returned ? rowCopy.hold.returned : rowCopy.hold.held, { amount })
+export function backupHoldLine(fee: BackupFee, decimals: number): string | undefined {
+  const amount = backupHold(fee, decimals)
+  return amount && fmt(fee.returned ? rowCopy.hold.returned : rowCopy.hold.held, { amount })
 }
 
 /** The note a backup passkey fee's sheet shows while something is left to explain. */
@@ -71,10 +78,9 @@ export function backupNote({
 }): string | undefined {
   if (record.phase === "failed") return copy.backup.failed
   if (exit) return copy.backup.finishYourself
-  if (fee && !fee.returned)
-    return fmt(copy.backup.heldNote, {
-      amount: usdFigure(formatUnits(fee.hold, record.tokenDecimals)),
-    })
-  if (fee || added || (!running && WITHDRAWAL_TERMINAL_PHASES.has(record.phase))) return undefined
+  const held = fee && !fee.returned ? backupHold(fee, record.tokenDecimals) : undefined
+  if (held) return fmt(copy.backup.heldNote, { amount: held })
+  if (fee?.returned || added || (!running && WITHDRAWAL_TERMINAL_PHASES.has(record.phase)))
+    return undefined
   return copy.backup.adding
 }

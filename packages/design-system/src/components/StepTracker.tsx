@@ -24,7 +24,7 @@ function StepMark({ state, failed }: Pick<TrackerStep, "state" | "failed">) {
   return (
     <span className="zkm-step-tracker__mark" aria-hidden>
       {state === "done" ? (
-        <Icon name="check-circle-fill" size={24} color="var(--accent-green)" />
+        <Icon name="check-micro" size={16} />
       ) : state === "current" ? (
         <ProgressSpinner
           size={24}

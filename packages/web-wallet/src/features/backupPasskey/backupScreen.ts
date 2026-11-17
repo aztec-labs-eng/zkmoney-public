@@ -143,10 +143,10 @@ export type BackupStage =
   | "installing"
   | "moving"
 
-/** Main Account's l2 token, and Savings' where the deployment has Savings. */
+/** Main Account's l2 token, and the share token of each holding the deployment has. */
 export interface MoveTokens {
   main: string
-  savings?: string
+  savings: readonly string[]
 }
 
 /**
@@ -279,12 +279,18 @@ export type BackupScreen =
       device?: UserAgentInfo
       busy: boolean
     }
-  /** A3: where the backup lives. */
-  | { id: "place"; place: BackupAddOptions; device?: UserAgentInfo; busy: boolean }
+  /** A3: where the backup lives; `opened` is the option it opened on. */
+  | {
+      id: "place"
+      place: BackupAddOptions
+      opened: BackupAddChoice
+      device?: UserAgentInfo
+      busy: boolean
+    }
   /** B1: what holds the add. */
   | { id: "blocked"; blocks: readonly EntryBlock[] }
   /** B1 when a short balance is all that holds the add: the funding it needs, and the balance. */
-  | { id: "lowBalance"; funding: BackupFundingSplit; have: bigint }
+  | { id: "lowBalance"; need: bigint; have: bigint }
   /** B2: entered from A1, or raised over the step a missing route stopped. */
   | { id: "unavailable"; under?: BackupScreen; failure?: BackupFailure }
   /** B3: a read failed. `cancelled` as on the key list, which the read stopped. */
@@ -366,6 +372,9 @@ export type RotationScreen = Extract<
   { id: "approve" | "adding" | "finish" | "done" | "recovery" | "failed" }
 >
 
+/** Where a dropped attempt was dropped from: its Cancel, a failure sheet, or checking the keys. */
+export type CancelFrom = "cancel" | "failure_sheet" | "check_passkeys"
+
 /** What a screen's taps do; the host runs each and keeps its failure. */
 export interface BackupActions {
   /** Creates the backup passkey where `choice` says, and saves the attempt. */
@@ -383,9 +392,10 @@ export interface BackupActions {
   retryMove(): void
   /** Asks the driver about the record again now. */
   check(): void
-  cancel(): void
+  /** Drops the saved attempt; `from` is where, `cancel` by default. */
+  cancel(from?: CancelFrom): void
   /** A Cancel button's: asks before `cancel` drops the saved attempt. */
-  askCancel(): void
+  askCancel(from?: Exclude<CancelFrom, "check_passkeys">): void
   recover(): void
   /** Ends a finished attempt and reads the keys again. */
   finish(): void
@@ -536,8 +546,9 @@ function startScreen(
     if (add.screen === "unavailable") return { id: "unavailable" }
     return { id: "firstPasskey", keys: rowsOf(keys) }
   }
-  if (input.start === "place" && place)
-    return { id: "place", place, ...(device && { device }), busy: input.busy }
+  const opened = input.entry?.place?.selected
+  if (input.start === "place" && place && opened)
+    return { id: "place", place, opened, ...(device && { device }), busy: input.busy }
   const facts = typeof input.entry?.facts === "object" ? input.entry.facts : undefined
   const tip = facts ? openingTip(input, facts) : 0n
   const cost: IntroCost | undefined = facts?.quote && {
@@ -558,11 +569,11 @@ function startScreen(
 }
 
 /** B1, or its balance sheet when a short balance is all that holds the add. */
-function blockedScreen(blocks: readonly EntryBlock[]): BackupScreen {
+export function blockedScreen(blocks: readonly EntryBlock[]): BackupScreen {
   const open = blocks.filter((block): block is OpenEntryBlock => !block.done)
   const only = open.length === 1 ? open[0] : undefined
   return only?.id === "balance"
-    ? { id: "lowBalance", funding: { sent: only.need, credited: only.hold }, have: only.have }
+    ? { id: "lowBalance", need: only.need, have: only.have }
     : { id: "blocked", blocks }
 }
 
@@ -712,6 +723,12 @@ export function selectAddStep(
   }
 }
 
+/** Settings' Passkeys badge: the add's tracker, else any saved add but a finished one the user left. */
+export function selectAddBadge(saved: BackupRotationState): "finishSetup" | "pending" | undefined {
+  if (selectAddStep(saved)) return "finishSetup"
+  return typeof saved === "object" && saved !== null && !dismissed(saved) ? "pending" : undefined
+}
+
 /**
  * The prompts step 4 still asks for. Paylinks are taken back before the move, whose parts are
  * counted only once it is planned.
@@ -719,6 +736,12 @@ export function selectAddStep(
 export function promptsLeft({ refunds, moved, out = 0 }: BackupProgress): number | "several" {
   if (refunds) return "several"
   return moved ? moved.total - moved.included - out : 1
+}
+
+/** Which line counts `left` prompts: `none` once the last one is out. */
+export function promptsLine(left: number | "several"): "none" | "one" | "count" | "several" {
+  if (left === "several") return "several"
+  return left > 1 ? "count" : left === 1 ? "one" : "none"
 }
 
 /** Whether the step offers Close, as what it waits on goes on without the sheet. */
@@ -1032,7 +1055,11 @@ function moveRows(
   }
   const is = (token: string, other?: string) => token.toLowerCase() === other?.toLowerCase()
   const kindOf = (token: string) =>
-    is(token, tokens.main) ? "main" : is(token, tokens.savings) ? "savings" : "other"
+    is(token, tokens.main)
+      ? "main"
+      : tokens.savings.some((share) => is(token, share))
+      ? "savings"
+      : "other"
   const next = nextSend(run.chunks)
   const links: BackupMoveRow[] =
     taken.length > 0 ? [{ kind: "links", count: taken.length, state: "done" }] : []

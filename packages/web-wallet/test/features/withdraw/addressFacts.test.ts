@@ -4,10 +4,16 @@
  */
 import { describe, expect, it, vi } from "vitest"
 import { getAddress, type Address } from "viem"
-import type { Contact, WithdrawalRecord } from "@obsidion/front-core"
+import type {
+  BridgeInRecord,
+  Contact,
+  SipaDeposit,
+  WithdrawalRecord,
+} from "@obsidion/front-core"
 import {
   addressFacts,
   l1AddressActivities,
+  selectDepositFunders,
   verdictFromFacts,
   type AddressFacts,
   type FreshAddressVerdict,
@@ -45,6 +51,12 @@ const contact =
 const att = contact("deposit-attested")
 const sav = contact("saved-recipient")
 
+const dep = (extra: Partial<SipaDeposit> = {}) =>
+  ({ fundingFromAddress: TARGET, ...extra } as SipaDeposit)
+
+const bri = (status: BridgeInRecord["status"] = "filled", extra: Partial<BridgeInRecord> = {}) =>
+  ({ depositor: TARGET, status, ...extra } as BridgeInRecord)
+
 type Client = ReturnType<typeof cl>
 /** An Error in place of a list is a store that did not load. */
 const rows = <T>(list: T[] | Error) =>
@@ -53,10 +65,18 @@ const deps = (
   client: Client = cl(),
   w: WithdrawalRecord[] | Error = [],
   c: Contact[] | Error = [],
-) => ({ client, w, c })
-const readFacts = async (address: Address, { client, w, c }: ReturnType<typeof deps>) => {
+  s: SipaDeposit[] | Error = [],
+  b: BridgeInRecord[] = [],
+) => ({ client, w, c, s, b })
+const readFacts = async (address: Address, { client, w, c, s, b }: ReturnType<typeof deps>) => {
   const activity = await l1AddressActivities(testQuery(), () => client)(address).read()
-  return addressFacts(address, activity, undefined, rows(w), rows(c))
+  const funders = selectDepositFunders(
+    s instanceof Error
+      ? { records: [], loaded: true, failed: true }
+      : { records: s, loaded: true, failed: false },
+    { records: b, hydrated: true },
+  )
+  return addressFacts(address, activity, undefined, rows(w), rows(c), funders)
 }
 
 const FRESH: AddressFacts = {
@@ -132,6 +152,20 @@ describe("addressFacts", () => {
     ["getCode down, nonce 2", "history", deps({ ...cl(2), getCode: down() })],
     ["a store throws, nothing else", "unknown", deps(cl(), [], LOCKED)],
     ["records throw, attested contact", "linked-deposit", deps(cl(), LOCKED, [att()])],
+    ["deposits throw, nothing else", "unknown", deps(cl(), [], [], LOCKED)],
+    // deposit records
+    ["funded a deposit", "linked-deposit", deps(cl(3), [rec()], [], [dep()])],
+    ["relayed a bridge fill", "fresh", deps(cl(), [], [], [dep({ funding: "bridge" })])],
+    ["funded another deposit", "fresh", deps(cl(), [], [], [dep({ fundingFromAddress: OTHER })])],
+    // bridge-ins
+    ["sent a bridge fill", "linked-deposit", deps(cl(), [], [], [], [bri()])],
+    ["sent a bridge-in still pending", "linked-deposit", deps(cl(), [], [], [], [bri("pending")])],
+    ["a bridge-in that never left", "fresh", deps(cl(), [], [], [], [bri("failed")])],
+    [
+      "bridged to someone else's deposit",
+      "fresh",
+      deps(cl(), [], [], [], [bri("filled", { pays: {} as BridgeInRecord["pays"] })]),
+    ],
     // local filters
     ["tombstoned contact", "fresh", deps(cl(), [], [att({ deletedAt: 10 })])],
     ["revived contact", "linked-deposit", deps(cl(), [], [att({ deletedAt: 10, lastUsedAt: 20 })])],

@@ -150,7 +150,8 @@ type RailRoutes = {
 /**
  * The rails the session binds: Sky's, and the executor's only when `listed` has a vault on it or
  * the account `holdsVault`, so a session with neither builds no executor port and makes no executor
- * read. Only a listed holding takes a move in: an unlisted vault's funds can only leave.
+ * read. The executor swaps Sky's holdings that have a view on it. Only a listed holding takes a
+ * move in: an unlisted vault's funds can only leave.
  */
 export function moveRails(
   holdings: readonly Holding[],
@@ -162,23 +163,28 @@ export function moveRails(
   const rails = [bindRail({ routes: routes.sky(), holdings: holdings.filter(isSky), listed: ids })]
   if (listed.some(isVault) || holdsVault)
     rails.push(
-      bindRail({ routes: routes.executor(), holdings: holdings.filter(isVault), listed: ids }),
+      bindRail({
+        routes: routes.executor(),
+        holdings: holdings.filter(isVault),
+        vaultSwapOnly: holdings.filter(isSky).flatMap((h) => h.executorView ?? []),
+        listed: ids,
+      }),
     )
   return rails
 }
 
-/** Whether the account has an unfinished move on, or shares of, one of `vaults`. */
+/**
+ * Whether the account has an unfinished move on the executor, a swap out of Sky among them, or
+ * shares of one of `vaults`.
+ */
 const holdsVault = (
   vaults: readonly ExecutorHolding[],
   moves: readonly MoveRecord[],
   balances: RecordSet<BalanceEntry>,
   scope: string,
 ) =>
-  vaults.some(
-    (vault) =>
-      moves.some((move) => move.holdingId === vault.id && !isMoveSettled(move)) ||
-      (heldShares(balances, scope, vault.l2Token) ?? 0n) > 0n,
-  )
+  moves.some((move) => move.rail === "executor" && !isMoveSettled(move)) ||
+  vaults.some((vault) => (heldShares(balances, scope, vault.l2Token) ?? 0n) > 0n)
 
 /** Builds a port once, on first use. */
 const once = <T>(build: () => T): (() => T) => {
@@ -188,7 +194,7 @@ const once = <T>(build: () => T): (() => T) => {
 
 /**
  * `moveRails`, rebound when whether the account holds a vault changes: a vault the profile stops
- * listing keeps its rail while a move on it is unfinished or its shares are held. `sighted` binds it
+ * listing keeps its rail while a move on the executor is unfinished or its shares are held. `sighted` binds it
  * too when the deployment has a vault, so a fresh device's replay rebuilds the move.
  */
 export function liveMoveRails(
@@ -278,7 +284,8 @@ function browserAccount(
       direction === "out" && holding
         ? await bestEffort("unknown", page.chain.holdingPrice(holding).read())
         : undefined
-    const summary = moveSummary(direction, amount, price)
+    const vaultSwapping = request.intoHoldingId !== undefined
+    const summary = moveSummary(vaultSwapping ? "vaultSwap" : direction, amount, price)
     const input = { operationId: request.operationId, flow: "savings" as const, summary }
     return runOperation(session, input, async (op) => {
       const sourceToken = await tokenOf(source)
@@ -305,7 +312,7 @@ function browserAccount(
         record: {
           recipient: request.target,
           recipientProvenance: "saved-recipient",
-          recipientAlias: direction === "in" ? "Savings" : "Main Account",
+          recipientAlias: direction === "in" || vaultSwapping ? "Savings" : "Main Account",
           amount: formatUnits(amount, tokenInfo.decimals),
           rawAmount: amount.toString(),
           relayerTip: request.releaseTip.toString(),
