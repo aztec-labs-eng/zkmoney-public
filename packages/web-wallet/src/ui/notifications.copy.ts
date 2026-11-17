@@ -25,6 +25,7 @@ export default {
     arrived: "{amount} arrived",
     tapForDetails: "Tap to view details",
     fromSavings: "From Savings",
+    switching: "Switching vault",
     eth: "{amount} ETH",
   },
   bridgeIn: {

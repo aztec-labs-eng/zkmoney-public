@@ -1,0 +1,101 @@
+/* The account pill on Home and its menu. */
+:global(.ww-shell) .switcher {
+  position: relative;
+}
+:global(.ww-shell) .trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-hairline);
+  background: rgba(111, 162, 255, 0.16);
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 500;
+}
+:global(.ww-shell) .trigger[aria-expanded="true"] {
+  --ink-rgb: var(--on-brand-ink-rgb);
+  --ink: rgb(var(--ink-rgb));
+  --text-primary: var(--on-brand-text-primary);
+  --text-secondary: var(--on-brand-text-secondary);
+  color: var(--text-primary);
+  border-color: transparent;
+  background: linear-gradient(110deg, #a600ff, #009cff) border-box;
+}
+.menu {
+  position: absolute;
+  top: calc(100% + 12px);
+  left: 0;
+  z-index: 20;
+  width: min(374px, calc(100vw - 64px));
+  padding: 12px;
+  box-sizing: border-box;
+  border-radius: var(--radius-12);
+  border: 1px solid rgba(var(--ink-rgb), 0.14);
+  background: var(--ww-surface-menu);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+}
+.menu > small {
+  display: block;
+  padding-bottom: 10px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-hairline);
+}
+:global(.ww-shell) .menu > button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 8px;
+  margin-top: 8px;
+  border-radius: 9px;
+  color: inherit;
+  text-align: left;
+}
+:global(.ww-shell) .menu > button[aria-selected="true"],
+:global(.ww-shell) .menu > button:hover {
+  background: var(--surface-card);
+}
+.menu button > span:nth-child(2) {
+  display: grid;
+  gap: 2px;
+}
+.menu small {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.menu strong {
+  margin-left: auto;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.check {
+  width: 14px;
+  color: var(--accent-green);
+}
+.avatar {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(130deg, #a600ff, #009cff);
+  color: #fff;
+  font-weight: 600;
+}
+.total {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding: 10px 8px 0;
+  border-top: 1px solid var(--border-hairline);
+  color: var(--text-secondary);
+}
+.total b {
+  color: var(--text-primary);
+}

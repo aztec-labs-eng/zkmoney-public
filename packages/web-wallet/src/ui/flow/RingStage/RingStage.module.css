@@ -134,6 +134,11 @@
   background: rgba(var(--ink-rgb), 0.06);
   color: var(--text-primary);
 }
+.noteLines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
 /* The tone's sign: a warning sign or a blinking dot, cross-faded in one slot. */
 .mark {
   display: grid;

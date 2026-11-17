@@ -5,6 +5,7 @@ import {
   holdingEarned,
   holdingEarnedPending,
   holdingLedger,
+  lineMoves,
   shareDust,
 } from "../../src/engine/holdingLedger"
 import type { LedgerMove } from "../../src/engine/holdingLedger"
@@ -209,6 +210,43 @@ describe("holdingLedger", () => {
     )
     expect(ledger).toMatchObject({ counted: 2, shares: 180n * ONE, basis: (250n * ONE * 3n) / 4n })
     expect(holdingEarned(ledger, 200n * ONE, 180n * ONE, 18)).toBe(200n * ONE - (750n * ONE) / 4n)
+  })
+
+  it("counts a swap out of its source once its burn is mined, and into its destination at what that vault took, so Earned restarts", () => {
+    const moveIn: LedgerMove = {
+      ...replayedIn,
+      holdingId: "a",
+      quote: { conversionOut: 260n * ONE },
+    }
+    const sent: LedgerMove = {
+      id: "s",
+      holdingId: "a",
+      intoHoldingId: "b",
+      direction: "out",
+      amount: 120n * ONE,
+      phase: "burned",
+      withdrawalLocalId: "w",
+      startTime: 2,
+    }
+    const landed: LedgerMove = {
+      ...sent,
+      phase: "claimed",
+      assets: 133n * ONE,
+      quote: { conversionOut: 131n * ONE },
+      deposit: { amount: 125n * ONE, at: 3 },
+    }
+    const burns = new Map([["w", { phase: "done", minedAt: 2, startTime: 2 } as const]])
+    const line = (moves: LedgerMove[], ids: string[]) => holdingLedger(lineMoves(moves, ids), burns)
+
+    expect(line([moveIn, sent], ["a"])).toMatchObject({ shares: 120n * ONE, basis: 130n * ONE })
+    expect(line([moveIn, sent], ["b"])).toMatchObject({ counted: 0, shares: 0n, basis: 0n })
+    const into = line([moveIn, landed], ["b"])
+    expect(into).toMatchObject({ counted: 1, shares: 125n * ONE, basis: 133n * ONE })
+    expect(holdingEarned(into, 133n * ONE, 125n * ONE, 18)).toBe(0n)
+    expect(line([moveIn, landed], ["a", "b"])).toMatchObject({
+      shares: 245n * ONE,
+      basis: 263n * ONE,
+    })
   })
 
   it("prices a move in at the vault's figure over its quote's, and never counts a dropped move", () => {

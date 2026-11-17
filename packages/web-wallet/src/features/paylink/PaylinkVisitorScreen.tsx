@@ -27,7 +27,6 @@ import { SwapExitModal } from "../withdraw/SwapExitModal"
 import { swapExitReasonFor, type SwapExitReason } from "@obsidion/front-core"
 import { WithdrawalExitModal } from "../withdraw/WithdrawalExitModal"
 import { InvitationChrome } from "../onboarding/InvitationChrome"
-import type { BootPage } from "../../ui/PxeBoot"
 import {
   clearTicketSignup,
   peekTicketSignup,
@@ -37,7 +36,6 @@ import {
 } from "./claimStash"
 import { tabStash } from "../../platform/storage/tabStash"
 import { useGoldenTicketOffer } from "./goldenTicketOffer"
-import type { GoldenTicketOffer } from "./ticketOffer"
 import { ticketKnownSpent } from "./ticketSpent"
 import { PaylinkOnboardingScreen } from "./PaylinkOnboardingScreen"
 import { ticketSignupCommitted, ticketSignupResumable } from "./ticketContinuation"
@@ -487,42 +485,6 @@ export function PaylinkVisitorScreen({
 
 const ACCOUNT_CHECKING_NOTE = "Checking what this link pays for…"
 const EXTERNAL_CHECKING_NOTE = "Checking availability…"
-
-/**
- * The page before any of its reads, as the wallet first renders it: shown while the wallet starts,
- * so it paints before the PXE without looking different once the page itself takes over. Taps that
- * need the wallet wait for it.
- */
-export function PaylinkVisitorPending({
-  link,
-  offer,
-  bell,
-  onLogIn,
-  page,
-}: {
-  link: PaymentLink
-  /** The network's ticket offer, once read. */
-  offer: GoldenTicketOffer | null | undefined
-  bell: ReactNode
-  onLogIn: () => void
-  page: BootPage
-}) {
-  return (
-    <InvitationChrome actions={bell} page={page}>
-      <div className="ww-invite__content ww-invite__content--landing ww-invite__content--visitor">
-        <VisitorSummary link={link} statusSettled={false} noVoucher={false} />
-        {link.status === "unclaimed" && (
-          <VisitorChoices
-            privateFlag={offer !== undefined}
-            account={{ disabled: true, pending: true, note: ACCOUNT_CHECKING_NOTE }}
-            external={{ disabled: true, pending: true, note: EXTERNAL_CHECKING_NOTE }}
-            onLogIn={onLogIn}
-          />
-        )}
-      </div>
-    </InvitationChrome>
-  )
-}
 
 /** What the link pays, or why it no longer can, or the cash-out this browser made with it. */
 function VisitorSummary({

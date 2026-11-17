@@ -1,0 +1,72 @@
+{
+  "scenario": "fresh",
+  "bootstrap": "/savings?demo=fresh&flowFixture=success&savingsFixture=skySwitch",
+  "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=skySwitch",
+  "ready": { "testId": "savings-balance" },
+  "steps": [
+    { "action": "waitFor", "selector": "[data-testid=savings-holdings][data-hydrated]" },
+    {
+      "action": "screenshot",
+      "file": "sky-switch-page.png",
+      "state": "Sky and a USDC vault that switch: the move out reads Move funds"
+    },
+    { "action": "click", "role": "button", "name": "Move funds", "exact": true },
+    { "action": "click", "testId": "move-change-from" },
+    { "action": "waitFor", "selector": "[role=listbox]" },
+    { "action": "click", "testId": "picker-fea-sky-capture" },
+    { "action": "fill", "label": "Amount to move", "value": "100" },
+    { "action": "click", "testId": "move-change-to" },
+    { "action": "waitFor", "selector": "[role=listbox]" },
+    {
+      "action": "screenshot",
+      "file": "sky-switch-from-sky-picker.png",
+      "state": "Move to from Sky: Main Account, then the USDC vault"
+    },
+    { "action": "click", "testId": "picker-fea-vault-capture" },
+    { "action": "waitFor", "selector": "dialog button:has-text(\"Review\"):enabled" },
+    {
+      "action": "screenshot",
+      "file": "sky-switch-from-sky.png",
+      "state": "From Sky to the USDC vault, in the transfer widget"
+    },
+    { "action": "click", "role": "button", "name": "Review", "exact": true },
+    { "action": "waitFor", "role": "checkbox" },
+    {
+      "action": "screenshot",
+      "file": "sky-switch-from-sky-review.png",
+      "state": "Review of a switch from Sky into the USDC vault"
+    },
+    {
+      "action": "goto",
+      "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=skySwitch"
+    },
+    { "action": "waitFor", "selector": "[data-testid=savings-holdings][data-hydrated]" },
+    { "action": "click", "role": "button", "name": "Move funds", "exact": true },
+    { "action": "click", "testId": "move-change-from" },
+    { "action": "waitFor", "selector": "[role=listbox]" },
+    { "action": "click", "testId": "picker-fea-vault-capture" },
+    { "action": "fill", "label": "Amount to move", "value": "100" },
+    { "action": "click", "testId": "move-change-to" },
+    { "action": "waitFor", "selector": "[role=listbox]" },
+    {
+      "action": "screenshot",
+      "file": "sky-switch-to-sky-picker.png",
+      "state": "Move to from the USDC vault: Main Account, then Sky"
+    },
+    { "action": "click", "testId": "picker-fea-sky-capture" },
+    { "action": "waitFor", "selector": "dialog button:has-text(\"Review\"):enabled" },
+    {
+      "action": "screenshot",
+      "file": "sky-switch-to-sky.png",
+      "state": "From the USDC vault to Sky, in the transfer widget"
+    },
+    { "action": "click", "role": "button", "name": "Review", "exact": true },
+    { "action": "waitFor", "role": "checkbox" },
+    {
+      "action": "screenshot",
+      "file": "sky-switch-to-sky-review.png",
+      "state": "Review of a switch from the USDC vault into Sky"
+    }
+  ],
+  "finalScreenshot": false
+}

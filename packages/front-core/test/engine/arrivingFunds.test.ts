@@ -124,16 +124,66 @@ describe("arrivingFunds", () => {
       netAmount: shares.toString(),
       claimLanded: { inboxIndex: "26", at: 500 },
     })
-    const at = (balanceReadAt: { main?: number; savings?: number }) =>
+    const at = (balanceReadAt: { main?: number; holdings?: ReadonlyMap<string, number> }) =>
       arrivingFunds({
         ...none,
         deposits: [landed],
-        savingsToken: SUSDS,
-        sharePrice: 2n * E18,
+        savingsTokens: new Map([[SUSDS, "fea-sky"]]),
+        holdingPrices: pricedAt({ "fea-sky": 2n * E18 }),
         balanceReadAt,
       })
-    expect(at({ main: 500 })).toEqual({ main: 0n, savings: 2n * shares })
-    expect(at({ savings: 500 })).toEqual({ main: 0n, savings: 0n })
+    expect(at({ main: 500 })).toEqual({
+      main: 0n,
+      savings: 2n * shares,
+      vaultSwapping: new Map(),
+      savingsInto: new Map([["fea-sky", 2n * shares]]),
+    })
+    expect(at({ holdings: new Map([["fea-sky", 500]]) })).toEqual({
+      main: 0n,
+      savings: 0n,
+      vaultSwapping: new Map(),
+      savingsInto: new Map(),
+    })
+  })
+
+  it("matches a share deposit to its holding by its token, whatever the holdings' rails", () => {
+    const OTHER = `0x${"b7".repeat(20)}`
+    const shares = 5n * E18
+    const landed = deposit({
+      phase: "pendingClaim",
+      tokenAddress: OTHER.toUpperCase().replace("0X", "0x"),
+      inboxIndex: "26",
+      netAmount: shares.toString(),
+      claimLanded: { inboxIndex: "26", at: 500 },
+    })
+    const at = (read: Record<string, number>, prices: Record<string, bigint>) =>
+      arrivingFunds({
+        ...none,
+        deposits: [landed],
+        savingsTokens: new Map([
+          [SUSDS, "fea-first"],
+          [OTHER, "fea-second"],
+        ]),
+        holdingPrices: pricedAt(prices),
+        balanceReadAt: { holdings: new Map(Object.entries(read)) },
+      })
+    const prices = { "fea-first": 2n * E18, "fea-second": 3n * E18 }
+    // Its own holding's price values it, and only its own holding's read holds it.
+    expect(at({}, prices)).toEqual({
+      main: 0n,
+      savings: 3n * shares,
+      vaultSwapping: new Map(),
+      savingsInto: new Map([["fea-second", 3n * shares]]),
+    })
+    expect(at({ "fea-first": 900 }, prices).savings).toBe(3n * shares)
+    expect(at({ "fea-second": 500 }, prices).savings).toBe(0n)
+    // Unknown while its own holding is unpriced: the first holding's price never stands in.
+    expect(at({}, { "fea-first": 2n * E18 })).toEqual({
+      main: 0n,
+      savings: 0n,
+      vaultSwapping: new Map(),
+      savingsInto: new Map(),
+    })
   })
 
   it("counts a migration from its burn, then from its deposit's own net, never both", () => {
@@ -153,6 +203,8 @@ describe("arrivingFunds", () => {
     expect(arrivingFunds({ ...none, burns: mined, moves: [move({})], holdingPrices })).toEqual({
       main: 0n,
       savings: quoted,
+      vaultSwapping: new Map(),
+      savingsInto: new Map([["fea-sky", quoted]]),
     })
     const landed = move({ phase: "depositSeen", deposit: deposited(760n * E18) })
     expect(arrivingFunds({ ...none, burns: mined, moves: [landed], holdingPrices }).savings).toBe(
@@ -162,9 +214,33 @@ describe("arrivingFunds", () => {
     const elsewhere = pricedAt({ "fea-other": E18 })
     for (const moves of [[move({})], [landed]])
       expect(
-        arrivingFunds({ ...none, burns: mined, moves, holdingPrices: elsewhere, sharePrice: E18 })
-          .savings,
+        arrivingFunds({ ...none, burns: mined, moves, holdingPrices: elsewhere }).savings,
       ).toBe(0n)
+  })
+
+  it("counts a swap in Savings, on the holding it leaves, at what its destination takes in, then at the shares it landed, at the destination's price", () => {
+    const vaultSwapped = move({ direction: "out", holdingId: "fea-a", intoHoldingId: "fea-b" })
+    const landed = {
+      ...vaultSwapped,
+      phase: "depositSeen" as const,
+      deposit: deposited(760n * E18),
+    }
+    const holdingPrices = pricedAt({ "fea-b": (105n * E18) / 100n })
+    const quoted = (79_937n * E18) / 100n
+    expect(arrivingFunds({ ...none, burns: mined, moves: [vaultSwapped], holdingPrices })).toEqual({
+      main: 0n,
+      savings: quoted,
+      vaultSwapping: new Map([["fea-a", quoted]]),
+      savingsInto: new Map([["fea-b", quoted]]),
+    })
+    expect(arrivingFunds({ ...none, burns: mined, moves: [landed], holdingPrices })).toMatchObject({
+      savings: 798n * E18,
+      vaultSwapping: new Map([["fea-a", 798n * E18]]),
+    })
+    const source = pricedAt({ "fea-a": E18 })
+    expect(
+      arrivingFunds({ ...none, burns: mined, moves: [vaultSwapped], holdingPrices: source }),
+    ).toEqual({ main: 0n, savings: 0n, vaultSwapping: new Map(), savingsInto: new Map() })
   })
 
   it("counts a move into a vault of a 6-decimal asset at dollars, at DEFAULT_DECIMALS", () => {
@@ -189,6 +265,8 @@ describe("arrivingFunds", () => {
     expect(arrivingFunds({ ...none, burns: mined, moves: [out] })).toEqual({
       main: 500n * E18,
       savings: 0n,
+      vaultSwapping: new Map(),
+      savingsInto: new Map(),
     })
     const landed = { ...out, phase: "depositSeen" as const, deposit: deposited(499n * E18) }
     expect(arrivingFunds({ ...none, burns: mined, moves: [landed] }).main).toBe(499n * E18)
@@ -216,19 +294,42 @@ describe("arrivingFunds", () => {
       expect(arrivingFunds({ ...none, moves, balanceReadAt: read }).main).toBe(0n)
   })
 
-  it("keeps a claim on its way until its balance is read after it", () => {
+  it("keeps a claim on its way until its own holding's balance is read after it", () => {
     const stored = move({ phase: "claimed", deposit: deposited(10n * E18), endTime: 500 })
-    const at = (savings?: number) =>
+    const at = (read: Record<string, number>) =>
       arrivingFunds({
         ...none,
         burns: mined,
         moves: [stored],
-        holdingPrices: pricedAt({ "fea-sky": E18 }),
-        balanceReadAt: { savings },
+        holdingPrices: pricedAt({ "fea-sky": E18, "fea-other": E18 }),
+        balanceReadAt: { holdings: new Map(Object.entries(read)) },
       }).savings
-    expect(at()).toBe(10n * E18)
-    expect(at(499)).toBe(10n * E18)
-    expect(at(500)).toBe(0n)
+    expect(at({})).toBe(10n * E18)
+    expect(at({ "fea-sky": 499 })).toBe(10n * E18)
+    expect(at({ "fea-sky": 500 })).toBe(0n)
+    // Another holding's read says nothing of this one's shares.
+    expect(at({ "fea-other": 900 })).toBe(10n * E18)
+  })
+
+  it("clears a claimed move into the only holding listed, a vault on the executor", () => {
+    const usdc = 10n * 10n ** 6n
+    const claimed = move({
+      holdingId: "fea-vault",
+      quote: { ...quote(10n * E18), conversionOut: usdc },
+      phase: "claimed",
+      deposit: deposited(10n * E18),
+      endTime: 500,
+    })
+    const at = (holdings: ReadonlyMap<string, number>) =>
+      arrivingFunds({
+        ...none,
+        burns: mined,
+        moves: [claimed],
+        holdingPrices: pricedAt({ "fea-vault": 10n ** 6n }, 6),
+        balanceReadAt: { main: 900, holdings },
+      }).savings
+    expect(at(new Map())).toBe(10n * E18)
+    expect(at(new Map([["fea-vault", 600]]))).toBe(0n)
   })
 
   it("stops counting a move once it is claimed, recovered, or its burn failed", () => {
@@ -287,18 +388,41 @@ describe("arrivingFunds beside an upgrade", () => {
         deposits: [swept({})],
         oldVersions: { main: 59n * E18, savings: 40n * E18 },
       }),
-    ).toEqual({ main: NET + 59n * E18, savings: 40n * E18 })
+    ).toEqual({
+      main: NET + 59n * E18,
+      savings: 40n * E18,
+      vaultSwapping: new Map(),
+      savingsInto: new Map(),
+    })
   })
 })
 
 describe("arrivingFunds during a backup passkey add", () => {
-  it("counts what the move still owes, Main as is and Savings' shares at their price", () => {
-    const backupMove = { main: 2n * E18, shares: 4n * E18 }
+  it("counts what the move still owes, Main as is and each holding's shares at its own price", () => {
+    const shares = new Map([
+      ["fea-sky", 4n * E18],
+      ["fea-vault", 10n * E18],
+    ])
+    const backupMove = { main: 2n * E18, shares }
     const oldVersions = { main: E18, savings: 0n }
-    expect(arrivingFunds({ ...none, oldVersions, backupMove, sharePrice: E18 / 2n })).toEqual({
+    const holdingPrices = new Map([
+      ...pricedAt({ "fea-sky": E18 / 2n }),
+      ...pricedAt({ "fea-vault": 1_100_000n }, 6),
+    ])
+    expect(arrivingFunds({ ...none, oldVersions, backupMove, holdingPrices })).toEqual({
       main: 3n * E18,
-      savings: 2n * E18,
+      savings: 2n * E18 + 11n * E18,
+      vaultSwapping: new Map(),
+      savingsInto: new Map([
+        ["fea-sky", 2n * E18],
+        ["fea-vault", 11n * E18],
+      ]),
     })
+    // A holding's shares count once it is priced.
+    expect(
+      arrivingFunds({ ...none, backupMove, holdingPrices: pricedAt({ "fea-sky": E18 / 2n }) })
+        .savings,
+    ).toBe(2n * E18)
     expect(arrivingFunds({ ...none, backupMove }).savings).toBe(0n)
   })
 })

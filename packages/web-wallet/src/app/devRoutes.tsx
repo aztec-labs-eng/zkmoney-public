@@ -1,11 +1,12 @@
 /**
  * Dev `/dev/mock/<area>/<name>`: a production screen opened where a demo page's mock starts it, on
  * the Page's fake reads and seeded records. `/dev/mock/<area>` links every mock. The demo seed reads
- * the same URL at boot, so each link loads the page afresh.
+ * the same URL at boot, so a move to another mock builds a new page for it.
  */
+import { createContext, useContext, type ReactNode } from "react"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import type { ChainIdentity } from "@obsidion/core/types"
-import { useParams } from "react-router-dom"
+import { useLinkClickHandler, useParams } from "react-router-dom"
 import { showReportableError } from "../errors/errorModal"
 import { useSession } from "../session/session"
 import { useOpened } from "../ui/useScreenFlow"
@@ -232,6 +233,9 @@ export function devMockRoute(
   return { area: match[1] as MockArea, name: match[2]!, query: new URLSearchParams(search) }
 }
 
+/** Builds the boot of the mock the location now names; a demo page's boot provides it. */
+export const MockFollow = createContext<(() => void) | undefined>(undefined)
+
 /** The mock the route names, or the list of its area's mocks. */
 export function DevMock({
   area,
@@ -255,7 +259,7 @@ export function DevMock({
   return <RequestLandingScreen node={node} chainIdentity={chainIdentity} start={screens.pay} />
 }
 
-/** A link to every mock of `area`, each loading the page afresh. */
+/** A link to every mock of `area`. */
 function MockList({ area }: { area: MockArea }) {
   const groups = Object.entries(LISTS[area]).reduce<Record<string, [string, MockListing][]>>(
     (acc, entry) => ({ ...acc, [entry[1].group]: [...(acc[entry[1].group] ?? []), entry] }),
@@ -271,9 +275,7 @@ function MockList({ area }: { area: MockArea }) {
           <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.8 }}>
             {entries.map(([name, def]) => (
               <li key={name}>
-                <a href={`/dev/mock/${area}/${name}`} style={{ color: "var(--accent-gold)" }}>
-                  {name}
-                </a>{" "}
+                <MockLink to={`/dev/mock/${area}/${name}`}>{name}</MockLink>{" "}
                 <span style={{ color: "var(--text-secondary)" }}>· {def.about}</span>
               </li>
             ))}
@@ -281,5 +283,26 @@ function MockList({ area }: { area: MockArea }) {
         </section>
       ))}
     </div>
+  )
+}
+
+/** Moves in-app and builds the mock's page; with no demo boot to follow, loads the page afresh. */
+function MockLink({ to, children }: { to: string; children: ReactNode }) {
+  const follow = useContext(MockFollow)
+  const navigate = useLinkClickHandler(to)
+  return (
+    <a
+      href={to}
+      style={{ color: "var(--accent-gold)" }}
+      onClick={
+        follow &&
+        ((event) => {
+          navigate(event)
+          if (event.defaultPrevented) follow()
+        })
+      }
+    >
+      {children}
+    </a>
   )
 }

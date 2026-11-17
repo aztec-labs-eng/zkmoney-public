@@ -612,8 +612,6 @@ describe("moveExitOffer", () => {
     expect(moveExitOffer(item(pending, proven), both, 1)).toBeNull()
     expect(moveExitOffer(item(dropped), recoverOnly, later)).toBe("recover")
     expect(moveExitOffer(item(dropped), neither, later)).toBeNull()
-    const waiting = { kind: "delayed", reason: "vaultFull", dropped: false } as const
-    expect(moveExitOffer(item(waiting), both, later)).toBeNull()
   })
 
   it("offers the run once a release funded the escrow and nobody ran it within a swap's wait", () => {

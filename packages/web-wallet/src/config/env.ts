@@ -9,6 +9,7 @@ import {
   type WalletSourceRollupIssue,
   type Features,
   type ConfigVersion,
+  type HoldingWords,
   type WalletProfileBoot,
 } from "@obsidion/config-client"
 import { DEMO_ROLLUP } from "../platform/storage/rollupStorage"
@@ -39,6 +40,9 @@ export type EndpointSource = "settings" | "default"
 
 /** An asset the profile lists: an oxide deployment in the same manifest as the wallet token's. */
 export type ProfileAsset = NonNullable<ConfigVersion["assets"]>[number]
+export type { HoldingWords }
+/** What the wallet calls each holding, by holding id. */
+export type HoldingCopy = Readonly<Record<string, HoldingWords>>
 
 /** Who chose an endpoint's URL, and whether it normalizes to the build/profile default's. */
 export interface EndpointProvenance {
@@ -147,6 +151,8 @@ export type WebWalletConfig = {
   holdings: readonly string[] | undefined
   /** What the profile says each portal is. Undefined: the manifest's features split the rows. */
   portals: { main: readonly string[]; savings: readonly SavingsPortal[] } | undefined
+  /** Empty where the profile carries none. */
+  holdingCopy: HoldingCopy
 }
 
 /** Viem chain for an L1 chain id; unknown ids get a generic local-chain shape. */
@@ -316,6 +322,7 @@ export type BaseWebWalletConfig = Omit<
   | "xmtpEnv"
   | "holdings"
   | "portals"
+  | "holdingCopy"
 >
 
 export function loadConfig(
@@ -469,6 +476,7 @@ function mergeProfileConfig(
     features,
     holdings: boot.version.holdings,
     portals: boot.version.portals,
+    holdingCopy: boot.version.holdingCopy ?? {},
   }
 }
 

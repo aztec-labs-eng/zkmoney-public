@@ -6,6 +6,7 @@ import { useSession } from "../../../../session/session"
 import { HIDDEN_BALANCE, usdAtomicFloor } from "../../../../ui/format"
 import { lockedUntil } from "../../../migration/residualNotes"
 import { formatDepositDue } from "../../../registration/depositAmounts"
+import { reportBlockAction } from "../../backupFunnel"
 import type { EntryBlock, OpenEntryBlock } from "../../backupPasskeyEntry"
 import type { BackupScreenProps } from "../../backupScreen"
 import copy from "./BlockedScreen.copy"
@@ -76,7 +77,15 @@ export function BlockedScreen({ screen, actions }: BackupScreenProps<"blocked">)
               detail={detail}
               {...(action &&
                 to &&
-                actions.act && { action: { label: action, onClick: () => actions.act?.(to) } })}
+                actions.act && {
+                  action: {
+                    label: action,
+                    onClick: () => {
+                      reportBlockAction(item.id, to)
+                      actions.act?.(to)
+                    },
+                  },
+                })}
             />
           )
         })}

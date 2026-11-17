@@ -12,8 +12,7 @@
  *      fixed number of requests however many SIPAs,
  *   4. per unclaimed sweep, save its claim inputs, its time and its fee on the record.
  *
- * The first `Transfer(to = sipa)` stamps the funding attribution (funder address + tx) and fires
- * the deposit-attested contact hook.
+ * The first `Transfer(to = sipa)` stamps the funding attribution (funder address + tx).
  *
  * Every known SIPA is observed every pass, settled or not, since a claimed SIPA can be paid again;
  * claims dedup by inbox index. The relayer sweeps an address once per publish, so new funds on a
@@ -151,13 +150,6 @@ function isInFlight(record: SipaDeposit | null, now: number): boolean {
   return now - record.startTime < FRESH_WINDOW_MS
 }
 
-/** The funder proven by the on-chain funding transfer — the legacy gateway hook's shape. */
-export interface SipaFundingWalletDetected {
-  address: Address
-  walletName?: string
-  lastUsedAt?: number
-}
-
 /**
  * What a wallet can say about a registration SIPA's pricing:
  *
@@ -218,12 +210,6 @@ export interface SipaScanDeps {
     records: readonly SipaDeposit[],
     salts: ReadonlySet<string>,
   ) => Promise<readonly ResolverCandidate[]>
-  /**
-   * Fired once per SIPA when funding attribution first lands — the app-level
-   * hook for saving deposit-attested contacts. Wallet identity fields are set
-   * only when the funder matches the record's connected-session wallet.
-   */
-  onFundingWalletDetected?: (params: SipaFundingWalletDetected) => Promise<void>
   /**
    * The schedule a registration SIPA's sweep is priced against, for the addresses this wallet
    * registered. Without it a deposit short of the schedule's floor reads as sweepable and is
@@ -944,13 +930,13 @@ function markForRescan(deps: PassDeps, sipaAddress: Address, fromBlock: bigint) 
   }
 }
 
-/** Stamp the funder + funding tx off the first observed `Transfer(to = sipa)` and fire the contact hook. */
-async function attributeFunding(
+/** Stamps the funder and funding tx off the first observed `Transfer(to = sipa)`. */
+function attributeFunding(
   deps: PassDeps,
   sipaAddress: Address,
   run: SyncRunContext,
   inflows: readonly TokenTransfer[],
-): Promise<bigint | undefined> {
+): bigint | undefined {
   const found = firstFunding(
     run.fundingTokens.map((token) =>
       inflows
@@ -983,19 +969,9 @@ async function attributeFunding(
       patch.fee = feeOnRow(deps, current, current.intent, row, undefined)
     }
   }
-  // Backfill the display identity so third-party deposits thread under a
-  // contact; a connected-session identity is never overwritten.
+  // A connected-session identity is never overwritten.
   if (!current?.walletAddress) patch.walletAddress = first.from
   observe(deps, sipaAddress, patch)
-
-  if (deps.onFundingWalletDetected) {
-    const sessionMatch = current?.walletAddress?.toLowerCase() === first.from.toLowerCase()
-    await deps.onFundingWalletDetected({
-      address: first.from,
-      walletName: sessionMatch ? current?.walletName : undefined,
-      lastUsedAt: Date.now(),
-    })
-  }
   return first.blockNumber
 }
 
@@ -1596,11 +1572,7 @@ async function scanOne(due: DueScan): Promise<void> {
   const fundingBlock =
     record?.fundingFromAddress || !observed.inflows
       ? undefined
-      : await attributeFunding(deps, sipaAddress, run, observed.inflows).catch((err) => {
-          run.incomplete()
-          logger.warn("[sipaScan] funding attribution failed (will retry next sync):", err)
-          return undefined
-        })
+      : attributeFunding(deps, sipaAddress, run, observed.inflows)
   const sweeps = sweepsOf(due)
 
   // A deposit swept before the wallet's first scan skips the funding probe entirely, so the sweep

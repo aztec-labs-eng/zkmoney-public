@@ -42,6 +42,8 @@ export interface SessionValues {
   sponsoredAllowance?: unknown
   fasterOffer?: unknown
   backupAddRelease?: unknown
+  vaultSwapTargets?: unknown
+  vaultSwapQuote?: unknown
 }
 
 /** Values the session holds as they are, not as services. */
@@ -64,6 +66,8 @@ const PLAIN = new Set([
   "sponsoredAllowance",
   "fasterOffer",
   "backupAddRelease",
+  "vaultSwapTargets",
+  "vaultSwapQuote",
 ])
 
 /** Services the session builds once something asks: a value stands as the one each builds. */

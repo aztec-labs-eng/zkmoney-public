@@ -3,7 +3,6 @@
 }
 .rows :global(.ww-deposit-terms) {
   gap: 0;
-  overflow: hidden;
   border-radius: 12px;
   background: rgba(var(--ink-rgb), 0.05);
 }

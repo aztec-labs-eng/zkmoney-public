@@ -138,11 +138,32 @@ afterEach(() => {
 
 const { openTestSession } = await import("../../../support/session")
 const { closeSession } = await import("../../../../src/session/session")
+let session: ReturnType<typeof openTestSession>
+// The account's lines: the listed holdings only.
 beforeEach(async () => {
-  openTestSession({
+  session = openTestSession({
     primed: { tuple: { withdrawalSubsidy: "0xsubsidy" } as never },
-    savingsLine: memoryStore({ price: { sharePrice: 105n * 10n ** 16n } }).readonly,
+    savingsLine: memoryStore({
+      lines: [
+        { line: { held: { underlying: "0xOther" } }, price: { sharePrice: 3n * 10n ** 18n } },
+        { line: { held: { underlying: "0xShares" } }, price: { sharePrice: 105n * 10n ** 16n } },
+      ],
+      hydrated: true,
+    }).readonly,
   })
+  // Every holding the deployment prices: the listed ones, and one the profile no longer lists.
+  const priced = [
+    ["0xOther", 3n * 10n ** 18n],
+    ["0xShares", 105n * 10n ** 16n],
+    ["0xDelisted", 2n * 10n ** 18n],
+  ] as const
+  const value = priced.map(([underlying, sharePrice]) => ({
+    holding: { held: { underlying } },
+    sharePrice,
+  }))
+  const savingsPrices = memoryStore({ status: "ready", refreshing: false, value }).readonly
+  const page = { ...session.page, chain: { ...session.page.chain, savingsPrices } }
+  Object.defineProperty(session, "page", { configurable: true, value: page })
   await setIdentity({ handle: "brave-otter-42" })
 })
 
@@ -206,7 +227,13 @@ describe("withdrawing an old version's funds", () => {
 
   it("asks for another scan before it withdraws while Savings is unread", async () => {
     m.zk = { fee: vi.fn(async () => TIPS), run: vi.fn() }
-    m.extra = [{ source: { portal: "0xdown" }, savings: true, open: async () => ({}) }]
+    m.extra = [
+      {
+        source: { portal: "0xdown", underlying: "0xshares" },
+        savings: true,
+        open: async () => ({}),
+      },
+    ]
     await render()
     await press("Continue")
     await type(ADDRESS)
@@ -269,13 +296,23 @@ describe("withdrawing an old version's funds", () => {
 
   it("shows no gas figure when a source can't be read", async () => {
     m.zk = { fee: vi.fn(async () => TIPS), run: vi.fn() }
-    m.extra = [{ source: { portal: "0xdown" }, savings: true, open: async () => ({}) }]
+    m.extra = [
+      {
+        source: { portal: "0xdown", underlying: "0xshares" },
+        savings: true,
+        open: async () => ({}),
+      },
+    ]
     await render()
     expect(radio("Publicly").textContent).not.toContain("~$")
     m.extra = []
   })
 
-  const SAVINGS = { source: { portal: "0xsavings" }, savings: true, open: async () => ({}) }
+  const SAVINGS = {
+    source: { portal: "0xsavings", underlying: "0xshares" },
+    savings: true,
+    open: async () => ({}),
+  }
   const BOTH = {
     moving: { main: 10n * 10n ** 18n, savings: 10n * 10n ** 18n },
     tips: { main: 35n * 10n ** 16n, savings: 35n * 10n ** 16n },
@@ -312,6 +349,18 @@ describe("withdrawing an old version's funds", () => {
       m.l1 = { connect: vi.fn() }
     },
   )
+
+  it("prices shares the old version holds in a vault the profile no longer lists", async () => {
+    m.zk = { fee: vi.fn(async () => BOTH), run: vi.fn() }
+    m.extra = [{ ...SAVINGS, source: { portal: "0xsavings", underlying: "0xdelisted" } }]
+    await render()
+    await press("Continue")
+    await type(ADDRESS)
+    await tick()
+    await press("Continue")
+    expect(button("Confirm with passkey").disabled).toBe(false)
+    m.extra = []
+  })
 
   it("names the token in the banner when the gas is more than the balance", async () => {
     m.zk = { fee: vi.fn(async () => TIPS), run: vi.fn() }

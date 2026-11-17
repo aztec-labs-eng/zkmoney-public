@@ -129,9 +129,11 @@ import {
   sent,
   signedRecord,
   testRotations,
+  word,
 } from "../../support/backupAdd"
 import { openTestSession } from "../../support/session"
 import type { Session } from "../../../src/session/session"
+import { holdCopy } from "../../../src/features/backupPasskey/backupPasskeyCopy"
 import introCopy from "../../../src/features/backupPasskey/screens/IntroScreen/IntroScreen.copy"
 import keysCopy from "../../../src/features/backupPasskey/screens/KeysScreen/KeysScreen.copy"
 import { fmt } from "../../../src/lib/fmt"
@@ -141,6 +143,7 @@ const { PasskeysSheet } = await import("../../../src/ui/PasskeysSheet/PasskeysSh
 const BOOTSTRAP = `0x${"b0".repeat(20)}`
 const L2_ADDRESS = `0x${"12".repeat(32)}`
 const GENERATIONS = { kind: "generations" }
+const SWEEP = { index: "1", blockNumber: 90, blockHash: word(0x90), credited: "1400" }
 type Key = { qx: `0x${string}`; qy: `0x${string}` }
 const key = (fill: number): Key => ({
   qx: `0x${fill.toString(16).padStart(2, "0").repeat(32)}`,
@@ -366,12 +369,13 @@ describe("the Passkeys modal's start screens", () => {
     expect(start()).not.toBeNull()
   })
 
-  it("quotes the cost on A2, and the time once the release is read", async () => {
+  it("quotes the cost on A2 with no hold, and the time once the release is read", async () => {
     const quote = { total: (7n * DAI) / 10n, fixed: DAI / 2n, network: DAI / 5n }
     h.facts = { ...FACTS, fundingAmount: (21n * DAI) / 10n, quote }
     await mount()
     await walkTo("intro")
     expect(text()).toContain(fmt(introCopy.costValue, { amount: "$0.70" }))
+    expect(text()).not.toContain(holdCopy.label)
     // A minute to land, a 10 minute release, then two relayer pickups and the sweep's settle.
     const value = {
       landingSeconds: 60,
@@ -735,8 +739,11 @@ describe("the Passkeys modal's key read", () => {
     expect(start()?.disabled).toBe(false)
   })
 
-  it("reads the keys again once a finished backup is closed", async () => {
-    await rotations.put(signedRecord({ phase: "done", ...sent(5, { outcome: "swept" }) }))
+  it.each([
+    ["removed", {}],
+    ["kept while its sweep is watched", { sweep: SWEEP }],
+  ])("lists the keys once a finished backup is closed, its record %s", async (_, over) => {
+    await rotations.put(signedRecord({ phase: "done", ...sent(5, { outcome: "swept" }), ...over }))
     await mount()
     await flush(2)
     listKeys(2)
@@ -809,7 +816,7 @@ describe("the Passkeys sheet's sign-out", () => {
     h.flowDeps = flow
     await mount(
       <MemoryRouter>
-        <PasskeysSheet onClose={onClose} />
+        <PasskeysSheet from="settings_row" onClose={onClose} />
       </MemoryRouter>,
     )
     await flush()

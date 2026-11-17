@@ -9,6 +9,7 @@ import {
   type QueryState,
   type SavingsMoveEta,
   type SavingsMoveTiming,
+  savingsMoveEta,
   serviceStatus,
   useStore,
 } from "@obsidion/front-core"
@@ -57,8 +58,18 @@ export function useSavingsMoveTiming(): SavingsMoveTiming | undefined {
   return timing.status === "ready" ? timing.value : undefined
 }
 
+/** How long a move confirmed at `nowMs` takes, door to door, either way. */
+export const moveNowEta = (timing: SavingsMoveTiming, nowMs: number) =>
+  savingsMoveEta(
+    { phase: "burning", startTime: nowMs },
+    { phase: "submitting", startTime: nowMs },
+    timing,
+    nowMs,
+  )
+
+/** "about 25 min", to follow other words. */
+export const etaPhrase = (seconds: number): string => etaLabel(seconds).replace(/^About/, "about")
+
 /** "About 12 min left" while a leg counts down, "Usually about 25 min" for a typical duration. */
 export const savingsEtaCopy = (eta: SavingsMoveEta): string =>
-  eta.remaining
-    ? `${etaLabel(eta.seconds)} left`
-    : `Usually ${etaLabel(eta.seconds).replace(/^About/, "about")}`
+  eta.remaining ? `${etaLabel(eta.seconds)} left` : `Usually ${etaPhrase(eta.seconds)}`

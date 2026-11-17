@@ -29,7 +29,7 @@ export default {
   login: "Login",
   ownNode: "Using your own node?",
   endpoints: "Endpoints",
-  cantFind: "Can't find your account?",
+  forgotTag: "Forgot your tag?",
   notYours: "Not your account?",
   goBack: "Go back",
   typeTag: "Type your @tag",

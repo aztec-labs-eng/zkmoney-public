@@ -102,6 +102,8 @@ export function SettingsScreen() {
     | "features"
     | "name"
     | "passkeys"
+    // The Passkeys sheet, opened from the backup card.
+    | "backup"
     | "history"
   >()
   const tagChangeable = useRegistrationTagChangeable()
@@ -124,7 +126,7 @@ export function SettingsScreen() {
           <span className="ww-settings__domain">.zk.money</span>
         </div>
 
-        <SettingsBackupNudge onAdd={() => setModal("passkeys")} />
+        <SettingsBackupNudge onAdd={() => setModal("backup")} />
 
         <div className="ww-settings__banners">
           <button
@@ -366,7 +368,12 @@ export function SettingsScreen() {
         />
       )}
       {modal === "contracts" && <ContractAddressesModal onClose={() => setModal(undefined)} />}
-      {modal === "passkeys" && <PasskeysSheet onClose={() => setModal(undefined)} />}
+      {(modal === "passkeys" || modal === "backup") && (
+        <PasskeysSheet
+          from={modal === "backup" ? "settings_card" : "settings_row"}
+          onClose={() => setModal(undefined)}
+        />
+      )}
       {modal === "history" && <AccountHistorySheet onClose={() => setModal(undefined)} />}
       {modal === "allowance" && (
         <WalletAboutLimitsSheet

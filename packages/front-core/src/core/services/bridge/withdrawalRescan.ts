@@ -10,6 +10,7 @@
  */
 
 import { formatUnits, type Hash, type Hex } from "viem"
+import type { Holding } from "@obsidion/core/oxide"
 import { SkyRoute } from "@oxide/experiments/sky/sky_savings.js"
 import {
   acrossBridgeRoute,
@@ -20,6 +21,21 @@ import { syncCatchUp } from "../../../engine/catchUp"
 import { newWithdrawalLocalId, type Withdrawals } from "../../../engine/withdrawals"
 import type { OnNetwork } from "../../../types/networkStamp"
 import type { WithdrawalDeployment, WithdrawalRecord } from "./types"
+
+/**
+ * Whether a burn funds a Savings move: a Sky burn's memo names it, and a vault burn pays the move
+ * executor of one of the deployment's `holdings`.
+ */
+export const isMoveBurn = (
+  burn: Pick<ScannedWithdrawEvent, "sky" | "executor">,
+  holdings: readonly Holding[],
+): boolean =>
+  burn.sky !== undefined ||
+  holdings.some(
+    (holding) =>
+      holding.rail === "executor" &&
+      holding.executor.address.toLowerCase() === burn.executor.toLowerCase(),
+  )
 
 export interface WithdrawalRescanDeps {
   source: WithdrawEventSource

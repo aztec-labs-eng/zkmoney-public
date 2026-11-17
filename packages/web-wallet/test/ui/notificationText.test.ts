@@ -1,6 +1,12 @@
 // @vitest-environment node
 /** A bell entry names its sender as the activity row does, and quotes its figure in dollars. */
-import { truncateMiddle, type OperationRecord, type TokenTransaction } from "@obsidion/front-core"
+import {
+  truncateMiddle,
+  type NotificationEntry,
+  type OperationRecord,
+  type TokenTransaction,
+  type WithdrawalRecord,
+} from "@obsidion/front-core"
 import { describe, expect, it } from "vitest"
 import { operationIdOf, operationText } from "../../src/features/operations/operationEntries"
 import { fmt } from "../../src/lib/fmt"
@@ -65,6 +71,42 @@ describe("an operation's entry", () => {
     expect(notificationText({ about: { kind: "operation", record } })).toEqual(
       operationText(record),
     )
+  })
+})
+
+describe("a vault move's burn", () => {
+  const burn = (record: Partial<WithdrawalRecord>) =>
+    ({ localId: "w1", phase: "done", amount: "25", startTime: 0, ...record } as WithdrawalRecord)
+  const sky = (direction: "in" | "out") =>
+    burn({ skyMove: { direction } as WithdrawalRecord["skyMove"] })
+  const vault = burn({ vaultMove: { holdingId: "vault", nonce: "0x01" } })
+  const ended = (
+    record: WithdrawalRecord,
+    move?: { direction: "in" | "out"; intoHoldingId?: string },
+  ) =>
+    notificationText({
+      about: {
+        kind: "bridgeEnded",
+        item: { kind: "bridge.withdrawal", record },
+        outcome: "done",
+        migration: false,
+        ...(move ? { move } : {}),
+      } as NotificationEntry["about"],
+    })
+
+  it.each(["in", "out"] as const)(
+    "reads as a Sky move %s does, not as a withdrawal",
+    (direction) => {
+      const text = ended(vault, { direction })
+      expect(text).toEqual(ended(sky(direction)))
+      expect(text).not.toEqual(ended(burn({})))
+    },
+  )
+
+  it("reads a swap as neither a move to Main nor a withdrawal", () => {
+    const text = ended(vault, { direction: "out", intoHoldingId: "vault-b" })
+    expect(text.title).not.toEqual(ended(vault, { direction: "out" }).title)
+    expect(text.title).not.toEqual(ended(burn({})).title)
   })
 })
 

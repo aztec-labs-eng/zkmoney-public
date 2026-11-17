@@ -17,7 +17,8 @@ export async function startCaptureServer(port) {
   const { profile: captureProfile, manifest } = captureFixtures(`${origin}/__ui-capture/oxide.json`)
   Object.assign(process.env, {
     VITE_NETWORK: "sandbox",
-    VITE_CONFIG_PROFILE_URL: `${origin}/__ui-capture/profile.json`,
+    // The flat `/profiles/<id>.json` shape, so the wallet reads the features document beside it.
+    VITE_CONFIG_PROFILE_URL: `${origin}/__ui-capture/profiles/${profile.profileId}.json`,
     VITE_CONFIG_EXPECTED_PROFILE_ID: profile.profileId,
   })
   const server = await createServer({
@@ -41,9 +42,13 @@ export async function startCaptureServer(port) {
       configureServer(vite) {
         vite.middlewares.use((req, res, next) => {
           const pathname = new URL(req.url, origin).pathname
-          if (pathname === "/__ui-capture/profile.json") {
+          if (pathname === `/__ui-capture/profiles/${profile.profileId}.json`) {
             res.setHeader("Content-Type", "application/json")
             res.end(JSON.stringify(captureProfile))
+          } else if (pathname === `/__ui-capture/features/${profile.profileId}.json`) {
+            // Only the page's prefetch asks: the demo boot answers it from demo mode's own features.
+            res.statusCode = 204
+            res.end()
           } else if (pathname === "/__ui-capture/oxide.json") {
             res.setHeader("Content-Type", "application/json")
             res.end(JSON.stringify(manifest))

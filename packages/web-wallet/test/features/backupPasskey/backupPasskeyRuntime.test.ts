@@ -298,22 +298,18 @@ describe("sweepFunding", () => {
       relayerTip: 5n,
       sweepTip: 7n,
       beneficiaryFee: 3n,
-      minCredited: 100n,
-      margin: 50n,
       ...over,
     }
-    const credited = breakdown.minCredited + breakdown.margin
     const b = breakdown
     return {
-      amount:
-        b.withdrawalFee + b.proverTip + b.relayerTip + b.sweepTip + b.beneficiaryFee + credited,
-      credited,
+      amount: b.withdrawalFee + b.proverTip + b.relayerTip + b.sweepTip + b.beneficiaryFee + 1n,
+      credited: 1n,
       breakdown,
     }
   }
 
   it("is what the deposit address holds once the funding is withdrawn: the live amount before a plan, the saved one after", () => {
-    expect(sweepFunding(live(), undefined)).toBe(7n + 3n + 150n)
+    expect(sweepFunding(live(), undefined)).toBe(7n + 3n + 1n)
     expect(sweepFunding(live(), "175")).toBe(160n)
   })
 
@@ -322,10 +318,10 @@ describe("sweepFunding", () => {
     expect(depositedAmount(live({ proverTip: 4n }), 175n)).toBe(156n)
   })
 
-  it("refuses a saved funding the route's current charges no longer leave sweepable", () => {
-    expect(sweepFunding(live({ withdrawalFee: 70n }), "175")).toBeUndefined()
-    expect(sweepFunding(live({ minCredited: 200n }), "175")).toBeUndefined()
-    expect(sweepFunding(live({ sweepTip: 60n }), "175")).toBeUndefined()
+  it("refuses a saved funding the route's current charges leave nothing to bridge", () => {
+    expect(sweepFunding(live({ sweepTip: 156n }), "175")).toBe(160n)
+    expect(sweepFunding(live({ sweepTip: 157n }), "175")).toBeUndefined()
+    expect(sweepFunding(live({ withdrawalFee: 160n }), "175")).toBeUndefined()
   })
 })
 
@@ -793,7 +789,7 @@ describe("the funding", () => {
       async (_client: unknown, { proverTip }: { proverTip: bigint }) => ({
         amount: BigInt(PLAN.fundingAmount) + proverTip,
         credited: 0n,
-        breakdown: { ...charges, proverTip, minCredited: 0n, margin: 0n },
+        breakdown: { ...charges, proverTip },
       }),
     )
     // What the deposit address holds once the untipped funding is released, less its charges.

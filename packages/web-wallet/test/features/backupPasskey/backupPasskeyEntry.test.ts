@@ -52,7 +52,6 @@ describe("the add entry's conditions", () => {
       {
         id: "balance",
         need: 2n * DAI,
-        hold: (14n * DAI) / 10n,
         have: DAI,
         done: false,
         action: "deposit",

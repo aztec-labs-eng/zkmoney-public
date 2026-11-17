@@ -9,7 +9,9 @@ describe("moveSummary", () => {
   const at = (sharePrice: bigint, assetDecimals = 18): HoldingPrice => ({
     sharePrice,
     shareDecimals: 18,
+    shareSymbol: "sUSDS",
     assetDecimals,
+    assetSymbol: "USDS",
     readAt: 0,
   })
   const priced = (value: string, to: string) => fmt(copy.priced, { value, to })
@@ -32,5 +34,12 @@ describe("moveSummary", () => {
   it("prices a move out of a vault of a 6-decimal asset in dollars", () => {
     // 760 shares at 1.05 USDC each.
     expect(moveSummary("out", 760n * ONE, at(1_050_000n, 6))).toBe(priced("$798.00", copy.main))
+  })
+
+  it("prices a swap's shares at the vault it leaves", () => {
+    const shares = 700n * ONE
+    expect(moveSummary("vaultSwap", shares, at(714287899390558444472n / 700n))).toBe(
+      priced("$714.28", copy.vault),
+    )
   })
 })

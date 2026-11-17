@@ -14,6 +14,8 @@ export type ErrorModalPayload = {
   message: string
   /** Raw technical payload, rendered smaller under the message. */
   detail?: string
+  /** The error a report describes. A report sends its name, code, scrubbed message and frames. */
+  error?: Error
   /**
    * Show Copy + Report. Off by default — known error templates own their
    * copy and don't need it. Opt in per template, or for unknown/unexpected
@@ -75,9 +77,10 @@ export function showReportableError(
   context: string,
   options: { title?: string; message?: string; retry?: ErrorModalPayload["retry"] } = {},
 ): void {
+  const error = raw instanceof Error ? raw : new Error(nonErrorMessage(raw))
   const outOfMemory = outOfMemoryCopy(raw)
   if (outOfMemory) {
-    showErrorModal({ ...outOfMemory, detail: (raw as Error).stack, showReport: true, context })
+    showErrorModal({ ...outOfMemory, detail: error.stack, error, showReport: true, context })
     return
   }
   const sponsorship = sponsorshipErrorCopy(raw, context)
@@ -94,11 +97,11 @@ export function showReportableError(
     })
     return
   }
-  const error = raw instanceof Error ? raw : new Error(nonErrorMessage(raw))
   showErrorModal({
     title: options.title ?? "Unexpected error",
     message: options.message ?? errorCopy(raw) ?? error.message,
     detail: error.stack,
+    error,
     showReport: true,
     context,
     ...(options.retry ? { retry: options.retry } : {}),

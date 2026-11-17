@@ -1,10 +1,11 @@
 import { useRef, useState, type ReactNode } from "react"
 import { Icon } from "@obsidion/web-ds"
-import { useDomEffect } from "../../ui/useDomEffect"
+import { fmt } from "../../../lib/fmt"
+import { useDomEffect } from "../../../ui/useDomEffect"
+import copy from "./AccountSwitcher.copy"
+import styles from "./AccountSwitcher.module.css"
 
 export type SavingsAccount = "main" | "savings"
-
-const LABEL: Record<SavingsAccount, string> = { main: "Main Account", savings: "Savings" }
 
 /** Home's account pill: Main or Savings, with both balances and their total in the menu. */
 export function AccountSwitcher({
@@ -57,44 +58,44 @@ export function AccountSwitcher({
       aria-selected={selected === account}
       onClick={() => pick(account)}
     >
-      <span className="ww-account-switcher__avatar" aria-hidden>
+      <span className={styles.avatar} aria-hidden>
         {avatar}
       </span>
       <span>
-        <b>{LABEL[account]}</b>
+        <b>{copy[account]}</b>
         <small>{note}</small>
       </span>
       <strong>{figure}</strong>
-      <span className="ww-account-switcher__check" aria-hidden>
+      <span className={styles.check} aria-hidden>
         {selected === account && <Icon name="check" size={14} />}
       </span>
     </button>
   )
   return (
-    <div className="ww-account-switcher" ref={ref}>
+    <div className={styles.switcher} ref={ref}>
       <button
         type="button"
-        className="zkm-btn-reset ww-account-switcher__trigger"
+        className={`zkm-btn-reset ${styles.trigger}`}
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label="Select account"
+        aria-label={copy.select}
         onClick={() => setOpen(!open)}
       >
-        {LABEL[selected]}
+        {copy[selected]}
         <Icon name={open ? "chevron-up" : "chevron-down"} size={16} />
       </button>
       {open && (
-        <div className="ww-account-switcher__menu" role="listbox" aria-label="Accounts">
-          <small>Accounts</small>
-          {option("main", "M", "Day-to-day · private", mainBalance)}
+        <div className={styles.menu} role="listbox" aria-label={copy.accounts}>
+          <small>{copy.accounts}</small>
+          {option("main", copy.mainInitial, copy.mainNote, mainBalance)}
           {option(
             "savings",
             <Icon name="earn" size={16} color="#fff" />,
-            apyLabel ? `${apyLabel} · variable · private` : "Private",
+            apyLabel ? fmt(copy.savingsNote, { apy: apyLabel }) : copy.private,
             savingsBalance,
           )}
-          <div className="ww-account-switcher__total">
-            <span>Total wealth</span>
+          <div className={styles.total}>
+            <span>{copy.total}</span>
             <b>{total}</b>
           </div>
         </div>

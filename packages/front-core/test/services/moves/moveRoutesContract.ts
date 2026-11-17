@@ -7,7 +7,6 @@ import { expect, it } from "vitest"
 import type {
   MoveDeposit,
   MoveDirection,
-  MoveLimits,
   MoveQuote,
   MoveRecord,
 } from "../../../src/engine/moveTransition"
@@ -66,8 +65,6 @@ export interface MoveRoutesSubject<
   amount: bigint
   /** A token `token` reads, and what it reads. */
   token: { address: Address; symbol: string; decimals: number }
-  /** What `limits` reads for the holding's terms. */
-  limits: MoveLimits
   keys: RecoveryKeys
   /** The escrow tip `quote` prices; undefined for a rail without an escrow. */
   escrowTip: (quote: Q) => bigint | undefined
@@ -415,9 +412,8 @@ export function moveRoutesContract<
     },
   )
 
-  it("reads the terms' limits, and redeems shares at the vault's price, rounded down", async () => {
+  it("redeems shares at the vault's price, rounded down", async () => {
     const { l1, routes, route } = await open()
-    expect(await routes.limits(route)).toEqual(subject.limits)
     const price = await l1.sharePrice()
     for (const shares of [0n, 1n, amount, amount + 1n, price.shares, 3n * price.shares]) {
       expect(await routes.assetsOf(route, shares)).toBe((shares * price.assets) / price.shares)

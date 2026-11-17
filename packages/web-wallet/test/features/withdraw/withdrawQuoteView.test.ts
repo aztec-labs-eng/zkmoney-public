@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest"
 import { getAddress, parseUnits } from "viem"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { BalanceView } from "@obsidion/front-core"
-import { withdrawInitial } from "../../../src/features/withdraw/WithdrawFlow/withdrawFlow"
+import { withdrawInitial } from "../../../src/features/withdraw/WithdrawFlow/withdrawScreenFlow"
 import type { WithdrawState } from "../../../src/features/withdraw/WithdrawFlow/withdrawTransition"
 import {
   bridgeOutDecimals,

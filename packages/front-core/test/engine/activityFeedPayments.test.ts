@@ -170,7 +170,7 @@ describe("an address paid twice", () => {
     endTime: SECOND_AT,
     replayed: true,
     fundingTxHash: `0x${"f1".repeat(32)}`,
-    funding: "transfer",
+    funding: "plain",
   } as never)
 
   const rows = (record: SipaDeposit) =>

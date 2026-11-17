@@ -21,7 +21,7 @@ import type {
   WithdrawEventSource,
 } from "@obsidion/sdk"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
-import { erc20Abi, erc4626Abi, getAddress, isAddressEqual, maxUint256 } from "viem"
+import { erc20Abi, erc4626Abi, getAddress, isAddressEqual } from "viem"
 import type { Address, Hex, PublicClient } from "viem"
 import { WalletError } from "../../../engine/errors"
 import type { MoveDirection, MoveQuote } from "../../../engine/moveTransition"
@@ -339,9 +339,6 @@ export function skyEscrowRoutes(
       if (held === 0n) throw new WalletError("move.escrowRan", move.id)
       return escrowRunCall(leg)
     },
-
-    // sUSDS caps neither deposits nor redeems.
-    limits: async () => ({ maxDeposit: maxUint256, maxRedeem: maxUint256 }),
 
     assetsOf: (route, amount) => vault(route, "convertToAssets", amount),
   }

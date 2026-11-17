@@ -33,6 +33,7 @@ export function flowFixturePlugin(walletDir) {
     ["features/backupPasskey/accountKeys.ts", "account-keys.ts"],
     ["features/registration/oxideGenerations.ts", "oxide-generations.ts"],
     ["config/features.ts", "features.ts"],
+    ["features/savings/savingsLine.ts", "savings.ts"],
   ].map(([source, fixture]) => [path.join(walletDir, "src", source), path.join(fixtures, fixture)]))
   const contextConsumers = new Set([
     "features/contacts/ContactPayScreen/ContactPayScreen.tsx",
@@ -66,6 +67,10 @@ export function flowFixturePlugin(walletDir) {
       // The Passkeys sheet reads its keys through the backup fixture.
       if (source === "@obsidion/front-core" && owner === path.join(walletDir, "src/features/backupPasskey/accountKeys.ts")) {
         return path.join(fixtures, "passkey-keys.ts")
+      }
+      // The session prices a move through the savings fixture.
+      if (source === "@obsidion/front-core" && owner === path.join(walletDir, "src/app/sessionTasks.ts")) {
+        return path.join(fixtures, "savings-quotes.ts")
       }
       // The registration funding panel reads a recorded SIPA's terms from the processing observer's source.
       if (source === "@obsidion/sdk" && owner === path.join(walletDir, "src/features/deposit/addressCapacity.ts")) {

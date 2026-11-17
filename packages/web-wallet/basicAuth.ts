@@ -6,6 +6,7 @@
 // packages/web-faucet carries its own copy of the same primitive (independent Vercel project).
 import { createHash } from "node:crypto"
 import { PAY_PAGE_PATH } from "./socialPreview"
+import { STARTUP_IMAGE_PATH } from "./startupImages"
 
 export type BasicAuthVerdict = "off" | "ok" | "challenge"
 
@@ -52,11 +53,22 @@ export const BASIC_AUTH_CHALLENGE = 'Basic realm="zk.money wallet"'
 // Exact paths: nothing under them, and /claim stays gated.
 const LINK_PREVIEW_PATHS = new Set(["/og.png", "/favicon.png", "/link", "/request"])
 
-/** Whether the request is served without a credential: a link preview or the wallet icon. */
+// What a phone fetches without the login to add the wallet to its Home Screen.
+const HOME_SCREEN_PATHS = new Set([
+  "/manifest.webmanifest",
+  "/apple-touch-icon.png",
+  "/icon-192.png",
+  "/icon-512.png",
+])
+
+/** Whether the request is served without a credential: a link preview or a wallet icon. */
 export function isPublicPath(method: string | undefined, path: string): boolean {
   return (
     (method === "GET" || method === "HEAD") &&
-    (LINK_PREVIEW_PATHS.has(path) || PAY_PAGE_PATH.test(path))
+    (LINK_PREVIEW_PATHS.has(path) ||
+      PAY_PAGE_PATH.test(path) ||
+      HOME_SCREEN_PATHS.has(path) ||
+      STARTUP_IMAGE_PATH.test(path))
   )
 }
 

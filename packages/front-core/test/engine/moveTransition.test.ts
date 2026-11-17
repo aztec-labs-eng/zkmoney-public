@@ -47,7 +47,6 @@ const EVENTS: Record<Changing, MoveEvent> = {
   scanned: { type: "scanned", to: 9n },
   depositSeen: { type: "depositSeen", txHash: TX, deposit: DEPOSIT },
   claimed: { type: "claimed", at: NOW },
-  observed: { type: "observed", limits: { maxDeposit: 1n, maxRedeem: 1n }, at: NOW },
   failed: { type: "failed", failure: { code: "withdrawal.dropped" }, at: NOW },
   recovered: { type: "recovered", txHash: TX, to: TO, at: NOW },
   dropped: { type: "dropped", at: NOW },
@@ -70,8 +69,6 @@ const CASES: [Changing, MovePhase, MovePhase | null][] = [
   ["depositSeen", "depositSeen", null],
   ["claimed", "released", null],
   ["claimed", "depositSeen", "claimed"],
-  ["observed", "released", null],
-  ["observed", "depositSeen", null],
   ["failed", "burning", "failed"],
   ["failed", "released", null],
   ["failed", "depositSeen", null],
@@ -93,13 +90,10 @@ describe("moveTransition", () => {
     expect(moveTransition(undefined, EVENTS.burnMined)).toBeUndefined()
   })
 
-  it("keeps the quote's figures and the limits, not what else the reads returned", () => {
+  it("keeps the quote's figures, not what else the reads returned", () => {
     const quote = { ...built.quote, gasUsed: 9n }
     const created = moveTransition(undefined, { type: "built", record: { ...built, quote } })
     expect(created?.quote).toEqual(built.quote)
-    const limits = { maxDeposit: 1n, maxRedeem: 2n, asOf: 4n }
-    const seen = moveTransition(record("burned"), { type: "observed", limits, at: NOW })
-    expect(seen?.observed).toEqual({ at: NOW, maxDeposit: 1n, maxRedeem: 2n })
   })
 
   it("creates a replayed record in the phase the chain shows, and never over one", () => {
@@ -114,15 +108,6 @@ describe("moveTransition", () => {
     const event = { type: "replayed", record: replayed } as const
     expect(moveTransition(undefined, event)).toEqual(replayed)
     expect(moveTransition(record("burned"), event)).toBeUndefined()
-  })
-
-  it("keeps the newest limits when an older read lands after a newer one", () => {
-    const read = (at: number, maxRedeem: bigint) =>
-      ({ type: "observed", limits: { maxDeposit: 1n, maxRedeem }, at } as const)
-    const newer = moveTransition(record("burned"), read(NOW, 5n))
-    expect(moveTransition(newer, read(NOW - 1, 0n))).toBeUndefined()
-    expect(moveTransition(newer, read(NOW, 0n))).toBeUndefined()
-    expect(moveTransition(newer, read(NOW + 1, 0n))?.observed?.maxRedeem).toBe(0n)
   })
 
   it("times a release once, before the route runs, and keeps its tx when the run names none", () => {

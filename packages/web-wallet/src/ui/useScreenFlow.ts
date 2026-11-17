@@ -38,3 +38,9 @@ export function openedFlow(fire: () => void): ScreenFlow {
 export function useOpened(fire: () => void): void {
   useScreenFlow(fire, (latest) => openedFlow(() => latest()()))
 }
+
+/** `useOpened` as an element: keyed by what it reports, it reports each key it mounts with once. */
+export function Opened({ fire }: { fire: () => void }): null {
+  useOpened(fire)
+  return null
+}

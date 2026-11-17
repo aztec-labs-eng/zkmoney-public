@@ -4,6 +4,8 @@ import type { Hex } from "viem"
 import { openDatabase } from "../../src/engine/database"
 import { memoryBackend } from "../../src/engine/memoryBackend"
 import { createMoveStore } from "../../src/engine/moves"
+import { encodeRecord } from "../../src/engine/persistentStore"
+import { moveTransition } from "../../src/engine/moveTransition"
 import type { BuiltMove } from "../../src/engine/moveTransition"
 
 const built: BuiltMove = {
@@ -36,10 +38,39 @@ const seeded = (entries: Record<string, string>) => {
 
 describe("createMoveStore: versions", () => {
   it("refuses a version it does not know, leaving its records as they are", async () => {
-    const saved = { "acct/meta/moves": "2", "acct/moves/wdraw_new": "{}" }
+    const saved = { "acct/meta/moves": "3", "acct/moves/wdraw_new": "{}" }
     const { backend, db } = seeded(saved)
     await expect(createMoveStore(db).ready).rejects.toMatchObject({ code: "invariant" })
     expect(Object.fromEntries(backend.entries)).toEqual(saved)
+  })
+
+  it("loads and settles a move an older build saved with the vault's limits", async () => {
+    const old = {
+      ...built,
+      phase: "burned",
+      observed: { at: 1_500, maxDeposit: 0n, maxRedeem: 0n },
+    }
+    const { db } = seeded({
+      "acct/meta/moves": "1",
+      "acct/moves/wdraw_a": encodeRecord(old),
+    })
+    const moves = createMoveStore(db)
+    expect(await moves.get(built.id)).toMatchObject({ phase: "burned", amount: built.amount })
+    const tx = `0x${"0d".repeat(32)}` as Hex
+    await moves.apply(built.id, { type: "released", txHash: tx })
+    const deposit = { inboxIndex: 3n, amount: 90n, at: 2_000 }
+    await moves.apply(built.id, { type: "depositSeen", txHash: tx, deposit })
+    expect((await moves.apply(built.id, { type: "claimed", at: 3_000 }))?.phase).toBe("claimed")
+    expect(await moves.open()).toEqual([])
+  })
+
+  it("opens a version 1 store at version 2 without rewriting its records", async () => {
+    const raw = encodeRecord(moveTransition(undefined, BUILT))
+    const { backend, db } = seeded({ "acct/meta/moves": "1", "acct/moves/wdraw_a": raw })
+    const moves = createMoveStore(db)
+    expect(await moves.get(built.id)).toMatchObject({ phase: "burning", amount: built.amount })
+    expect(backend.entries.get("acct/moves/wdraw_a")).toBe(raw)
+    expect(backend.entries.get("acct/meta/moves")).toBe("2")
   })
 })
 
@@ -50,7 +81,7 @@ describe("createMoveStore", () => {
     expect((await moves.apply(built.id, BUILT))?.phase).toBe("burning")
     expect((await moves.apply(built.id, { type: "burnMined" }))?.phase).toBe("burned")
     expect(backend.entries.get("acct/moves/wdraw_a")).toContain(`"${built.amount}"`)
-    expect(backend.entries.get("acct/meta/moves")).toBe("1")
+    expect(backend.entries.get("acct/meta/moves")).toBe("2")
 
     const reopened = createMoveStore(openDatabase(backend))
     expect(await reopened.get(built.id)).toMatchObject({

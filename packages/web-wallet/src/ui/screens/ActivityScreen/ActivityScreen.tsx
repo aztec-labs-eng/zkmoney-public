@@ -15,6 +15,7 @@ import {
   type TransferPages,
 } from "@obsidion/front-core"
 import { useSession } from "../../../session/session"
+import { readsBridgeFills } from "../../../session/bridgeFillDetectors"
 import { isDemoMode } from "../../../dev/demoFlag"
 import { GradientText, Icon } from "@obsidion/web-ds"
 import { NonContactRequestsEntry } from "../../../features/requests/NonContactRequestsScreen"
@@ -84,8 +85,8 @@ export function ActivityScreen() {
 }
 
 function Activity({ pages }: { pages: TransferPages }) {
-  const { feed } = useActivityHost()
-  const { transfers, reads } = useSession()
+  const { feed, chainName } = useActivityHost()
+  const { transfers, reads, page: sessionPage } = useSession()
   const page = useStore(pages.rows)
   const items = pagedItems(feed.items, page)
   const walletToken =
@@ -183,6 +184,8 @@ function Activity({ pages }: { pages: TransferPages }) {
                   ...feed.csv,
                   transactions: [...rows, ...reads.transfers.get().records],
                   walletToken,
+                  chainName,
+                  readsFills: readsBridgeFills(sessionPage.config),
                 }),
               )
               void bestEffort(

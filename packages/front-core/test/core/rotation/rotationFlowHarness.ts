@@ -1,5 +1,4 @@
 import { TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
-import { BACKUP_FUNDING_MARGIN } from "@obsidion/sdk"
 import type { PersistedRotationVerdict, SpendShape } from "@obsidion/sdk"
 import { vi } from "vitest"
 import type {
@@ -26,8 +25,8 @@ export const DEPOSITING = {
   deposited: (2n * DAI).toString(),
   credited: ((14n * DAI) / 10n).toString(),
 }
-/** The floor of `DEPOSITING`: its deposit less its credit's margin. */
-export const FLOOR = 2n * DAI - BACKUP_FUNDING_MARGIN
+/** The floor of `DEPOSITING`: its deposit. */
+export const FLOOR = 2n * DAI
 export const receipt = (status: TxStatus, reverted = false, block = 9) => ({
   status,
   executionResult: reverted ? TxExecutionResult.REVERTED : TxExecutionResult.SUCCESS,

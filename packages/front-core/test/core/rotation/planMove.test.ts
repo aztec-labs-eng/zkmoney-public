@@ -103,6 +103,27 @@ describe("planMove with an unknown deposit set", () => {
     expect(plan.bound).toBe("upper")
   })
 
+  it.each<[string, bigint[], bigint, { amount: bigint; proven: boolean }[]]>([
+    [
+      "notes and a deposit under the cap go as one attempt",
+      [737n * (DAI / 100n)],
+      DAI / 100n,
+      [{ amount: 738n * (DAI / 100n), proven: false }],
+    ],
+    [
+      "the notes past 18 go first, then the rest with the deposits",
+      Array(20).fill(DAI),
+      DAI / 100n,
+      [
+        { amount: 18n * DAI, proven: true },
+        { amount: 2n * DAI + DAI / 100n, proven: false },
+      ],
+    ],
+  ])("%s", (_, notes, depositTotal, chunks) => {
+    const s: SpendShape = { notes, depositTotal, balance: sum(notes) + depositTotal }
+    expect(planMove(s, CAP, UNKNOWN).chunks).toEqual(chunks)
+  })
+
   it("always makes progress", () => {
     const s: SpendShape = { notes: [], depositTotal: 5n, balance: 5n }
     expect(planMove(s, 2n, UNKNOWN).chunks.map((c) => c.amount)).toEqual([2n, 2n, 1n])

@@ -194,6 +194,14 @@ describe("bridgeInTransition", () => {
     expect(bridgeInTransition(bridged(), event)).toBeUndefined()
   })
 
+  it("names the origin call of a record that has none, once", () => {
+    const rebuilt = bridged({ originTxHash: undefined, replayed: true })
+    const event = { type: "originRead", originTxHash: TX_2 } as const
+    expect(bridgeInTransition(rebuilt, event)).toEqual({ ...rebuilt, originTxHash: TX_2 })
+    expect(bridgeInTransition(bridged(), event)).toBeUndefined()
+    expect(bridgeInTransition(undefined, event)).toBeUndefined()
+  })
+
   it("takes only the nonce and the hint from a read", () => {
     const pending = bridged({ status: "pending", nonceHint: 2 })
     const next = bridgeInTransition(pending, { type: "read", nonce: 3 })
@@ -242,5 +250,38 @@ describe("createBridgeIns", () => {
     expect(await store.rebuild(rebuilt)).toMatchObject({ id, status: "filled", replayed: true })
     expect(await store.rebuild({ ...rebuilt, status: "refunded" })).toBeUndefined()
     expect(await store.all()).toHaveLength(1)
+  })
+
+  it("rebuilds a fill with no origin hash once, by its fill", async () => {
+    const ids = ["a", "b"]
+    const store = createBridgeIns({ db: openDatabase(memoryBackend()), newId: () => ids.shift()! })
+    const { id: _, ...rebuilt } = bridged({
+      originTxHash: undefined,
+      fillTxHash: TX_1,
+      replayed: true,
+    })
+    expect(await store.rebuild(rebuilt)).toMatchObject({ id: "bridge-in:a", fillTxHash: TX_1 })
+    expect(await store.rebuild(rebuilt)).toBeUndefined()
+    expect(await store.all()).toHaveLength(1)
+    await expect(store.rebuild({ ...rebuilt, fillTxHash: undefined })).rejects.toMatchObject({
+      code: "invariant",
+    })
+  })
+
+  it("rebuilds one record for each deposit a single transaction filled", async () => {
+    const ids = ["a", "b"]
+    const store = createBridgeIns({ db: openDatabase(memoryBackend()), newId: () => ids.shift()! })
+    const { id: _, ...rebuilt } = bridged({
+      originTxHash: undefined,
+      fillTxHash: TX_1,
+      replayed: true,
+    })
+    const other = `0x${"9b".repeat(20)}` as const
+    await store.rebuild(rebuilt)
+    expect(await store.rebuild({ ...rebuilt, recipient: other })).toMatchObject({
+      id: "bridge-in:b",
+      recipient: other,
+    })
+    expect(await store.all()).toHaveLength(2)
   })
 })

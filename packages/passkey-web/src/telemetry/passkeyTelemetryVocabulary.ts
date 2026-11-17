@@ -222,6 +222,8 @@ export const PASSKEY_FLOWS = [
   "paylink-create",
   "paylink-claim-l1",
   "withdraw",
+  // The backup passkey sheet's approvals: the account change, its funding and the move.
+  "backup",
   "other",
 ] as const
 export type PasskeyFlow = (typeof PASSKEY_FLOWS)[number]

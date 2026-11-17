@@ -6,16 +6,7 @@ import { getAddress, type Hex } from "viem"
 import { describe, expect, it } from "vitest"
 import { executorMoveBurns, executorRoutes } from "../../../src/core/services/moves/executorRoutes"
 import type { MoveDirection } from "../../../src/engine/moveTransition"
-import {
-  DAI,
-  FEED,
-  fakeL1,
-  LIMITS,
-  RECOVERY_KEYS,
-  releaseArgsOf,
-  VAULT,
-  VAULT_HOLDING,
-} from "./fixtures"
+import { DAI, FEED, fakeL1, RECOVERY_KEYS, releaseArgsOf, VAULT, VAULT_HOLDING } from "./fixtures"
 import type { FakeL1 } from "./fixtures"
 import { moveRoutesContract, NONCE } from "./moveRoutesContract"
 
@@ -34,7 +25,6 @@ describe("executorRoutes", () => {
     holding: VAULT_HOLDING,
     amount: AMOUNT,
     token: { address: DAI, symbol: "DAI", decimals: 18 },
-    limits: LIMITS,
     keys: RECOVERY_KEYS,
     escrowTip: () => undefined,
     recoveredToken: () => {

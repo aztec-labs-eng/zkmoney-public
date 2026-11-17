@@ -1,0 +1,77 @@
+{
+  "scenario": "fresh",
+  "bootstrap": "/savings?demo=fresh&flowFixture=success&savingsFixture=fresh",
+  "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=fresh",
+  "ready": { "testId": "savings-balance" },
+  "steps": [
+    { "action": "click", "role": "button", "name": "Add to Savings", "exact": true },
+    { "action": "fill", "label": "Amount to move", "value": "1" },
+    { "action": "waitFor", "selector": "dialog button:has-text(\"Review\"):enabled" },
+    { "action": "screenshot", "file": "move-in.png", "state": "Move in, Sky's line with Change" },
+    { "action": "click", "selector": ".zkm-holding-select__change" },
+    { "action": "waitFor", "selector": "[role=listbox]" },
+    {
+      "action": "screenshot",
+      "file": "move-in-pick.png",
+      "state": "Change: the vaults a move in takes"
+    },
+    { "action": "click", "selector": "[role=listbox] > button:nth-of-type(2)" },
+    { "action": "waitFor", "selector": "dialog button:has-text(\"Review\"):enabled" },
+    {
+      "action": "screenshot",
+      "file": "move-in-vault.png",
+      "state": "Move in, the USDC vault picked"
+    },
+    { "action": "click", "role": "button", "name": "Review", "exact": true },
+    { "action": "waitFor", "role": "checkbox" },
+    {
+      "action": "screenshot",
+      "file": "move-in-vault-review.png",
+      "state": "Move in to the USDC vault, review with its terms"
+    },
+    { "action": "goto", "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=funded" },
+    { "action": "waitFor", "testId": "savings-balance" },
+    { "action": "click", "role": "button", "name": "Add to Savings", "exact": true },
+    { "action": "fill", "label": "Amount to move", "value": "1" },
+    { "action": "waitFor", "selector": "dialog button:has-text(\"Review\"):enabled" },
+    { "action": "screenshot", "file": "move-in-one.png", "state": "Move in, one vault: no Change" },
+    { "action": "click", "role": "button", "name": "Review", "exact": true },
+    { "action": "waitFor", "role": "checkbox" },
+    { "action": "screenshot", "file": "move-in-review.png", "state": "Move in to Sky, review" },
+    { "action": "goto", "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=exit" },
+    { "action": "waitFor", "testId": "savings-balance" },
+    { "action": "click", "role": "button", "name": "Move to Main Account", "exact": true },
+    { "action": "fill", "label": "Amount to move", "value": "1" },
+    { "action": "waitFor", "selector": "dialog button:has-text(\"Review\"):enabled" },
+    {
+      "action": "screenshot",
+      "file": "move-out.png",
+      "state": "Move out, the unlisted vault first, with Change"
+    },
+    { "action": "click", "role": "button", "name": "Review", "exact": true },
+    { "action": "wait", "ms": 300 },
+    { "action": "screenshot", "file": "move-out-review.png", "state": "Move out, review" },
+    { "action": "goto", "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=exit" },
+    { "action": "waitFor", "testId": "savings-balance" },
+    { "action": "click", "role": "button", "name": "Move to Main Account", "exact": true },
+    { "action": "fill", "label": "Amount to move", "value": "400" },
+    { "action": "waitFor", "testId": "move-other-vault" },
+    {
+      "action": "screenshot",
+      "file": "move-out-other-vault.png",
+      "state": "Move out past the vault's shares, pointing to Change"
+    },
+    { "action": "goto", "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=unworded" },
+    { "action": "waitFor", "testId": "savings-balance" },
+    { "action": "click", "role": "button", "name": "Add to Savings", "exact": true },
+    { "action": "fill", "label": "Amount to move", "value": "1" },
+    { "action": "waitFor", "testId": "move-no-terms" },
+    { "action": "wait", "ms": 600 },
+    {
+      "action": "screenshot",
+      "file": "move-in-no-terms.png",
+      "state": "Move in through a vault with no words: blocked"
+    }
+  ],
+  "finalScreenshot": false
+}

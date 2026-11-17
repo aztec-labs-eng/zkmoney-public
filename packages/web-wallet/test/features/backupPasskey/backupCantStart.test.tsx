@@ -68,10 +68,10 @@ const text = () => container.textContent ?? ""
 const button = (label: string) =>
   [...container.querySelectorAll("button")].find((b) => b.textContent === label)
 const rows = () => container.querySelectorAll(".zkm-checklist-row")
-/** A balance of 0.80 short of a 2.0551 funding that gives 1.5004 back. */
+/** A balance of 0.80 short of a 2.0551 funding. */
 const LOW = {
   id: "lowBalance",
-  funding: { sent: (20551n * DAI) / 10000n, credited: (15004n * DAI) / 10000n },
+  need: (20551n * DAI) / 10000n,
   have: (8n * DAI) / 10n,
 } as const
 
@@ -100,11 +100,11 @@ describe("B1, what holds the add", () => {
     expect(onAct).toHaveBeenCalledWith("deposit")
   })
 
-  it("gives a short balance its own sheet: the need, the part back, Deposit, the add closed", async () => {
+  it("gives a short balance its own sheet: the need, Deposit, the add closed", async () => {
     const onAct = vi.fn()
     await show(<LowBalanceScreen screen={LOW} actions={actions(onAct)} />)
-    // The total Pay shows at Standard, so the need and the hold add up with the fee.
-    expect(text()).toContain(fmt(lowCopy.lead, { need: "$2.06", hold: "$1.50", have: "$0.80" }))
+    // The need rounds up, as the total Pay shows at Standard.
+    expect(text()).toContain(fmt(lowCopy.lead, { need: "$2.06", have: "$0.80" }))
     expect(button(lowCopy.add)?.disabled).toBe(true)
     await act(async () => button(lowCopy.deposit)!.click())
     expect(onAct).toHaveBeenCalledWith("deposit")
@@ -113,9 +113,7 @@ describe("B1, what holds the add", () => {
   it("hides the balance on its own sheet while balances are hidden", async () => {
     await seedDeviceKeys({ hideBalances: "true" })
     await show(<LowBalanceScreen screen={LOW} actions={actions()} />)
-    expect(text()).toContain(
-      fmt(lowCopy.lead, { need: "$2.06", hold: "$1.50", have: HIDDEN_BALANCE }),
-    )
+    expect(text()).toContain(fmt(lowCopy.lead, { need: "$2.06", have: HIDDEN_BALANCE }))
   })
 
   it("hides the balance's figures while balances are hidden", async () => {

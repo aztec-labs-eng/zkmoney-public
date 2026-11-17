@@ -70,6 +70,41 @@ export interface BridgeInDepositLookup {
   statusById(originChainId: number, depositId: string): Promise<BridgeInDeposit | undefined>
 }
 
+/** A bridge that can fill a deposit address on L1. */
+export type BridgeInProviderId = "across"
+
+/** A receipt log, as viem formats one. */
+export interface ReceiptLog {
+  address: Address
+  topics: readonly Hex[]
+  data: Hex
+  logIndex: number | null
+}
+
+/** A bridge's fill that paid a deposit address on L1, read off the fill's receipt. */
+export interface BridgeFill {
+  provider: BridgeInProviderId
+  originChainId: number
+  /** The provider's id for the deposit on the origin chain. */
+  depositId: string
+  /** Who sent the deposit on the origin chain. */
+  depositor: Address
+  /** On the origin chain; `inputAmount` is in its base units. */
+  inputToken: Address
+  inputAmount: bigint
+  /** ms; the bridge's deadline for the fill, where it has one. */
+  deadline?: number
+  /** The token and base units the deposit address received. */
+  token: Address
+  value: bigint
+}
+
+/** One bridge's reading of a receipt: its fill that paid `recipient`, if any. */
+export type BridgeFillDetector = (
+  logs: readonly ReceiptLog[],
+  recipient: Address,
+) => BridgeFill | undefined
+
 /** Who a bridge-in pays where it is not this wallet's deposit: a request's payee. */
 export interface BridgeInPays {
   /** The payee's tag. */
@@ -116,7 +151,7 @@ export interface BridgeInRecord {
   nonceHint?: number
   /** ms; the quote's expiry, after which the bridge call reverts on the origin chain. */
   quoteExpiresAt?: number
-  /** Rebuilt from the chain on this device: another device sent it. */
+  /** Rebuilt from its fill: this device did not send it. */
   replayed?: true
   /** Set when the bridge pays someone else's deposit address. */
   pays?: BridgeInPays

@@ -16,14 +16,15 @@ import { task, within, type Task } from "../../../engine/runtime"
 import type { Service } from "../../../engine/service"
 import { boundRails } from "./openMoves"
 import { chainEvents, type MovesDeps } from "./settleMoves"
-import type {
-  MoveBurn,
-  MovePorts,
-  MoveRoute,
-  MoveRoutes,
-  MovesAccount,
-  RailPorts,
-  RouteHolding,
+import {
+  railHoldings,
+  type MoveBurn,
+  type MovePorts,
+  type MoveRoute,
+  type MoveRoutes,
+  type MovesAccount,
+  type RailPorts,
+  type RouteHolding,
 } from "./types"
 
 /** An L2 block's time may run ahead of L1's clock: the deposit search starts this much before. */
@@ -31,12 +32,16 @@ export const REPLAY_CLOCK_MARGIN_MS = 60 * 60_000
 const lower = (hex: string) => hex.toLowerCase()
 const REPLAY_BACKOFF = { baseMs: 30_000, maxMs: 60 * 60_000 }
 
-/** The record a burn rebuilds, burned, before the chain's events carry it on. */
+/**
+ * The record a burn rebuilds, burned, before the chain's events carry it on. `into`: a swap's
+ * destination.
+ */
 function burnedMove(
   holding: RouteHolding,
   direction: MoveDirection,
   burn: MoveBurn,
   scanFrom: bigint,
+  into: RouteHolding | undefined,
 ): ReplayedMove {
   const { txHash, timestampMs, withdrawalId, amount, nonce, recipientCommitment, ...rail } = burn
   return {
@@ -44,6 +49,7 @@ function burnedMove(
     id: `replayed-${txHash}`,
     holdingId: holding.id,
     direction,
+    ...(into ? { intoHoldingId: into.id } : {}),
     amount,
     nonce,
     recipientCommitment,
@@ -55,10 +61,15 @@ function burnedMove(
   }
 }
 
-/** The holding and direction whose move `burn`, read from `bridge`, is. */
+/**
+ * The holding and direction whose move `burn`, read from `bridge`, is, and a swap's destination.
+ * A swap burns its source's held token, so it is a move out of the holding `bridge` holds. Only
+ * the rail's own holdings move in and out; `vaultSwapped` adds those it only swaps.
+ */
 function ownerOf<H extends RouteHolding, R extends MoveRoute, Q extends MoveQuote>(
   routes: MoveRoutes<H, R, Q>,
   routed: readonly { holding: H; route: R }[],
+  vaultSwapped: readonly { holding: H; route: R }[],
   bridge: OxideBridge,
   burn: MoveBurn,
 ) {
@@ -66,7 +77,17 @@ function ownerOf<H extends RouteHolding, R extends MoveRoute, Q extends MoveQuot
     for (const direction of ["in", "out"] as const) {
       const source = direction === "in" ? holding.base : holding.held
       if (lower(source.portal) !== lower(bridge.portal)) continue
-      if (routes.owns(route, burn)) return { holding, route, direction, burn }
+      if (routes.owns(route, burn)) return { holding, route, direction, burn, into: undefined }
+    }
+  }
+  const vaultSwaps = routes.vaultSwap
+  if (!vaultSwaps) return undefined
+  for (const from of vaultSwapped) {
+    if (lower(from.holding.held.portal) !== lower(bridge.portal)) continue
+    for (const to of vaultSwapped) {
+      if (to.holding.id === from.holding.id || !vaultSwaps.owns(from.route, to.route, burn))
+        continue
+      return { ...from, direction: "out" as const, burn, into: { ...to, vaultSwaps } }
     }
   }
   return undefined
@@ -91,14 +112,21 @@ function skip(result: ReplayResult, burn: MoveBurn, why: string) {
 async function replayRail<H extends RouteHolding, R extends MoveRoute, Q extends MoveQuote>(
   deps: MovesDeps,
   account: MovesAccount,
-  { routes, holdings }: RailPorts<H, R, Q>,
+  rail: RailPorts<H, R, Q>,
   known: Set<string>,
   head: () => Promise<bigint>,
   signal: AbortSignal,
 ): Promise<ReplayResult> {
-  const routed: { holding: H; route: R }[] = []
-  for (const holding of holdings) routed.push({ holding, route: await routes.read(holding) })
-  const sources = holdings.flatMap((h) => [h.base, h.held])
+  const { routes, holdings } = rail
+  const vaultSwapped: { holding: H; route: R }[] = []
+  for (const holding of railHoldings(rail))
+    vaultSwapped.push({ holding, route: await routes.read(holding) })
+  const routed = vaultSwapped.filter(({ holding }) => holdings.includes(holding))
+  // A holding the rail only swaps burns on its held bridge alone.
+  const sources = [
+    ...holdings.flatMap((h) => [h.base, h.held]),
+    ...(rail.vaultSwapOnly ?? []).map((h) => h.held),
+  ]
   const bridges = sources.filter(
     (b, i) => sources.findIndex((o) => lower(o.portal) === lower(b.portal)) === i,
   )
@@ -109,12 +137,12 @@ async function replayRail<H extends RouteHolding, R extends MoveRoute, Q extends
     for (const read of burns) {
       if (signal.aborted) return result
       if (known.has(lower(read.nonce))) continue
-      const owner = ownerOf(routes, routed, bridge, read)
+      const owner = ownerOf(routes, routed, vaultSwapped, bridge, read)
       if (!owner) {
         skip(result, read, "no holding's route owns it")
         continue
       }
-      const { holding, route, direction, burn } = owner
+      const { holding, route, direction, burn, into } = owner
       const { recipient } = account.salts(burn.nonce, burn.rail)
       const commitment = await routes.commitment(recipient, account.address)
       if (lower(commitment) !== lower(burn.recipientCommitment)) {
@@ -122,10 +150,10 @@ async function replayRail<H extends RouteHolding, R extends MoveRoute, Q extends
         continue
       }
       const scanFrom = await routes.blockAt(burn.timestampMs - REPLAY_CLOCK_MARGIN_MS)
-      const move = burnedMove(holding, direction, burn, scanFrom)
+      const move = burnedMove(holding, direction, burn, scanFrom, into?.holding)
       const at = deps.now()
       const chain = await chainEvents(
-        { routes, route },
+        { routes, route, into },
         move,
         burn,
         move.withdrawalId,

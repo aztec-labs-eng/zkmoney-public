@@ -1,0 +1,95 @@
+{
+  "scenario": "fresh",
+  "bootstrap": "/savings?demo=fresh&flowFixture=success&savingsFixture=switch",
+  "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=switch",
+  "ready": { "testId": "savings-balance" },
+  "steps": [
+    { "action": "waitFor", "selector": "[data-testid=savings-holdings][data-hydrated]" },
+    {
+      "action": "screenshot",
+      "file": "switch-page.png",
+      "state": "Two vaults that switch: the move out reads Move funds"
+    },
+    { "action": "click", "role": "button", "name": "Move funds", "exact": true },
+    { "action": "fill", "label": "Amount to move", "value": "100" },
+    { "action": "waitFor", "selector": "dialog button:has-text(\"Review\"):enabled" },
+    {
+      "action": "screenshot",
+      "file": "switch-to-main.png",
+      "state": "Move funds: From the USDC vault, To Main Account, in the transfer widget"
+    },
+    { "action": "click", "testId": "move-change-to" },
+    { "action": "waitFor", "selector": "[role=listbox]" },
+    {
+      "action": "screenshot",
+      "file": "switch-picker.png",
+      "state": "Move to: Main Account, then each vault the USDC vault switches into"
+    },
+    { "action": "click", "selector": "[role=listbox] > button:nth-of-type(2)" },
+    { "action": "waitFor", "selector": "dialog button:has-text(\"Review\"):enabled" },
+    {
+      "action": "screenshot",
+      "file": "switch-higher.png",
+      "state": "To the USDT vault at a higher rate, with the rate note"
+    },
+    { "action": "click", "testId": "move-change-to" },
+    { "action": "waitFor", "selector": "[role=listbox]" },
+    { "action": "click", "selector": "[role=listbox] > button:nth-of-type(3)" },
+    { "action": "waitFor", "selector": "dialog button:has-text(\"Review\"):enabled" },
+    {
+      "action": "screenshot",
+      "file": "switch-lower.png",
+      "state": "To the DAI vault at a lower rate"
+    },
+    { "action": "click", "testId": "move-change-to" },
+    { "action": "waitFor", "selector": "[role=listbox]" },
+    { "action": "click", "selector": "[role=listbox] > button:nth-of-type(2)" },
+    { "action": "waitFor", "selector": "dialog button:has-text(\"Review\"):enabled" },
+    { "action": "click", "role": "button", "name": "Review", "exact": true },
+    { "action": "waitFor", "role": "checkbox" },
+    {
+      "action": "screenshot",
+      "file": "switch-review.png",
+      "state": "Review of a switch into the USDT vault, with its terms"
+    },
+    {
+      "action": "goto",
+      "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=switchUnworded"
+    },
+    { "action": "waitFor", "selector": "[data-testid=savings-holdings][data-hydrated]" },
+    { "action": "click", "role": "button", "name": "Move funds", "exact": true },
+    { "action": "fill", "label": "Amount to move", "value": "100" },
+    { "action": "waitFor", "selector": "dialog button:has-text(\"Review\"):enabled" },
+    {
+      "action": "screenshot",
+      "file": "switch-unworded-to-main.png",
+      "state": "No words for any vault: a move to Main Account still goes"
+    },
+    { "action": "click", "testId": "move-change-to" },
+    { "action": "waitFor", "selector": "[role=listbox]" },
+    { "action": "click", "selector": "[role=listbox] > button:nth-of-type(2)" },
+    { "action": "waitFor", "testId": "move-no-terms" },
+    { "action": "wait", "ms": 600 },
+    {
+      "action": "screenshot",
+      "file": "switch-no-terms.png",
+      "state": "A switch into a vault with no words: blocked"
+    },
+    { "action": "goto", "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=funded" },
+    { "action": "waitFor", "selector": "[data-testid=savings-holdings][data-hydrated]" },
+    {
+      "action": "screenshot",
+      "file": "one-vault-page.png",
+      "state": "One vault: Move to Main Account, as before"
+    },
+    { "action": "click", "role": "button", "name": "Move to Main Account", "exact": true },
+    { "action": "fill", "label": "Amount to move", "value": "1" },
+    { "action": "waitFor", "selector": "dialog button:has-text(\"Review\"):enabled" },
+    {
+      "action": "screenshot",
+      "file": "one-vault-sheet.png",
+      "state": "One vault: the move out sheet, as before"
+    }
+  ],
+  "finalScreenshot": false
+}

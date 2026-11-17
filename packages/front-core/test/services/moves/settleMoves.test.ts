@@ -23,10 +23,7 @@ describe("settlePass", () => {
     expect(await account.balance(SKY_HOLDING.base)).toBe(900n)
 
     await settle()
-    expect(await read(into.id)).toMatchObject({
-      phase: "burned",
-      observed: { maxDeposit: 10n ** 24n },
-    })
+    expect((await read(into.id)).phase).toBe("burned")
 
     const { made } = await runRoute(world, into, { assets: 97n, deposit: 90n })
     await settle()
@@ -191,14 +188,13 @@ describe("settlePass", () => {
     for (const key of Object.keys(calls)) delete calls[key]
 
     await world.settle()
-    // Waiting: its release and limits. Run: its release, run and deposit.
+    // Waiting: its release. Run: its release, run and deposit.
     expect(calls).toEqual({
       head: 1,
       read: 1,
       withdrawalSpent: 3,
       outcome: 2,
       findDeposit: 2,
-      limits: 1,
     })
     expect((await world.read(waiting.id)).phase).toBe("burned")
     for (const move of ran) expect((await world.read(move.id)).phase).toBe("claimed")

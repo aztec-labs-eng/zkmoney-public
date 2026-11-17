@@ -19,6 +19,8 @@ export interface RingStageBlock {
   title: string
   line: string
   note?: ReactNode
+  /** The note as lines, a little apart, in place of `note`. */
+  noteLines?: readonly string[]
   /**
    * Shows the note as a banner: yellow with a warning sign, or grey with a blinking dot: bold with
    * a yellow dot while waiting on the user, plain with a green dot while waiting on a chain.
@@ -90,7 +92,7 @@ export function RingStage({
                   <p className={styles.line}>{block.line}</p>
                 </div>
               </div>
-              {block.note && (
+              {(block.note || block.noteLines) && (
                 <p className={styles.note} data-tone={block.noteTone}>
                   {block.noteTone && (
                     <span className={styles.mark}>
@@ -101,7 +103,15 @@ export function RingStage({
                       </span>
                     </span>
                   )}
-                  <span>{block.note}</span>
+                  {block.noteLines ? (
+                    <span className={styles.noteLines}>
+                      {block.noteLines.map((line) => (
+                        <span key={line}>{line}</span>
+                      ))}
+                    </span>
+                  ) : (
+                    <span>{block.note}</span>
+                  )}
                 </p>
               )}
               {block.button && (

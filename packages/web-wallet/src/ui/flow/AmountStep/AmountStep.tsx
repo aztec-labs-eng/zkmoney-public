@@ -47,8 +47,8 @@ export interface AmountStepProps {
     fee: FeeNote
     feeTestId?: string
   }
-  /** Shown as soon as they apply. */
-  errors?: readonly string[]
+  /** Shown as soon as they apply; one with a `testId` is one tests or captures wait for. */
+  errors?: readonly (string | { text: string; testId?: string })[]
   /** Why the button is off, shown once it is pressed, until the amounts change. */
   disabledHint?: string
   /** Route notices under the fields. */
@@ -168,11 +168,14 @@ export function AmountStep({
             asset: receive.asset,
           }}
         />
-        {errors.map((error) => (
-          <span key={error} className="ww-pay__error">
-            {error}
-          </span>
-        ))}
+        {errors.map((error) => {
+          const { text, testId } = typeof error === "string" ? { text: error } : error
+          return (
+            <span key={text} className="ww-pay__error" data-testid={testId}>
+              {text}
+            </span>
+          )
+        })}
         {notices}
       </div>
       {disabledHint && pressedAt === typed && <span className="ww-pay__error">{disabledHint}</span>}

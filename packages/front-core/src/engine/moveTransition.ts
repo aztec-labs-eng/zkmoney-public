@@ -26,22 +26,24 @@ export interface MoveQuote {
   /** What the route keeps: the burn less both tips and the bridge fee. */
   routed: bigint
   relayerTip: bigint
-  /** What the conversion returns, and the floor the route holds it to. */
+  /**
+   * What the conversion returns, and the floor the route holds it to. On a swap: what the
+   * destination vault takes in, in its asset.
+   */
   conversionOut: bigint
   conversionMinOut: bigint
   /** What the terms step returns at the quoted rate, and the floor the route holds it to. */
   expectedOut: bigint
   minOut: bigint
+  /**
+   * A swap's floors out of its source: its redeem's, in the source vault's asset, and its
+   * conversion's, in the base's token (0 when the vaults share an asset and skip it).
+   */
+  out?: { minOut: bigint; conversionMinOut: bigint }
   /** The burn's withdrawal executor's fee, in the base token: part of the burn, as the tips are. */
   withdrawalFee: bigint
   /** Who receives `withdrawalFee`, where the executor names one. */
   feeBeneficiary?: Address
-}
-
-/** What the holding's terms take now: a deposit in the asset, a redeem in the held token. */
-export interface MoveLimits {
-  maxDeposit: bigint
-  maxRedeem: bigint
 }
 
 /** The escrow a Sky escrow move's burn pays, and the tip it pays whoever runs it. */
@@ -74,8 +76,15 @@ export type MoveRail = MoveRailFields["rail"]
 
 interface MoveFields {
   id: string
+  /** The holding moved into or out of; a swap's source. */
   holdingId: string
+  /** A swap's direction is `out`: it burns `holdingId`'s token. */
   direction: MoveDirection
+  /**
+   * A swap's destination: the holding whose vault the route deposits into, in one burn. Absent on
+   * a move.
+   */
+  intoHoldingId?: string
   /** What left the source: the base's token moving in, the holding's moving out. */
   amount: bigint
   /** Absent on a replayed move. */
@@ -97,11 +106,12 @@ interface MoveFields {
   endTime?: number
   /** When the burn's release paid the route's L1 target, read off L1 for a replayed move. */
   releasedAt?: number
-  /** The terms' limits, read while the release waits. */
-  observed?: { at: number } & MoveLimits
   l1?: { releaseTx?: Hash; depositTx?: Hash; recoveryTx?: Hash }
   deposit?: MoveDeposit
-  /** What the vault took in moving in, or paid out moving out, in its asset, as the run reports. */
+  /**
+   * What the vault took in moving in, or paid out moving out, in its asset, as the run reports. On
+   * a swap, what the destination vault took in.
+   */
   assets?: bigint
   /** Where a recovered move's funds went. */
   recoveredTo?: Address
@@ -113,6 +123,12 @@ interface MoveFields {
 /** One move: a burn to its rail's L1 target, then a deposit the account claims. */
 export type MoveRecord = MoveRailFields & MoveFields
 
+/** The holding a move's funds land in, a swap's destination; undefined when they land on Main. */
+export const landsIn = (
+  move: Pick<MoveRecord, "direction" | "holdingId" | "intoHoldingId">,
+): string | undefined =>
+  move.intoHoldingId ?? (move.direction === "in" ? move.holdingId : undefined)
+
 /** What a move is built with, before its burn is sent. */
 export type BuiltMove = MoveRailFields &
   Pick<
@@ -120,6 +136,7 @@ export type BuiltMove = MoveRailFields &
     | "id"
     | "holdingId"
     | "direction"
+    | "intoHoldingId"
     | "amount"
     | "nonce"
     | "recipientCommitment"
@@ -134,13 +151,7 @@ export type ReplayedPhase = Extract<MovePhase, "burned" | "released" | "depositS
 export type ReplayedMove = MoveRailFields &
   Omit<
     MoveFields,
-    | "phase"
-    | "quote"
-    | "withdrawalLocalId"
-    | "withdrawalId"
-    | "observed"
-    | "failure"
-    | "replayedFrom"
+    "phase" | "quote" | "withdrawalLocalId" | "withdrawalId" | "failure" | "replayedFrom"
   > & { phase: ReplayedPhase; withdrawalId: Hex; replayedFrom: string }
 
 export type MoveEvent =
@@ -156,7 +167,6 @@ export type MoveEvent =
   | { type: "scanned"; to: bigint }
   | { type: "depositSeen"; txHash: Hash; deposit: MoveDeposit }
   | { type: "claimed"; at: number }
-  | { type: "observed"; limits: MoveLimits; at: number }
   | { type: "failed"; failure: Failure; at: number }
   /** The funds went back to `to` on L1 before the route ran. */
   | { type: "recovered"; txHash: Hash; to: Address; at: number }
@@ -179,6 +189,9 @@ const quoteFigures = (quote: MoveQuote): MoveQuote => ({
   expectedOut: quote.expectedOut,
   minOut: quote.minOut,
   withdrawalFee: quote.withdrawalFee,
+  ...(quote.out
+    ? { out: { minOut: quote.out.minOut, conversionMinOut: quote.out.conversionMinOut } }
+    : {}),
 })
 
 /**
@@ -244,17 +257,6 @@ export function moveTransition(
     case "claimed":
       if (record.phase !== "depositSeen") return undefined
       return { ...record, phase: "claimed", endTime: event.at }
-    case "observed":
-      if (!BEFORE_RELEASE.has(record.phase)) return undefined
-      if (record.observed && event.at <= record.observed.at) return undefined
-      return {
-        ...record,
-        observed: {
-          at: event.at,
-          maxDeposit: event.limits.maxDeposit,
-          maxRedeem: event.limits.maxRedeem,
-        },
-      }
     case "failed":
       if (!BEFORE_RELEASE.has(record.phase)) return undefined
       return { ...record, phase: "failed", failure: event.failure, endTime: event.at }

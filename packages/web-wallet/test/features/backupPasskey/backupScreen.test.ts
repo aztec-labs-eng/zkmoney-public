@@ -18,7 +18,9 @@ import type { EntryFacts } from "../../../src/features/backupPasskey/backupPassk
 import type { FasterWithdrawal } from "../../../src/features/withdraw/useFasterWithdrawal"
 import {
   pendingRecord,
+  promptsLine,
   recoveryKey,
+  selectAddBadge,
   selectAddStep,
   selectBackupScreen,
   selectSheetClose,
@@ -27,6 +29,7 @@ import {
   type BackupScreenInput,
   type EntryInput,
   type KeysRead,
+  type MoveTokens,
 } from "../../../src/features/backupPasskey/backupScreen"
 import { createdRecord, PLAN, sent, signedRecord, SIPA, word } from "../../support/backupAdd"
 
@@ -413,7 +416,7 @@ describe("selectBackupScreen, a saved rotation", () => {
 })
 
 describe("selectBackupScreen, the move's rows", () => {
-  const TOKENS = { main: "0xMAIN", savings: "0xsave" }
+  const TOKENS = { main: "0xMAIN", savings: ["0xsave", "0xVAULT"] }
   type Run = NonNullable<BackupRotationRecord["move"]>["runs"][number]
   type Chunk = Run["chunks"][number]
   type Link = NonNullable<BackupRotationRecord["refunds"]>["links"][number]
@@ -432,7 +435,7 @@ describe("selectBackupScreen, the move's rows", () => {
   const links = (...states: Link["state"][]) => ({
     refunds: { links: states.map((state, i) => ({ link: `l${i}`, state })) },
   })
-  const rows = (over: Partial<BackupRotationRecord>, tokens: { main: string } | null = TOKENS) => {
+  const rows = (over: Partial<BackupRotationRecord>, tokens: MoveTokens | null = TOKENS) => {
     const screen = at(movedRecord(over), {}, tokens ? { tokens } : {})
     return screen.id === "finish" ? screen.progress.rows : undefined
   }
@@ -493,7 +496,19 @@ describe("selectBackupScreen, the move's rows", () => {
       { kind: "other", state: "next" },
     ])
     const savings = { move: { runs: [run([chunk("0xsave", "mined")])] } }
-    expect(rows(savings, { main: "0xmain" })).toEqual([{ kind: "other", state: "done" }])
+    expect(rows(savings, { main: "0xmain", savings: [] })).toEqual([
+      { kind: "other", state: "done" },
+    ])
+  })
+
+  it("counts every vault's shares in the one Savings row", () => {
+    const move = (...chunks: Chunk[]) => rows({ move: { runs: [run(chunks)] } })
+    expect(move(chunk("0xsave", "mined"), chunk("0xvault", "planned"))).toEqual([
+      { kind: "savings", state: "next" },
+    ])
+    expect(move(chunk("0xsave", "mined"), chunk("0xvault", "mined"))).toEqual([
+      { kind: "savings", state: "done" },
+    ])
   })
 
   it("keeps the paylinks row done beside a run only when a link was taken back", () => {
@@ -742,6 +757,31 @@ describe("selectAddStep", () => {
   })
 })
 
+describe("selectAddBadge", () => {
+  it.each([
+    ["on its tracker", signedRecord(), "finishSetup"],
+    ["off its tracker", signedRecord({ phase: "conflict" }), "pending"],
+    [
+      "finished and left",
+      signedRecord({ phase: "done", dismissed: true, ...sent(5, { outcome: "swept" }) }),
+      undefined,
+    ],
+  ] as const)("badges Settings' Passkeys row for a saved add %s", (_, saved, badge) => {
+    expect(selectAddBadge(saved)).toBe(badge)
+  })
+})
+
+describe("promptsLine", () => {
+  it.each([
+    [3, "count"],
+    [1, "one"],
+    [0, "none"],
+    ["several", "several"],
+  ] as const)("counts %s prompts left with the %s line", (left, line) => {
+    expect(promptsLine(left)).toBe(line)
+  })
+})
+
 describe("selectBackupScreen, a step's failure", () => {
   it("keeps a closed approval on step 2 as C3, and raises an unknown one over it as C5", () => {
     const record = createdRecord()
@@ -951,7 +991,7 @@ describe("selectBackupScreen, the add", () => {
     const short = { ...FACTS, balance: DAI }
     expect(select({ entry: entry({ facts: short }), start: "intro" })).toEqual({
       id: "lowBalance",
-      funding: { sent: 2n * DAI, credited: (14n * DAI) / 10n },
+      need: 2n * DAI,
       have: DAI,
     })
     const more = { ...short, withdrawalInFlight: true }

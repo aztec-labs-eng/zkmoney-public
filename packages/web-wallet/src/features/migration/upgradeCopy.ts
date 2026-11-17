@@ -1,6 +1,6 @@
 import type { MetadataMigrationPhase, MetadataMigrationRecord } from "@obsidion/front-core"
 import type { WalletAction } from "../actionGate"
-import type { SavingsAccount } from "../savings/AccountSwitcher"
+import type { SavingsAccount } from "../savings/AccountSwitcher/AccountSwitcher"
 import type { UpgradeStatus } from "./migrationDialog"
 import { usd } from "../../ui/format"
 

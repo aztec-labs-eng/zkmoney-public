@@ -1,6 +1,6 @@
 // @vitest-environment node
 /** Who funded an address, how a pass derives it, and a second payment to a claimed one. */
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import { getAddress, type Address } from "viem"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { isStuckSweep, STUCK_SWEEP_MS } from "../../../src/core/services/deposits/sipaStuck"
@@ -11,24 +11,18 @@ const SESSION_WALLET = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 const FORGER = "0x00000000000000000000000000000000000000ff" as Address
 
 describe("funding attribution", () => {
-  it("stamps the funder and funding tx, backfills the wallet address, and fires the hook with the bare address", async () => {
+  it("stamps the funder and funding tx, and backfills the wallet address", async () => {
     const w = await pipelineWorld()
     const sipa = await w.announced(1)
     const tx = w.pay(sipa.address, ONE)
-    const onFundingWalletDetected = vi.fn(async () => undefined)
 
-    await w.scan({ onFundingWalletDetected })
+    await w.scan()
 
     expect(await w.get(sipa.address)).toMatchObject({
       fundingTxHash: tx,
       fundingFromAddress: getAddress(FUNDER),
       walletAddress: getAddress(FUNDER),
     })
-    // A third-party deposit: no session identity to pass through.
-    expect(onFundingWalletDetected).toHaveBeenCalledOnce()
-    expect(onFundingWalletDetected).toHaveBeenCalledWith(
-      expect.objectContaining({ address: getAddress(FUNDER), walletName: undefined }),
-    )
   })
 
   it("dates a deposit this device handed out by its funding transfer's block", async () => {
@@ -60,50 +54,19 @@ describe("funding attribution", () => {
     expect(w.l1.count({ method: "eth_getLogs" })).toBe(2)
   })
 
-  it("keeps the connected-session identity when the on-chain funder differs, and passes it when matching", async () => {
+  it("keeps the connected-session identity when the on-chain funder differs", async () => {
     const w = await pipelineWorld()
-    const [a, b] = [await w.announced(1), await w.announced(2)]
-    const identity = { walletName: "Rainbow" }
-    await w.saved(a, { phase: "funded", walletAddress: SESSION_WALLET, ...identity })
-    await w.saved(b, {
-      phase: "funded",
-      walletAddress: FUNDER.toUpperCase().replace("0X", "0x"),
-      ...identity,
-    })
+    const a = await w.announced(1)
+    await w.saved(a, { phase: "funded", walletAddress: SESSION_WALLET, walletName: "Rainbow" })
     w.pay(a.address, ONE)
-    w.pay(b.address, ONE)
-    const onFundingWalletDetected = vi.fn(async () => undefined)
 
-    await w.scan({ onFundingWalletDetected })
+    await w.scan()
 
     // Divergence: both kept, the session identity not overwritten.
     expect(await w.get(a.address)).toMatchObject({
       walletAddress: SESSION_WALLET,
       fundingFromAddress: getAddress(FUNDER),
     })
-    expect(
-      (onFundingWalletDetected.mock.calls as unknown as [{ walletName?: string }][])
-        .map(([d]) => d.walletName)
-        .sort(),
-    ).toEqual(["Rainbow", undefined].sort())
-  })
-
-  it("isolates attribution failures from the claim path", async () => {
-    const w = await pipelineWorld()
-    const sipa = await w.announced(1)
-    w.pay(sipa.address, ONE)
-    w.sweep(sipa, 7n)
-
-    const { claimed } = await w.pass({
-      scan: {
-        onFundingWalletDetected: async () => {
-          throw new Error("contacts down")
-        },
-      },
-    })
-
-    expect(claimed).toMatchObject({ claimed: 1, failed: 0 })
-    expect(await w.get(sipa.address)).toMatchObject({ phase: "claimed" })
   })
 
   it("reads deposits, outflows and fundings at once, not one after another", async () => {

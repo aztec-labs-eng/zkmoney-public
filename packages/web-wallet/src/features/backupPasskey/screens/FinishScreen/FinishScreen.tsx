@@ -6,6 +6,7 @@ import { relandingCopy } from "../../backupPasskeyCopy"
 import {
   offersClose,
   promptsLeft,
+  promptsLine,
   type BackupMoveRow,
   type BackupScreenProps,
 } from "../../backupScreen"
@@ -22,11 +23,14 @@ import copy from "./FinishScreen.copy"
 
 type Finish = BackupScreenProps<"finish">["screen"]
 
-/** The line of `lines` for the prompts left. */
+/** The line of `lines` for the prompts left; `one` stands for `none` where `lines` has none. */
 const byLeft = (
-  lines: { one: string; count: `${string}{count}${string}`; several: string },
+  lines: { none?: string; one: string; count: `${string}{count}${string}`; several: string },
   left: number | "several",
-) => (left === "several" ? lines.several : left > 1 ? fmt(lines.count, { count: left }) : lines.one)
+) => {
+  const line = promptsLine(left)
+  return line === "count" ? fmt(lines.count, { count: left }) : lines[line] ?? lines.one
+}
 
 const rowLabel = (row: BackupMoveRow) =>
   row.kind !== "links"

@@ -95,9 +95,9 @@ const ALLOWANCE: AllowanceSnapshot = {
   state: { kind: "available", available: 10, renews: false },
   refreshing: false,
 }
-/** A funding and credit with fractions of a cent, so figures rounded apart would disagree. */
-const FUNDING = (20551n * DAI) / 10000n
-const CREDITED = (15004n * DAI) / 10000n
+/** A funding with fractions of a cent, so figures rounded apart would disagree, over a one-unit credit. */
+const CREDITED = 1n
+const FUNDING = (5547n * DAI) / 10000n + CREDITED
 const FACTS: EntryFacts = {
   routeLive: true,
   balance: 120n * DAI,
@@ -147,9 +147,9 @@ const entry = (over: Partial<EntryInput> = {}): EntryInput => ({
   ...over,
 })
 const WITHDRAWING = entry({ facts: { ...FACTS, withdrawalInFlight: true } })
-const SHORT = entry({ facts: { ...FACTS, balance: (8n * DAI) / 10n } })
+const SHORT = entry({ facts: { ...FACTS, balance: (3n * DAI) / 10n } })
 const SHORT_WITHDRAWING = entry({
-  facts: { ...FACTS, balance: (8n * DAI) / 10n, withdrawalInFlight: true },
+  facts: { ...FACTS, balance: (3n * DAI) / 10n, withdrawalInFlight: true },
 })
 /** Enough for the add, not for Faster's tip on top. */
 const fitsUntipped = (amount: bigint) => amount <= FUNDING
@@ -168,7 +168,7 @@ const ATTEMPT = "capture-attempt"
 const PLAN = {
   address: TWO_KEY,
   fundingAmount: FUNDING.toString(),
-  deposited: ((185n * DAI) / 100n).toString(),
+  deposited: ((3496n * DAI) / 10000n + CREDITED).toString(),
   credited: CREDITED.toString(),
   approvals: 1,
   moves: 2,
@@ -264,7 +264,9 @@ const moving = (over: Partial<BackupRotationRecord> = {}) =>
   signed({ phase: "moved", ...funding("swept"), ...over })
 const MAIN = word(0x7a)
 const SAVINGS = word(0x7b)
-const TOKENS = { main: MAIN, savings: SAVINGS }
+/** A second holding's share token. */
+const VAULT = word(0x7c)
+const TOKENS = { main: MAIN, savings: [SAVINGS, VAULT] }
 type Run = NonNullable<BackupRotationRecord["move"]>["runs"][number]
 type Chunk = Run["chunks"][number]
 const chunk = (token: string, state: Chunk["state"]): Chunk => ({
@@ -480,6 +482,13 @@ export const BACKUP_FIXTURES = {
     screen: "finish",
     keys: [SIGN_UP],
     input: run([chunk(MAIN, "mined"), chunk(SAVINGS, "planned")], { wait: "approval" }),
+  },
+  "finish-vaults": {
+    screen: "finish",
+    keys: [SIGN_UP],
+    input: run([chunk(MAIN, "mined"), chunk(SAVINGS, "mined"), chunk(VAULT, "planned")], {
+      wait: "approval",
+    }),
   },
   "finish-upper-bound": {
     screen: "finish",

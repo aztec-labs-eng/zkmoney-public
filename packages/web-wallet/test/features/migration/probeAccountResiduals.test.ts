@@ -157,7 +157,7 @@ const lockedSummary = {
 let session: Session
 beforeEach(() => {
   vi.clearAllMocks()
-  h.config = { oxideProfile: {}, network: "sandbox", l1ChainId: 1, assets: [] }
+  h.config = { oxideProfile: {}, network: "sandbox", l1ChainId: 1, assets: [], features: {} }
   closeSession()
   // The account's session, its own tasks left out; `h.storageId` is the device's committed account.
   const page = { ...testPage(fakeAuth()), device: { get: () => ({ storageId: h.storageId }) } }

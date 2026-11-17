@@ -6,11 +6,10 @@ import {
   type BridgeInRecord,
   type BridgeInStatus,
 } from "../core/services/crossChain/types"
-import type { Database } from "./database"
+import type { Database, Write } from "./database"
 import { WalletError } from "./errors"
 import { loadRecords, persistentStore } from "./persistentStore"
 import type { Loaded } from "./recordSource"
-import type { SipaDeposit } from "./sipaDeposits"
 import { derived, type ReadonlyStore } from "./store"
 
 const PREFIX = "acct/bridgeIns"
@@ -54,6 +53,8 @@ export type BridgeInEvent =
   /** The call's hash: the wallet's answer, the one the chain shows at its nonce, or a resend's. */
   | { type: "sent"; originTxHash: Hex; nonce?: number }
   | { type: "rebuilt"; record: BridgeInRecord }
+  /** The provider named the origin call of a bridge-in rebuilt from its fill. */
+  | { type: "originRead"; originTxHash: Hex }
   /** What a read learned: the nonce, or that the hint is spent. */
   | { type: "read"; nonce?: number; nonceHint?: number }
   | { type: "reported"; status: BridgeInStatus; at: number }
@@ -109,6 +110,10 @@ export function bridgeInTransition(
     }
     case "rebuilt":
       return current?.status === "filled" ? undefined : event.record
+    case "originRead":
+      return !current || current.originTxHash
+        ? undefined
+        : { ...current, originTxHash: event.originTxHash }
     case "read": {
       if (current?.status !== "pending") return undefined
       return { ...current, nonce: event.nonce, nonceHint: event.nonceHint }
@@ -144,12 +149,16 @@ export interface BridgeIns {
   /** Saves the hash the wallet returned; the record when it changed. */
   markSent(id: string, originTxHash: Hex): Promise<BridgeInRecord | undefined>
   /**
-   * Saves a bridge-in rebuilt from the chain over the record sent as its hash, if any; undefined
-   * when a filled one is already saved.
+   * Saves a bridge-in rebuilt from the chain over the record its fill paid or sent as its hash,
+   * if any; undefined when a filled one is already saved.
    */
-  rebuild(record: Omit<BridgeInRecord, "id">): Promise<BridgeInRecord | undefined>
+  rebuild(record: Omit<BridgeInRecord, "id">, w?: Write): Promise<BridgeInRecord | undefined>
   /** Applies `events` in order in one write; the record when it changed. */
-  apply(id: string, events: readonly BridgeInEvent[]): Promise<BridgeInRecord | undefined>
+  apply(
+    id: string,
+    events: readonly BridgeInEvent[],
+    w?: Write,
+  ): Promise<BridgeInRecord | undefined>
 }
 
 /** Whether a bridge-in may be bridging to, or has paid, its recipient. */
@@ -159,10 +168,6 @@ export const bridgeInDelivers = (record: Pick<BridgeInRecord, "status">) =>
 /** The bridge-in bridging to, or that paid, `address`, one of this wallet's deposit addresses. */
 export const bridgeInPaying = (records: readonly BridgeInRecord[], address: string) =>
   records.find((r) => !r.pays && bridgeInDelivers(r) && lower(r.recipient) === lower(address))
-
-/** A deposit replayed onto this device, which another device may have bridged in. */
-export const mayBeBridgedIn = (record: Pick<SipaDeposit, "replayed" | "intent" | "direct">) =>
-  record.replayed === true && !record.intent && !record.direct
 
 export function createBridgeIns({
   db,
@@ -182,12 +187,16 @@ export function createBridgeIns({
     records: [...records].sort((a, b) => b.startTime - a.startTime),
     hydrated: loaded && !failed,
   }))
-  const apply: BridgeIns["apply"] = (id, events) =>
-    store.apply(id, (current) => {
-      let next = current
-      for (const event of events) next = bridgeInTransition(next, event) ?? next
-      return next === current ? undefined : next
-    })
+  const apply: BridgeIns["apply"] = (id, events, w) =>
+    store.apply(
+      id,
+      (current) => {
+        let next = current
+        for (const event of events) next = bridgeInTransition(next, event) ?? next
+        return next === current ? undefined : next
+      },
+      w,
+    )
   return {
     list,
     ready: store.ready,
@@ -200,12 +209,20 @@ export function createBridgeIns({
       return record
     },
     markSent: (id, originTxHash) => apply(id, [{ type: "sent", originTxHash }]),
-    async rebuild(rebuilt) {
-      const hash = rebuilt.originTxHash
-      if (!hash) throw new WalletError("invariant", "bridgeIns: a rebuild with no origin hash")
+    async rebuild(rebuilt, within) {
+      const { originTxHash: hash, fillTxHash: fill } = rebuilt
+      if (!hash && !fill) throw new WalletError("invariant", "bridgeIns: a rebuild with no hash")
       await store.ready
-      return db.write(async (w) => {
-        const saved = (await loadRecords(store.view)).find((r) => bridgeInSentAs(r, hash))
+      const save = async (w: Write) => {
+        const saved = (await loadRecords(store.view)).find(
+          (r) =>
+            bridgeInSentAs(r, hash) ||
+            // One transaction can fill several deposits: the recipient tells them apart.
+            (!!fill &&
+              !!r.fillTxHash &&
+              lower(r.fillTxHash) === lower(fill) &&
+              lower(r.recipient) === lower(rebuilt.recipient)),
+        )
         const id = saved?.id ?? `bridge-in:${newId()}`
         const record = { ...rebuilt, id }
         return store.apply(
@@ -213,7 +230,8 @@ export function createBridgeIns({
           (current) => bridgeInTransition(current, { type: "rebuilt", record }),
           w,
         )
-      })
+      }
+      return within ? save(within) : db.write(save)
     },
     apply,
   }

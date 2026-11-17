@@ -24,6 +24,10 @@ describe("savings", () => {
     minedAt: T0 + 500,
   } as WithdrawalRecord
   const burns = new Map([[BURN, burn]])
+  const PRICES = new Map([
+    ["fea-sky", { assetDecimals: 18 }],
+    ["fea-usdc", { assetDecimals: 6 }],
+  ])
 
   /** A move in of 10 DAI whose vault took 9.9 for 9.5 shares, claimed on the Savings side. */
   function move(extra: Partial<MoveRecord> = {}): MoveRecord {
@@ -47,7 +51,9 @@ describe("savings", () => {
   }
 
   it("a move in receives what the vault took, dated when its deposit landed", () => {
-    expect(buildSavingsCsvRows({ walletToken: DAI, moves: [move()], burns })).toEqual([
+    expect(
+      buildSavingsCsvRows({ walletToken: DAI, prices: PRICES, moves: [move()], burns }),
+    ).toEqual([
       {
         timestampMs: T0 + 1000,
         type: "Savings deposit",
@@ -55,6 +61,33 @@ describe("savings", () => {
         aztecTxHash: "0xburn",
         ethereumTxHash: "0xrun",
       },
+    ])
+  })
+
+  it("reads a vault's figures in its asset's decimals, and falls back to the burn while unpriced", () => {
+    // A vault of a 6-decimal asset: it took 9.9 of it, and paid 9.9 for a move out that landed 9.5.
+    const vault = { holdingId: "fea-usdc", assets: parseUnits("9.9", 6) }
+    const into = move(vault)
+    const out = move({ ...vault, direction: "out", amount: parseUnits("9.5", 18) })
+    const rows = buildSavingsCsvRows({
+      walletToken: DAI,
+      prices: PRICES,
+      moves: [into, out],
+      burns,
+    })
+    expect(rows.map((row) => row.received ?? row.fee)).toEqual([
+      { amount: "0.4", currency: "DAI" },
+      { amount: "9.9", currency: "DAI" },
+    ])
+    const unpriced = buildSavingsCsvRows({
+      walletToken: DAI,
+      prices: new Map(),
+      moves: [into, out],
+      burns,
+    })
+    expect(unpriced.map((row) => row.received ?? row.fee)).toEqual([
+      undefined,
+      { amount: "10", currency: "DAI" },
     ])
   })
 
@@ -71,17 +104,19 @@ describe("savings", () => {
     }
     const quoted = move({ assets: undefined, quote })
     expect(
-      buildSavingsCsvRows({ walletToken: DAI, moves: [quoted], burns })[0]?.received?.amount,
+      buildSavingsCsvRows({ walletToken: DAI, prices: PRICES, moves: [quoted], burns })[0]?.received
+        ?.amount,
     ).toBe("9.8")
     const unread = move({ assets: undefined })
     expect(
-      buildSavingsCsvRows({ walletToken: DAI, moves: [unread], burns })[0]?.received?.amount,
+      buildSavingsCsvRows({ walletToken: DAI, prices: PRICES, moves: [unread], burns })[0]?.received
+        ?.amount,
     ).toBe("10")
   })
 
   it("a move out sends what landed on Main, with the rest of what the vault paid as the fee, dated at its burn", () => {
     const out = move({ direction: "out", amount: parseUnits("9.5", 18) })
-    expect(buildSavingsCsvRows({ walletToken: DAI, moves: [out], burns })).toEqual([
+    expect(buildSavingsCsvRows({ walletToken: DAI, prices: PRICES, moves: [out], burns })).toEqual([
       {
         timestampMs: T0 + 500,
         type: "Savings withdrawal",
@@ -92,7 +127,7 @@ describe("savings", () => {
       },
     ])
     const unread = move({ direction: "out", assets: undefined })
-    const row = buildSavingsCsvRows({ walletToken: DAI, moves: [unread], burns })[0]
+    const row = buildSavingsCsvRows({ walletToken: DAI, prices: PRICES, moves: [unread], burns })[0]
     expect(row?.sent).toEqual({ amount: "9.5", currency: "DAI" })
     expect(row?.fee).toBeUndefined()
   })
@@ -100,9 +135,15 @@ describe("savings", () => {
   it("names the Ethereum transaction that ran the move's escrow, not its burn's release", () => {
     const l1 = { releaseTx: "0xrelease", depositTx: "0xrun" } as MoveRecord["l1"]
     const ran = move({ rail: "skyEscrow", l1 })
-    expect(buildSavingsCsvRows({ walletToken: DAI, moves: [ran], burns })[0]?.ethereumTxHash).toBe(
-      "0xrun",
-    )
+    expect(
+      buildSavingsCsvRows({ walletToken: DAI, prices: PRICES, moves: [ran], burns })[0]
+        ?.ethereumTxHash,
+    ).toBe("0xrun")
+  })
+
+  it("a claimed swap has no row: its funds stay in Savings", () => {
+    const vaultSwapped = move({ direction: "out", holdingId: "fea-a", intoHoldingId: "fea-b" })
+    expect(buildSavingsCsvRows({ walletToken: DAI, moves: [vaultSwapped], burns })).toEqual([])
   })
 
   it("a move whose deposit is not yet claimed has no row", () => {
@@ -117,7 +158,7 @@ describe("savings", () => {
   })
 
   it("has its own file", () => {
-    const lines = savingsCsv({ walletToken: DAI, moves: [move()], burns })
+    const lines = savingsCsv({ walletToken: DAI, prices: PRICES, moves: [move()], burns })
       .trimEnd()
       .split("\r\n")
     expect(lines[1]).toBe("2026-01-02 03:04:06 UTC,,,9.9,DAI,,,,,,Savings deposit,0xrun") // debt-check-ignore: moved unchanged from activityCsv.test.ts; pins the exported file's row

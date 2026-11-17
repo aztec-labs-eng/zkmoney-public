@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { FeedItem, MoveDeposit, MoveRecord } from "@obsidion/front-core"
+import type { FeedItem, HoldingPrice, MoveDeposit, MoveRecord } from "@obsidion/front-core"
 import { oldVersionLeftovers } from "../../../../src/features/migration/oldVersionLeftovers"
 import { moveRecord } from "../../../support/moves"
 
@@ -39,6 +39,7 @@ describe("old-version leftovers", () => {
           link("0xold", 4, "claimed"),
           link("0xold", 5, "awaitingClaim", "failed"),
         ],
+        price: () => undefined,
         network: "0xNEW",
       }),
     ).toEqual({
@@ -47,5 +48,27 @@ describe("old-version leftovers", () => {
       links: 12n * ONE,
       linkCount: 2,
     })
+  })
+
+  it("values each stranded move's shares at its own holding's price", () => {
+    // Shares on their way out, with no quote kept: only the holding's price values them.
+    const out = (id: string, holdingId: string) =>
+      move(id, 1000n, { phase: "migrated", direction: "out", holdingId, quote: undefined })
+    const priced = (sharePrice: bigint) =>
+      ({ sharePrice, shareDecimals: 18, assetDecimals: 18 } as HoldingPrice)
+    const prices: Record<string, HoldingPrice> = {
+      "fea-a": priced(2n * ONE),
+      "fea-b": priced(3n * ONE),
+    }
+    const left = (moves: MoveRecord[]) =>
+      oldVersionLeftovers({
+        moves,
+        items: [],
+        price: (holdingId) => prices[holdingId],
+        network: "0xNEW",
+      }).savings
+    expect(left([out("a", "fea-a")])).toBe(20n * ONE)
+    expect(left([out("a", "fea-a"), out("b", "fea-b")])).toBe(50n * ONE)
+    expect(left([out("c", "fea-unpriced")])).toBe(0n)
   })
 })

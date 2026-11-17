@@ -2112,7 +2112,7 @@ describe("WebAlphaAuthService backup passkeys", () => {
     expect(adopted.candidates.second?.toString()).toBe(root.secretKey.toString())
     expect(adopted.passkeys).toEqual([root.pubkey, backup.pubkey])
     expect(adopted.backup).toEqual({ account: ACCOUNT, envelope: hex(envelope) })
-    expect(adopted.backupFacts).toEqual({ backupEligible: true })
+    expect(adopted.backupFacts).toEqual({ backupEligible: true, route: "enter" })
     expect(h.noteBackupSignIn).not.toHaveBeenCalled()
   })
 
@@ -2187,7 +2187,7 @@ describe("WebAlphaAuthService backup passkeys", () => {
     ceremony.opts.assertOverride = () => backup.credentialId
     const adopted = await service.adoptAccountPasskey(keys)
     expect(adopted.candidates.first?.toString()).toBe(root.secretKey.toString())
-    expect(adopted.backupFacts).toEqual({ backupEligible: false })
+    expect(adopted.backupFacts).toEqual({ backupEligible: false, route: "enter" })
     ceremony.opts.assertOverride = () => root.credentialId
     await expect(service.adoptAccountPasskey(keys)).rejects.toMatchObject({
       name: "DeviceBoundPasskeyError",
@@ -2209,7 +2209,10 @@ describe("WebAlphaAuthService backup passkeys", () => {
       reason: "unverified",
       observed: { credentialId: backup.credentialId, attachment: "platform" },
     })
-    expect(h.noteBackupSignIn).toHaveBeenCalledWith("failed", { backupEligible: true })
+    expect(h.noteBackupSignIn).toHaveBeenCalledWith("failed", {
+      backupEligible: true,
+      route: "enter",
+    })
   })
 
   it("an envelope for another account, or sealed under another passkey's PRF, does not open", async () => {
@@ -2368,7 +2371,10 @@ describe("WebAlphaAuthService backup passkeys", () => {
       ceremony.opts.backupEligible = false
       await service.unlock(derive, {})
       expect(service.isUnlocked()).toBe(true)
-      expect(h.noteBackupSignIn).toHaveBeenCalledWith("succeeded", { backupEligible: false })
+      expect(h.noteBackupSignIn).toHaveBeenCalledWith("succeeded", {
+        backupEligible: false,
+        route: "unlock",
+      })
       ceremony.opts.backupEligible = true
 
       // Sealed under the root's PRF: the backup's assertion cannot open it.
@@ -2380,7 +2386,10 @@ describe("WebAlphaAuthService backup passkeys", () => {
       })
       expect(service.isUnlocked()).toBe(false)
       expect(h.noteBackupSignIn).toHaveBeenCalledTimes(1)
-      expect(h.noteBackupSignIn).toHaveBeenCalledWith("failed", { backupEligible: true })
+      expect(h.noteBackupSignIn).toHaveBeenCalledWith("failed", {
+        backupEligible: true,
+        route: "unlock",
+      })
 
       await service.recordRecoveryMetadata({
         credentialId: root.credentialId,
@@ -2437,7 +2446,10 @@ describe("WebAlphaAuthService backup passkeys", () => {
         name: "AbortError",
       })
       expect(h.noteBackupSignIn).toHaveBeenCalledTimes(1)
-      expect(h.noteBackupSignIn).toHaveBeenCalledWith("cancelled", { backupEligible: true })
+      expect(h.noteBackupSignIn).toHaveBeenCalledWith("cancelled", {
+        backupEligible: true,
+        route: "unlock",
+      })
       expect(service.isUnlocked()).toBe(false)
 
       h.noteBackupSignIn.mockClear()
@@ -2445,7 +2457,10 @@ describe("WebAlphaAuthService backup passkeys", () => {
         service.unlock(deriveFor(root, "0xelsewhere", passkeys), {}),
       ).rejects.toBeInstanceOf(StoredAddressMismatchError)
       expect(h.noteBackupSignIn).toHaveBeenCalledTimes(1)
-      expect(h.noteBackupSignIn).toHaveBeenCalledWith("failed", { backupEligible: true })
+      expect(h.noteBackupSignIn).toHaveBeenCalledWith("failed", {
+        backupEligible: true,
+        route: "unlock",
+      })
       expect(service.isUnlocked()).toBe(false)
     } finally {
       restore()
@@ -2492,7 +2507,10 @@ describe("WebAlphaAuthService backup passkeys", () => {
         service.unlock(deriveFor(root, ADDR, passkeys), { signal: cancel.signal }),
       ).rejects.toMatchObject({ name: "AbortError" })
       expect(h.noteBackupSignIn).toHaveBeenCalledTimes(1)
-      expect(h.noteBackupSignIn).toHaveBeenCalledWith("cancelled", { backupEligible: true })
+      expect(h.noteBackupSignIn).toHaveBeenCalledWith("cancelled", {
+        backupEligible: true,
+        route: "unlock",
+      })
       expect(service.isUnlocked()).toBe(false)
       expect(testCore().device.get().credentialId).toBe(backup.credentialId)
     } finally {
@@ -2536,6 +2554,7 @@ describe("WebAlphaAuthService backup passkeys", () => {
       expect(h.noteBackupSignIn).toHaveBeenCalledWith("succeeded", {
         backupEligible: true,
         aaguid: GPM_AAGUID,
+        route: "unlock",
       })
 
       service.clear()
@@ -2544,7 +2563,10 @@ describe("WebAlphaAuthService backup passkeys", () => {
         throw new DOMException("Dismissed", "NotAllowedError")
       }
       await expect(service.unlock(derive, {})).rejects.toBeDefined()
-      expect(h.noteBackupSignIn).toHaveBeenCalledWith("cancelled", { aaguid: GPM_AAGUID })
+      expect(h.noteBackupSignIn).toHaveBeenCalledWith("cancelled", {
+        aaguid: GPM_AAGUID,
+        route: "unlock",
+      })
     } finally {
       restore()
     }

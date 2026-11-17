@@ -1,0 +1,5 @@
+/* "From Main Account" wraps rather than clipping to "From Main A…" beside a wide status pill. */
+:global(.ww-shell) .row :global(.zkm-activity-row__name) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

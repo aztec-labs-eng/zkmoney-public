@@ -23,7 +23,10 @@ import {
 } from "../../../src/ui/screens/activityView"
 import { tokenAmount, usdFigure } from "../../../src/ui/format"
 import { depositStatus } from "../../../src/ui/screens/DepositDetailModal/DepositDetailModal"
-import { backupFeeStatus } from "../../../src/ui/screens/backupFee"
+import { backupFeeStatus, backupHoldLine, backupNote } from "../../../src/ui/screens/backupFee"
+import { fmt } from "../../../src/lib/fmt"
+import rowCopy from "../../../src/ui/activity/ActivityRow.copy"
+import modalCopy from "../../../src/ui/screens/WithdrawalDetailModal.copy"
 import { statusBadgeStyle } from "@obsidion/web-ds"
 
 const WITHDRAWAL_PHASE_LABEL = Object.fromEntries(
@@ -172,6 +175,43 @@ describe("backupFeeStatus", () => {
   })
 })
 
+describe("a backup passkey fee's hold", () => {
+  const E16 = 10n ** 16n
+  const record = { phase: "l2_mined", tokenDecimals: 18 } as const
+
+  it.each([
+    {
+      held: "$1.40 held",
+      hold: 140n * E16,
+      returned: false,
+      line: fmt(rowCopy.hold.held, { amount: "$1.40" }),
+      note: fmt(modalCopy.backup.heldNote, { amount: "$1.40" }),
+    },
+    {
+      held: "$1.40 returned",
+      hold: 140n * E16,
+      returned: true,
+      line: fmt(rowCopy.hold.returned, { amount: "$1.40" }),
+      note: undefined,
+    },
+    {
+      held: "one unit held",
+      hold: 1n,
+      returned: false,
+      line: undefined,
+      note: modalCopy.backup.adding,
+    },
+    { held: "one unit returned", hold: 1n, returned: true, line: undefined, note: undefined },
+  ])(
+    "names a hold on the row and the sheet only from a cent: $held",
+    ({ hold, returned, line, note }) => {
+      const fee = { amount: 70n * E16, hold, returned }
+      expect(backupHoldLine(fee, 18)).toBe(line)
+      expect(backupNote({ record, fee, running: true, exit: false })).toBe(note)
+    },
+  )
+})
+
 describe("upgradeRowStatusLabel", () => {
   const batch = (state: "sent" | "received"): ActivityItem =>
     ({
@@ -202,12 +242,25 @@ describe("a deposit's detail headline and gross", () => {
   const FUNDING_TX = `0x${"e6".repeat(32)}` as Hex
 
   it("prefers the transfer's sender over the connected wallet, and names the wallet", () => {
-    const sent = { ...deposit("funded"), walletName: " Rainbow ", walletAddress: WALLET }
-    expect(depositHeadline(sent)).toEqual({ title: "Rainbow", address: WALLET })
-    expect(depositHeadline({ ...sent, walletName: "  ", fundingFromAddress: FUNDER })).toEqual({
-      title: undefined,
-      address: FUNDER,
-    })
+    const sent: SipaDeposit = {
+      ...deposit("funded"),
+      walletName: " Rainbow ",
+      walletAddress: WALLET,
+      funding: "plain",
+    }
+    expect(depositHeadline(sent, true)).toEqual({ title: "Rainbow", address: WALLET })
+    expect(
+      depositHeadline({ ...sent, walletName: "  ", fundingFromAddress: FUNDER }, true),
+    ).toEqual({ title: undefined, address: FUNDER })
+  })
+
+  it("names no funder while the funding is unread, or for a bridge fill's relayer", () => {
+    const paid: SipaDeposit = { ...deposit("funded"), fundingFromAddress: FUNDER }
+    expect(depositAttribution(paid, true).funder).toBeUndefined()
+    expect(depositAttribution({ ...paid, funding: "bridge" }, true).funder).toBeUndefined()
+    // Nothing reads a funding where the profile names no bridge: the sender shows as it is.
+    expect(depositAttribution(paid, false).funder).toBe(FUNDER)
+    expect(depositAttribution({ ...paid, intent: "registration" }, true).funder).toBe(FUNDER)
   })
 
   it("takes a direct migration deposit's portal deposit as its funding tx", () => {
@@ -215,11 +268,11 @@ describe("a deposit's detail headline and gross", () => {
       ...deposit("claimed", SWEEP_TX),
       direct: { recipientCommitment: `0x${"c0".repeat(32)}` },
     }
-    expect(depositAttribution(direct).fundingTxHash).toBe(SWEEP_TX)
-    expect(depositAttribution({ ...direct, fundingTxHash: FUNDING_TX }).fundingTxHash).toBe(
+    expect(depositAttribution(direct, true).fundingTxHash).toBe(SWEEP_TX)
+    expect(depositAttribution({ ...direct, fundingTxHash: FUNDING_TX }, true).fundingTxHash).toBe(
       FUNDING_TX,
     )
-    expect(depositAttribution(deposit("claimed", SWEEP_TX)).fundingTxHash).toBeUndefined()
+    expect(depositAttribution(deposit("claimed", SWEEP_TX), true).fundingTxHash).toBeUndefined()
   })
 
   it("shows a stable in dollars and ETH in ETH, trimmed only on a row", () => {

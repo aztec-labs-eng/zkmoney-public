@@ -118,13 +118,13 @@ export function depositedAmount(live: FundingAmount, withdrawn: bigint): bigint 
 
 /**
  * What the deposit address holds once the funding is released: the withdrawal of `saved` (the live
- * amount before a plan is saved) less the withdrawal's current charges. Undefined once that no longer
- * covers the route's own charges and minimum credit, so the saved funding cannot be swept.
+ * amount before a plan is saved) less the withdrawal's current charges. Undefined once that leaves
+ * nothing to bridge past the route's own charges, so the saved funding cannot be swept.
  */
 export function sweepFunding(live: FundingAmount, saved: string | undefined): bigint | undefined {
   const b = live.breakdown
   const held = depositedAmount(live, saved === undefined ? live.amount : BigInt(saved))
-  return held >= b.sweepTip + b.beneficiaryFee + b.minCredited ? held : undefined
+  return held > b.sweepTip + b.beneficiaryFee ? held : undefined
 }
 
 /** The token's service for `account` with the co-signer its sponsored sends go through. */
@@ -178,6 +178,8 @@ export async function buildBackupAddDeps(input: {
   session: Session
   owner: Address
   choice?: BackupAddChoice
+  /** The add's try in this sheet, from 1; the add's report carries it. */
+  attempt?: number
 }): Promise<BackupAddDeps> {
   const { auth, identity } = input.session
   const { keys } = await sessionRootKey(input.session, await input.session.wallet.ready())
@@ -192,7 +194,11 @@ export async function buildBackupAddDeps(input: {
         ...(input.choice ? { choice: input.choice } : {}),
         ...(signal ? { signal } : {}),
       }),
-    track: trackBackupPasskeyAdd,
+    track: (run) =>
+      trackBackupPasskeyAdd(run, {
+        choice: input.choice ?? "none",
+        attempt: (input.attempt ?? 1) > 1 ? "2+" : "1",
+      }),
     store: accountRotations(input.session),
   }
 }
@@ -782,7 +788,7 @@ export async function buildBackupFlowDeps(input: {
           (await oneKeyAccount(source)).getAddress(),
         )
       },
-      // Stored deposits are not enumerated: a balance held in them moves as note-only chunks, then one attempt.
+      // Stored deposits are not enumerated: they ride with the last notes where one transfer carries both.
       deposits: async (_token, shape) => unreadDeposits(shape),
       cap: (token) => moveCap(chain, token),
       // The sponsor refuses a send past the allowance; nothing is read ahead.

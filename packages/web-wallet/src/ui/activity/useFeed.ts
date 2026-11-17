@@ -11,7 +11,8 @@ import {
   type Transaction,
 } from "@obsidion/front-core"
 import { rotationView } from "../../features/backupPasskey/backupRotations"
-import { useHoldingPrices, useSavingsAsset } from "../../features/savings/useSavings"
+import { selectBackupShares } from "../../features/savings/savingsLine"
+import { useHoldingPrices, useSavingsTokens } from "../../features/savings/useSavings"
 import { useContactDirectory } from "../../session/contacts"
 import { useOldVersionHoldings } from "../../features/migration/oldVersionBalance"
 import { usePolledChainSeconds } from "../../features/paylink/chainTime"
@@ -63,18 +64,20 @@ export function useFeed({
   const mainReadAt = useStore(useSession().balances.view, (v) => v.readAt)
   const mainToken = useStore(session.balances.view, (v) => v.token)
   const mainAnchor = useStore(session.balances.view, (v) => v.anchor)
-  const position = useStore(session.savingsLine).position
+  const lines = useStore(session.savingsLine, (s) => s.lines)
+  const sharesReadAt = useStore(session.savingsLine, (s) => s.sharesReadAt)
   const holdingPrices = useHoldingPrices()
-  // Pending until the session knows whether Savings has a row; null where it has none.
-  const savings = useSavingsAsset()
-  const savingsToken = savings ?? undefined
-  const savingsUnknown = savings === undefined
+  // Pending until the deployment's holdings are read.
+  const savingsTokens = useSavingsTokens()
+  const savingsUnknown = savingsTokens === undefined
   const rotations = rotationView(session)
   const moveMain = useStore(rotations, (set) =>
     balanceToMove(set.records, address, mainToken, mainAnchor),
   )
-  const moveShares = useStore(rotations, (set) =>
-    balanceToMove(set.records, address, position?.sharesToken, position?.sharesAnchor),
+  const rotationRecords = useStore(rotations, (set) => set.records)
+  const moveShares = useMemo(
+    () => selectBackupShares(lines, rotationRecords, address),
+    [lines, rotationRecords, address],
   )
   const { main: oldMain, savings: oldSavings } = useOldVersionHoldings()
   const previousAccount = useStore(session.savedPreviousAccount.address)
@@ -89,10 +92,9 @@ export function useFeed({
       chainNowSec: chainNow,
       activeNetworkId,
       account: account ?? address,
-      balanceReadAt: { main: mainReadAt, savings: position?.sharesReadAt },
-      sharePrice: position?.sharePrice,
+      balanceReadAt: { main: mainReadAt, holdings: sharesReadAt },
       holdingPrices,
-      savingsToken,
+      savingsTokens,
       savingsUnknown,
       oldVersions: { main: oldMain, savings: oldSavings },
       backupMove: { main: moveMain, shares: moveShares },
@@ -109,9 +111,9 @@ export function useFeed({
     regTs,
     chainNow,
     mainReadAt,
-    position,
+    sharesReadAt,
     holdingPrices,
-    savingsToken,
+    savingsTokens,
     savingsUnknown,
     oldMain,
     oldSavings,

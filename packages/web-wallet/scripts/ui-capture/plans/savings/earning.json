@@ -1,0 +1,192 @@
+{
+  "scenario": "fresh",
+  "bootstrap": "/savings?demo=fresh&flowFixture=success&savingsFixture=funded",
+  "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=funded",
+  "ready": {
+    "testId": "savings-holdings"
+  },
+  "steps": [
+    {
+      "action": "waitFor",
+      "testId": "savings-holdings"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=savings-holdings][data-hydrated]"
+    },
+    {
+      "action": "screenshot",
+      "file": "list-one-top.png",
+      "state": "One listed vault, funded, top of the page"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-main",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "list-one.png",
+      "state": "One listed vault, funded"
+    },
+    {
+      "action": "goto",
+      "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=vaults"
+    },
+    {
+      "action": "waitFor",
+      "testId": "savings-holdings"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=savings-holdings][data-hydrated]"
+    },
+    {
+      "action": "screenshot",
+      "file": "list-two-new-top.png",
+      "state": "Two listed vaults, the second new, top of the page"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-main",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "list-two-new.png",
+      "state": "Two listed vaults, the second new"
+    },
+    {
+      "action": "goto",
+      "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=exit"
+    },
+    {
+      "action": "waitFor",
+      "testId": "savings-holdings"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=savings-holdings][data-hydrated]"
+    },
+    {
+      "action": "screenshot",
+      "file": "list-exit-only-top.png",
+      "state": "A held vault the profile no longer lists, top of the page"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-main",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "list-exit-only.png",
+      "state": "A held vault the profile no longer lists"
+    },
+    {
+      "action": "goto",
+      "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=delisted"
+    },
+    {
+      "action": "waitFor",
+      "testId": "savings-holdings"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=savings-holdings][data-hydrated]"
+    },
+    {
+      "action": "screenshot",
+      "file": "list-none-listed-top.png",
+      "state": "No vault listed, one held, top of the page"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-main",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "list-none-listed.png",
+      "state": "No vault listed, one held"
+    },
+    {
+      "action": "goto",
+      "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=loading"
+    },
+    {
+      "action": "waitFor",
+      "testId": "savings-holdings"
+    },
+    {
+      "action": "screenshot",
+      "file": "list-loading-top.png",
+      "state": "Shares not read yet, top of the page"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-main",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "list-loading.png",
+      "state": "Shares not read yet"
+    },
+    {
+      "action": "goto",
+      "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=unrated"
+    },
+    {
+      "action": "waitFor",
+      "testId": "savings-holdings"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=savings-holdings][data-hydrated]"
+    },
+    {
+      "action": "screenshot",
+      "file": "list-rate-unavailable-top.png",
+      "state": "The vault's rate cannot be read, top of the page"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-main",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "list-rate-unavailable.png",
+      "state": "The vault's rate cannot be read"
+    },
+    {
+      "action": "goto",
+      "path": "/savings?demo=fresh&flowFixture=success&savingsFixture=unpriced"
+    },
+    {
+      "action": "waitFor",
+      "testId": "savings-holdings"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=savings-holdings][data-hydrated]"
+    },
+    {
+      "action": "screenshot",
+      "file": "list-price-unavailable-top.png",
+      "state": "The vault's price cannot be read, top of the page"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-main",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "list-price-unavailable.png",
+      "state": "The vault's price cannot be read"
+    }
+  ],
+  "finalScreenshot": false
+}

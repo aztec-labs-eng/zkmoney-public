@@ -26,6 +26,23 @@ export function savingsPaybackYears(net: bigint, fee: bigint, rate: bigint): num
 }
 
 /**
+ * What moving `net` from a vault at rate `from` into one at `to` earns more a year, and the years
+ * that gain takes to earn back `fee`. Undefined when `to` earns no more.
+ */
+export function savingsVaultSwapGain(
+  net: bigint,
+  fee: bigint,
+  from: bigint,
+  to: bigint,
+): { yearly: bigint; paybackYears: number } | undefined {
+  if (to <= from) return undefined
+  return {
+    yearly: (net * (to - from)) / RATE_SCALE,
+    paybackYears: savingsPaybackYears(net, fee, to - from),
+  }
+}
+
+/**
  * `valueAtomic` carried from `readAt` to `now` at `rate`: the between-reads estimate behind the
  * ticking figure. A rate at or below zero projects nothing. (Harry's.)
  */

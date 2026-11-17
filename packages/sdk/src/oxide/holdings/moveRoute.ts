@@ -125,10 +125,21 @@ export interface BuiltMove {
  * when its recovery data takes more than {@link MOVE_RECOVERY_CHUNKS}.
  */
 export function buildMove(route: HoldingRoute, args: MoveArgs): BuiltMove {
-  const { route: compiled, calls } = compileMove(route, args)
+  return routeWithdrawal(route.deployment.executor, compileMove(route, args), args)
+}
+
+/**
+ * The withdrawal that pays `executor` to run `compiled`. Throws `move.routeTooLong` when its
+ * recovery data takes more than {@link MOVE_RECOVERY_CHUNKS}.
+ */
+export function routeWithdrawal(
+  executor: string,
+  { route: compiled, calls }: CompiledMove,
+  args: Omit<MoveArgs, keyof MoveRouteArgs>,
+): BuiltMove {
   const { operation } = buildMultiStepWithdrawal({
     from: args.from,
-    executor: EthAddress.fromString(route.deployment.executor),
+    executor: EthAddress.fromString(executor),
     amount: args.amount,
     proverTip: args.proverTip,
     relayerTip: args.relayerTip,
@@ -150,7 +161,7 @@ export function buildMove(route: HoldingRoute, args: MoveArgs): BuiltMove {
 }
 
 /** Every field of a move is fixed-width, so any amounts and secrets size its recovery data. */
-const SIZING_MOVE = {
+export const SIZING_MOVE = {
   from: AztecAddress.ZERO,
   amount: 1n,
   proverTip: 0n,

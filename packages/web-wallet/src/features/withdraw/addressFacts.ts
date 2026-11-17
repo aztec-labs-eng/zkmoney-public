@@ -3,7 +3,9 @@
  * rating both derive from it.
  */
 import type { Address, PublicClient } from "viem"
+import { useMemo } from "react"
 import {
+  derived,
   memoryStore,
   useLookup,
   useStore,
@@ -12,7 +14,13 @@ import {
   type ReadonlyStore,
   type RecordSet,
 } from "@obsidion/front-core"
-import type { Contact, WithdrawalRecord } from "@obsidion/front-core"
+import type {
+  BridgeInRecord,
+  Contact,
+  Loaded,
+  SipaDeposit,
+  WithdrawalRecord,
+} from "@obsidion/front-core"
 import { useSession } from "../../session/session"
 
 /** Each chain fact is undefined when its read did not answer. */
@@ -26,7 +34,7 @@ export interface AddressFacts {
   local: { kind: "linked-deposit" | "withdrew-before" } | null
   /** Withdrawals this wallet sent to it. */
   withdrawals: number
-  /** Both local reads answered. */
+  /** Every local read answered. */
   localRead: boolean
 }
 
@@ -63,16 +71,62 @@ export const withdrawalsTo = (target: string, withdrawals: readonly WithdrawalRe
     (r) => !r.intent && r.phase !== "failed" && r.recipient.toLowerCase() === target,
   ).length
 
+/** Who funded this wallet's deposits, lowercase and sorted; `read` once the deposits load. */
+export interface DepositFunders {
+  read: boolean
+  addresses: readonly string[]
+}
+
+/**
+ * A bridge fill's sender is its relayer, not the user: the bridge-in that paid this wallet names
+ * who sent it.
+ */
+export const selectDepositFunders = (
+  { records, loaded, failed }: RecordSet<SipaDeposit>,
+  bridgeIns: Loaded<BridgeInRecord>,
+): DepositFunders => ({
+  read: loaded && !failed && bridgeIns.hydrated,
+  addresses: [
+    ...new Set(
+      [
+        ...records.flatMap((d) =>
+          d.funding !== "bridge" && d.fundingFromAddress ? [d.fundingFromAddress] : [],
+        ),
+        ...bridgeIns.records.flatMap((r) =>
+          !r.pays && (r.status === "pending" || r.status === "filled") ? [r.depositor] : [],
+        ),
+      ].map((address) => address.toLowerCase()),
+    ),
+  ].sort(),
+})
+
+export const sameFunders = (a: DepositFunders, b: DepositFunders): boolean =>
+  a.read === b.read &&
+  a.addresses.length === b.addresses.length &&
+  a.addresses.every((address, i) => address === b.addresses[i])
+
+/** Who funded the session's deposits, from its deposits and bridge-ins. */
+export function useDepositFunders(): DepositFunders {
+  const { sipaDeposits, bridgeIns } = useSession()
+  const funders = useMemo(
+    () => derived([sipaDeposits.view, bridgeIns.list], selectDepositFunders),
+    [sipaDeposits, bridgeIns],
+  )
+  return useStore(funders, (value) => value, sameFunders)
+}
+
 /** What this wallet already did with the address; the deposit link outranks a prior withdrawal. */
 export function localVerdict(
   target: string,
   withdrawals: readonly WithdrawalRecord[],
   contacts: readonly Contact[],
+  funders: readonly string[],
 ): AddressFacts["local"] {
   const provenance = contacts
     .filter((c) => c.address.toLowerCase() === target && isLiveL1Contact(c))
     .map((c) => c.l1Wallet!.provenance)
-  if (provenance.includes("deposit-attested")) return { kind: "linked-deposit" }
+  if (provenance.includes("deposit-attested") || funders.includes(target))
+    return { kind: "linked-deposit" }
   if (provenance.includes("saved-recipient")) return { kind: "withdrew-before" }
   return withdrawalsTo(target, withdrawals) > 0 ? { kind: "withdrew-before" } : null
 }
@@ -108,14 +162,15 @@ export function addressFacts(
   ensName: string | null | undefined,
   withdrawals: { records: readonly WithdrawalRecord[]; read: boolean },
   contacts: { records: readonly Contact[]; read: boolean },
+  funders: DepositFunders,
 ): AddressFacts {
   const target = address.toLowerCase()
   return {
     ...activity,
     ensName,
-    local: localVerdict(target, withdrawals.records, contacts.records),
+    local: localVerdict(target, withdrawals.records, contacts.records, funders.addresses),
     withdrawals: withdrawalsTo(target, withdrawals.records),
-    localRead: withdrawals.read && contacts.read,
+    localRead: withdrawals.read && contacts.read && funders.read,
   }
 }
 
@@ -125,12 +180,12 @@ export type FreshAddressVerdict =
   | "history" // nonce or balance on L1
   | "contract" // the escrow pays ETH with a plain call, so a contract that rejects ETH strands it
   | "withdrew-before" // a withdrawal record or a saved-recipient L1 contact names it
-  | "linked-deposit" // a deposit-attested L1 contact: this address funded the account
+  | "linked-deposit" // a deposit record or deposit-attested L1 contact: it funded the account
   | "unknown" // a read did not answer
 
 /**
  * Precedence: contract, linked-deposit, withdrew-before, history, fresh. A read that failed cannot
- * rule anything out, so `fresh` needs all five reads, the wallet's own two included, and `unknown`
+ * rule anything out, so `fresh` needs every read, the wallet's own included, and `unknown`
  * covers a failed read with nothing else to say. What the other reads found still counts.
  */
 export function verdictFromFacts(facts: AddressFacts): FreshAddressVerdict {
@@ -172,6 +227,7 @@ export function useAddressFacts(
   const name = useStore(address ? page.chain.ensName(address) : NO_NAME)
   const withdrawals = useStore(session.withdrawals.list)
   const contacts = useStore(session.contacts?.view ?? NO_CONTACTS)
+  const funders = useDepositFunders()
   const { retry } = lookup
   if (lookup.status === "idle" || !address) return { kind: "idle", retry }
   const named = name.status !== "pending"
@@ -182,6 +238,7 @@ export function useAddressFacts(
       name.status === "ready" ? name.value : undefined,
       { records: withdrawals.records, read: withdrawals.hydrated },
       { records: contacts.records, read: contacts.loaded && !contacts.failed },
+      funders,
     )
     return { kind: "read", facts, retry }
   }

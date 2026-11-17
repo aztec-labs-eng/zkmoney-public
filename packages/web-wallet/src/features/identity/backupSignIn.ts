@@ -1,5 +1,7 @@
 import { backupSignInFacts } from "@obsidion/passkey-web"
-import { reportBackupPasskeySignIn } from "../../lib/backupPasskeyTelemetry"
+import { reportBackupPasskeySignIn, type BackupSignInRoute } from "../../lib/backupPasskeyTelemetry"
+
+export type { BackupSignInRoute }
 
 /**
  * The backup sign-in event: one per sign-in a backup passkey answered, once its outcome is known.
@@ -13,6 +15,7 @@ export interface BackupSignInFacts {
   backupEligible?: boolean
   /** The provider this browser's record names for the passkey, when it holds one. */
   aaguid?: string
+  route?: BackupSignInRoute
   /** Set once the sign-in reported its end. One facts object stands for one sign-in. */
   ended?: true
 }
@@ -24,5 +27,6 @@ export function noteBackupSignIn(outcome: BackupSignInOutcome, facts: BackupSign
   reportBackupPasskeySignIn(
     outcome,
     backupSignInFacts({ backupEligible: facts.backupEligible }, { aaguid: facts.aaguid }),
+    facts.route,
   )
 }

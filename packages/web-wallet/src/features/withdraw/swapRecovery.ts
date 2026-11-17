@@ -7,6 +7,7 @@
  * store write; this file supplies the browser collaborators — the L1 channel shared with the
  * deposit exits, the escrow reader, and the account, salt and passkey the recovery opens with.
  */
+import { displayTokenSymbol } from "@obsidion/core/constants"
 import { isAddress, type Address, type Hex } from "viem"
 import type { Config } from "wagmi"
 import { decodePaylinkInline, L1SwapEscrowReader } from "@obsidion/sdk"
@@ -50,7 +51,7 @@ export interface SwapExitOptions {
 /** The helper page's line for what a burn took. */
 const amountLine = (burn: Pick<WithdrawalRecord, "amount" | "tokenSymbol">): [string, string] => [
   "Amount",
-  `${burn.amount} ${burn.tokenSymbol}`,
+  `${burn.amount} ${displayTokenSymbol(burn.tokenSymbol)}`,
 ]
 
 /**

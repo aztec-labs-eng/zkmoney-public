@@ -40,7 +40,6 @@ import { paylinkRowView, type PaylinkRowView } from "../core/services/paylink/pa
 import { paylinkStatusFor, type PaylinkStatusKind } from "../core/services/paylink/paylinkStatus"
 import { assetUsd, holdingUsd } from "../core/services/holdings/holdingFigures"
 import type { HoldingPrice } from "../core/services/holdings/holdingFigures"
-import { savingsValue } from "../core/services/savings/savingsMath"
 import {
   resolveContactByCounterparty,
   resolveContactForTx,
@@ -90,7 +89,7 @@ import {
 import type { Loaded } from "./recordSource"
 import type { RecordSet } from "./persistentStore"
 import { selectMoveState, type MoveState } from "./moveState"
-import { isMoveSettled, type MoveRecord } from "./moveTransition"
+import { isMoveSettled, landsIn, type MoveRecord } from "./moveTransition"
 import { fulfillingReceive, type PaymentRequest } from "./requests"
 
 /** An amount in base units at its decimals. */
@@ -153,13 +152,12 @@ export interface FeedContext {
    * from the previous account to it is the wallet's own move.
    */
   account?: string
-  /** When each stored balance's read resolved, ms. */
-  balanceReadAt?: { main?: number; savings?: number }
-  sharePrice?: bigint
+  balanceReadAt?: BalanceReadAt
+  /** Each holding's price by holding id. */
   holdingPrices?: ReadonlyMap<string, HoldingPrice>
-  /** The L1 token of Savings' row: a deposit swept on it lands in Savings. */
-  savingsToken?: string
-  /** Whether Savings has a row is not known yet, so no swept deposit can be placed. */
+  /** The holding a deposit swept on an L1 token lands in, by that token in lowercase. */
+  savingsTokens?: ReadonlyMap<string, string>
+  /** The holdings are not known yet, so no swept deposit can be placed. */
   savingsUnknown?: boolean
   /** What the account holds on old versions. */
   oldVersions?: ArrivingFunds
@@ -305,10 +303,24 @@ export interface ArrivingFunds {
   savings: bigint
 }
 
-/** Main's atomic units and Savings' shares. */
+/** `ArrivingFunds`, and the part of `savings` each holding has in a swap out of it. */
+export interface Arriving extends ArrivingFunds {
+  /** In dollars, by the holding the swap leaves. */
+  vaultSwapping: ReadonlyMap<string, bigint>
+  /** `savings` by the holding the funds land in. Older versions' funds name no holding. */
+  savingsInto: ReadonlyMap<string, bigint>
+}
+
+/** Main's atomic units, and each holding's shares by holding id. */
 export interface BackupMove {
   main: bigint
-  shares: bigint
+  shares: ReadonlyMap<string, bigint>
+}
+
+/** When each stored balance's read resolved, ms: Main's, and each holding's shares by holding id. */
+export interface BalanceReadAt {
+  main?: number
+  holdings?: ReadonlyMap<string, number>
 }
 
 export interface Feed {
@@ -321,7 +333,7 @@ export interface Feed {
   hydrated: boolean
   /** The contacts could not be read, so incoming requests are hidden. */
   requestsUnavailable: boolean
-  arriving: ArrivingFunds
+  arriving: Arriving
   /** The upgrade's deposit addresses are read, so `arriving` counts none of them. */
   upgradesLoaded: boolean
   /**
@@ -330,7 +342,7 @@ export interface Feed {
    */
   savings: { items: MoveItem[]; hydrated: boolean }
   /** The exports' records; the view adds the Main token's metadata once it is read. */
-  csv: Omit<ActivityCsvSources, "walletToken">
+  csv: Omit<ActivityCsvSources, "walletToken" | "chainName" | "readsFills">
   savingsCsv: Omit<SavingsCsvSources, "walletToken">
 }
 
@@ -859,38 +871,52 @@ function groupItems(groups: readonly WithdrawalGroup[], now: number): FeedItem[]
 
 /**
  * Funds each balance is owed but does not hold yet, at what will land, so a balance never drops
- * when funds arrive. A deposit counts in the balance its row credits once its sweep fixes the net,
- * Savings' at the share price. A migration or a holding move counts once its burn has left the
- * source, at its quote, then at its deposit once the route has run, until its destination's
- * balance is read after the claim. A replayed move never counts: another device may have claimed
+ * when funds arrive. A deposit counts in the balance its row credits once its sweep fixes the net:
+ * Savings' for a deposit on a holding's token, at that holding's price. A migration or a holding
+ * move counts once its burn has left the source, at its quote, then at its deposit once the route
+ * has run, until its destination's balance, a move in's own holding's, is read after the claim. A replayed move never counts: another device may have claimed
  * its deposit into the balance already. An upgrade's own deposits never count: the upgrade lock
  * holds Home's figure until the balance holds them. A backup passkey add's move counts until the
- * balance holds each chunk.
+ * balance holds each chunk, each holding's shares at its own price. Shares of a holding with no
+ * price yet count as nothing: no other holding's price stands in.
  */
 export function arrivingFunds(input: {
   deposits: readonly SipaDeposit[]
   burns: readonly WithdrawalRecord[]
   moves: readonly MoveRecord[]
-  /** Savings' share price: a Savings deposit and a backup passkey add's shares count at it. */
-  sharePrice?: bigint
-  /** Each holding's price by holding id: a move in counts at its own holding's. */
   holdingPrices?: ReadonlyMap<string, HoldingPrice>
-  savingsToken?: string
+  savingsTokens?: ReadonlyMap<string, string>
   /** A deposit is held until its row can be placed: the balance rises late, never drops. */
   savingsUnknown?: boolean
   rows: readonly Transaction[]
-  balanceReadAt?: { main?: number; savings?: number }
+  balanceReadAt?: BalanceReadAt
   upgradeRecipients?: ReadonlySet<string>
   oldVersions?: ArrivingFunds
   backupMove?: BackupMove
   previousAccount?: string
-}): ArrivingFunds {
-  const { deposits, burns, moves, sharePrice, balanceReadAt = {} } = input
-  const { backupMove = { main: 0n, shares: 0n } } = input
+}): Arriving {
+  const { deposits, burns, moves, holdingPrices, balanceReadAt = {} } = input
+  const { backupMove } = input
   const upgrades = input.upgradeRecipients ?? new Set<string>()
-  let main = (input.oldVersions?.main ?? 0n) + backupMove.main
+  let main = (input.oldVersions?.main ?? 0n) + (backupMove?.main ?? 0n)
   let savings = input.oldVersions?.savings ?? 0n
-  if (sharePrice !== undefined) savings += savingsValue(backupMove.shares, sharePrice)
+  const vaultSwapping = new Map<string, bigint>()
+  const savingsInto = new Map<string, bigint>()
+  const into = (holdingId: string, usd: bigint) => {
+    if (usd === 0n) return
+    savings += usd
+    savingsInto.set(holdingId, (savingsInto.get(holdingId) ?? 0n) + usd)
+  }
+  // A holding's shares in dollars; nothing until its price is read.
+  const worth = (holdingId: string, shares: bigint) => {
+    const price = holdingPrices?.get(holdingId)
+    return price ? holdingUsd(shares, price) : 0n
+  }
+  for (const [holdingId, shares] of backupMove?.shares ?? [])
+    into(holdingId, worth(holdingId, shares))
+  // When the balance funds land in was read: a holding's shares, else Main.
+  const readAt = (holdingId: string | undefined) =>
+    (holdingId === undefined ? balanceReadAt.main : balanceReadAt.holdings?.get(holdingId)) ?? 0
   const swept = (record: SipaDeposit) => record.phase === "pendingClaim" && record.netAmount != null
   // A spent deposit is history the balance already holds or spent.
   const spent = (record: SipaDeposit) =>
@@ -900,23 +926,20 @@ export function arrivingFunds(input: {
   const left = (burn?: WithdrawalRecord) =>
     !!burn && burn.phase !== "submitting" && burn.phase !== "failed"
   // A read resolved after a claim landed holds it, though the record still awaits `claimed`.
-  const held = ({ claimLanded, inboxIndex }: SipaDeposit, into: keyof ArrivingFunds) =>
-    !!claimLanded &&
-    claimLanded.inboxIndex === inboxIndex &&
-    (balanceReadAt[into] ?? 0) >= claimLanded.at
+  const held = ({ claimLanded, inboxIndex }: SipaDeposit, holdingId: string | undefined) =>
+    !!claimLanded && claimLanded.inboxIndex === inboxIndex && readAt(holdingId) >= claimLanded.at
   const previous = input.previousAccount && lower(input.previousAccount)
-  const savingsToken = input.savingsToken && lower(input.savingsToken)
   for (const record of deposits) {
     // A SIPA the account pays itself is not a deposit the user waits on.
     const upgrade = isAccountMoveSipa(record) || upgrades.has(lower(record.sipaAddress))
     const toPrevious = !!previous && lower(record.recipientL2Address ?? "") === previous
     if (!swept(record) || spent(record) || upgrade || toPrevious || input.savingsUnknown) continue
-    // A swept record reads as its row's token.
-    const into = lower(record.tokenAddress ?? "") === savingsToken ? "savings" : "main"
-    if (held(record, into)) continue
+    // A swept record reads as its row's token: a holding's shares, else Main's.
+    const holdingId = input.savingsTokens?.get(lower(record.tokenAddress ?? ""))
+    if (held(record, holdingId)) continue
     const net = BigInt(record.netAmount!)
-    if (into === "main") main += net
-    else if (sharePrice !== undefined) savings += savingsValue(net, sharePrice)
+    if (holdingId === undefined) main += net
+    else into(holdingId, worth(holdingId, net))
   }
   for (const burn of burns) {
     if (burn.intent !== "migration" || !left(burn)) continue
@@ -931,25 +954,27 @@ export function arrivingFunds(input: {
   const burnById = new Map(burns.map((burn) => [burn.localId, burn] as const))
   for (const move of moves) {
     if (move.replayedFrom !== undefined) continue
-    const into = move.direction === "in"
+    const holding = landsIn(move)
     const claimedAt = move.phase === "claimed" ? move.endTime : undefined
-    const unread =
-      claimedAt !== undefined && (balanceReadAt[into ? "savings" : "main"] ?? 0) < claimedAt
+    const unread = claimedAt !== undefined && readAt(holding) < claimedAt
     if (isMoveSettled(move) && !unread) continue
     const local = move.withdrawalLocalId
     if (local !== undefined && !left(burnById.get(local))) continue
     const landed = move.deposit?.amount
-    if (!into) {
+    if (holding === undefined) {
       main += landed ?? move.quote?.conversionOut ?? 0n
       continue
     }
-    // Shares, and a quote in the vault's asset: unknown until the move's own holding is priced.
-    const price = input.holdingPrices?.get(move.holdingId)
+    // Shares, and a quote in the vault's asset: unknown until the holding they land in is priced.
+    const price = holdingPrices?.get(holding)
     if (!price) continue
-    savings +=
+    const usd =
       landed !== undefined
         ? holdingUsd(landed, price)
         : assetUsd(move.quote?.conversionOut ?? 0n, price)
+    into(holding, usd)
+    if (move.intoHoldingId !== undefined)
+      vaultSwapping.set(move.holdingId, (vaultSwapping.get(move.holdingId) ?? 0n) + usd)
   }
   for (const tx of input.rows) {
     const inbound = tx.action === PaylinkActionEnum.CLAIM || tx.action === "faucet"
@@ -959,7 +984,7 @@ export function arrivingFunds(input: {
     const scale = DEFAULT_DECIMALS - decimals
     main += scale >= 0 ? tx.amountAtomic * 10n ** BigInt(scale) : tx.amountAtomic
   }
-  return { main, savings }
+  return { main, savings, vaultSwapping, savingsInto }
 }
 
 const SETTLED_MOVE: ReadonlySet<MoveState["kind"]> = new Set(["done", "failed", "recovered"])
@@ -991,7 +1016,7 @@ function moveItems(
         // Where the row sorts: its burn's withdrawal's end, once it has ended.
         ts: burn ? bridgeItemTime({ kind: "bridge.withdrawal", record: burn }) : move.startTime,
         // Into a holding is out of the balance.
-        direction: move.direction === "in" ? "out" : "in",
+        direction: landsIn(move) === undefined ? "in" : "out",
         pending: !SETTLED_MOVE.has(state.kind),
         move,
         ...(burn ? { burn } : {}),
@@ -1117,9 +1142,8 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
       deposits,
       burns: withdrawals,
       moves,
-      sharePrice: ctx.sharePrice,
       holdingPrices: ctx.holdingPrices,
-      savingsToken: ctx.savingsToken,
+      savingsTokens: ctx.savingsTokens,
       savingsUnknown: ctx.savingsUnknown,
       rows,
       balanceReadAt: ctx.balanceReadAt,
@@ -1130,9 +1154,7 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
     }),
     upgradesLoaded: sources.upgrades.loaded,
     savings: {
-      // Savings is the Sky holdings', each moved through its escrow.
       items: holdingMoves.items
-        .filter((item) => item.move.rail === "skyEscrow")
         .map((item) => ({ ...item, direction: item.move.direction }))
         .sort((a, b) => b.ts - a.ts),
       hydrated: movesRead && (moves.length > 0 || sources.movesReplayed),
@@ -1145,8 +1167,9 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
       })),
       items: bridge,
       requests: sources.requests,
+      bridgeIns: sources.bridgeIns.records,
     },
-    savingsCsv: { moves, burns },
+    savingsCsv: { moves, burns, prices: ctx.holdingPrices ?? new Map() },
   }
 }
 

@@ -24,6 +24,8 @@ function profileFor(pointer) {
         zkmoneyApiUrl: "http://analytics.ui-capture.invalid",
         paylinkDomain: "http://paylink.ui-capture.invalid",
         oxide: pointer,
+        // As the demo profile names it.
+        ...(pointer.portal && { portals: { main: [pointer.portal], savings: [] } }),
         contracts: {
           accountFactory: { address: "0x2c5eabc1c0ff859900efbe47a55e8f171d6ac001" },
           obsidionAccountAlpha: { classId: field(102) },

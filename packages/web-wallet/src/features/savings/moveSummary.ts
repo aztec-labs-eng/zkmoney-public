@@ -5,17 +5,17 @@ import copy from "./moveSummary.copy"
 
 /**
  * What the tray and the bell call a move while it sends: its dollar value and where it goes, the
- * shares of a move out priced at their holding's price. Without a price the line names only the
- * route.
+ * shares of a move out or a swap priced at their holding's price. Without a price the line names
+ * only the route.
  */
 export function moveSummary(
-  direction: MoveDirection,
+  route: MoveDirection | "vaultSwap",
   amount: bigint,
   price?: HoldingPrice,
 ): string {
-  const to = direction === "in" ? copy.savings : copy.main
+  const to = { in: copy.savings, out: copy.main, vaultSwap: copy.vault }[route]
   const value =
-    direction === "in" ? amount : price === undefined ? undefined : holdingUsd(amount, price)
+    route === "in" ? amount : price === undefined ? undefined : holdingUsd(amount, price)
   return value === undefined
     ? fmt(copy.unpriced, { to })
     : fmt(copy.priced, { value: usdAtomicFloor(value), to })

@@ -3,7 +3,6 @@
  * Stores, and where its screen opens. Demo mode only: its fakes keep the rest off the network.
  */
 import type { Address } from "viem"
-import type { Pace } from "@obsidion/core/cadence"
 import { bestEffort } from "@obsidion/core/errors"
 import type { BridgeInProvider } from "@obsidion/front-core"
 import type { WebWalletConfig } from "../config/env"
@@ -53,9 +52,15 @@ export async function seedSavedWallets(session: Session, wallets: SavedL1Wallet[
     })
 }
 
-/** Runs each step `at` ms from now on the page's pace. */
-export function playJourney(pace: Pace, steps: { at: number; run: () => Promise<unknown> }[]) {
-  for (const { at, run } of steps) pace.after(at, () => void bestEffort("unknown", run()))
+/** Runs each step `at` ms from now on the page's pace, until the page is leaving. */
+export function playJourney(
+  session: Session,
+  steps: { at: number; run: () => Promise<unknown> }[],
+) {
+  for (const { at, run } of steps)
+    session.page.pace.after(at, () => {
+      if (!session.leaving.get()) void bestEffort("unknown", run())
+    })
 }
 
 /** `ethereum`, `l1` or the L1's id; a bridge chain's name or id. */

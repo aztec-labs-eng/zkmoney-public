@@ -487,6 +487,14 @@ export function tokenDecimalsForNetwork(network: Network): number {
 /** Display symbol for the wallet's single asset. Never a `ContractName` — that is `oxideToken`. */
 export const WALLET_TOKEN_SYMBOL = "DAI"
 
+/**
+ * The symbol a token shows as: an Oxide L2 token's (`OXDAI`) shows as its asset's (`DAI`), since
+ * Oxide's `OX` prefix is a bridge detail users never see.
+ */
+export function displayTokenSymbol(symbol: string): string {
+  return symbol.replace(/^ox(?=[a-z])/i, "")
+}
+
 /** What the UI calls the wallet balance; the asset itself stays `WALLET_TOKEN_SYMBOL`. */
 export const WALLET_DISPLAY_CURRENCY = "USD"
 

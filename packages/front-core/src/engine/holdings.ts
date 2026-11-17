@@ -56,32 +56,34 @@ export function selectHoldings(
   return [...lines.values()]
 }
 
-/** The Sky holdings Savings prices, one per share token: the listed ones, then the deployment's. */
+/** The holdings Savings prices, one per share token: the listed ones, then the deployment's. */
 export function savingsHoldings(
   deployment: DeploymentHoldings,
   listed: readonly string[] | undefined,
-): SkyEscrowHolding[] {
-  const { holdings } = holdingCatalog(deployment, listed)
-  const sky = [...holdings, ...deployment.holdings].filter(
-    (h): h is SkyEscrowHolding => h.rail === "skyEscrow",
-  )
-  return sky.filter(
-    (h, i) => sky.findIndex((o) => tokenKey(o.l2Token) === tokenKey(h.l2Token)) === i,
+): Holding[] {
+  const all = [...holdingCatalog(deployment, listed).holdings, ...deployment.holdings]
+  return all.filter(
+    (h, i) => all.findIndex((o) => tokenKey(o.l2Token) === tokenKey(h.l2Token)) === i,
   )
 }
 
-/** The holding Savings prices: the listed Sky holding, else the deployment's first. */
+/** The first holding Savings prices, for a reader that takes one. */
 export const savingsHolding = (
   deployment: DeploymentHoldings,
   listed: readonly string[] | undefined,
-): SkyEscrowHolding | undefined => savingsHoldings(deployment, listed)[0]
+): Holding | undefined => savingsHoldings(deployment, listed)[0]
 
-/** The Sky holding an older build's Savings moves count in. */
+/**
+ * The holding an older build's Savings moves count in. Those moves ran through a Sky escrow, so it
+ * is the first holding on that rail, whose factory their replay reads.
+ */
 export function savingsHoldingRef(
   deployment: DeploymentHoldings,
   listed: readonly string[] | undefined,
 ): SkyHoldingRef | undefined {
-  const sky = savingsHolding(deployment, listed)
+  const sky = savingsHoldings(deployment, listed).find(
+    (h): h is SkyEscrowHolding => h.rail === "skyEscrow",
+  )
   if (!sky) return undefined
   const blocks = [sky.base, sky.held].map((bridge) => BigInt(bridge.tuple.deployedAtBlock ?? 0))
   const fromBlock = blocks.reduce((first, block) => (block < first ? block : first))

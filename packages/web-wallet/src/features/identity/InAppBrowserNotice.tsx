@@ -6,9 +6,10 @@ import { OpenInBrowser } from "./OpenInBrowser/OpenInBrowser"
 
 /**
  * The way out of an app's built-in browser, shown in place of the passkey button before any
- * request. Nothing has failed, so there is no retry, and no way to try here. The report carries the
- * user agent, the one thing that can show a wrongly matched browser. `reportContext` is also the
- * screen the card's telemetry names.
+ * request. Nothing has failed, so there is no retry, and no way to try here. The report's message
+ * is the user agent, the one thing that can show a wrongly matched browser. A sent report scrubs
+ * it to a label, so only a stored row has it, from the request. `reportContext` is also the screen
+ * the card's telemetry names.
  */
 export function InAppBrowserNotice({
   mode,

@@ -11,6 +11,7 @@ import {
   memoryStore,
   recoverableRails,
   service,
+  vaultSwapTargets,
   type BalanceEntry,
   type BoundRail,
   type MoveRecord,
@@ -37,13 +38,14 @@ const countingRoutes = () => {
   return { routes, built }
 }
 
-/** Each bound rail, with its holdings and the ones that take a move in. */
+/** Each bound rail, with its holdings, the ones that take a move in, and those it only swaps. */
 const shown = (rails: readonly BoundRail[]) =>
   rails.map((rail: BoundRail) =>
     rail((r) => ({
       rail: r.routes.rail,
       holdings: r.holdings.map((h) => h.id),
       listed: r.holdings.filter((h) => r.listed.has(h.id)).map((h) => h.id),
+      ...(r.vaultSwapOnly?.length ? { vaultSwapOnly: r.vaultSwapOnly.map((h) => h.id) } : {}),
     })),
   )
 
@@ -60,23 +62,60 @@ const bind = (deployment: DeploymentHoldings, listed: readonly string[] | undefi
 const pinned = (manifest: unknown, portal: string) =>
   pinnedHoldings(pinnedOxideDeployment(manifest, { portal }))
 
-/** Staging's second deployment with a `Psm` vault on its own bridge. */
-function withVault(): DeploymentHoldings {
+/**
+ * Staging's second deployment with a `Psm` vault on its own bridge; `skyConverter` adds the Sky
+ * converter adapter to its executor. `named` has the profile name the vault as a savings portal
+ * `psm` in place of the manifest's feature.
+ */
+function withVault(skyConverter = false, named = false): DeploymentHoldings {
   const entry = staging.deployments[1]!
   const vault = {
     project: "position",
-    bridges: { main: "brg-tst-v6b", position: "brg-susds-v6b" },
+    bridges: { main: "brg-tst-v6b", position: "brg-shr-v6b" },
     contracts: {},
     variables: { conversion: "Psm" },
+  }
+  const multistep = entry.features["fea-multistep-v6c"]!
+  const adapter = { skyConverterAdapter: "0x0000000000000000000000000000000000000ad3" }
+  const features = {
+    ...entry.features,
+    ...(named ? {} : { "fea-vault-psm-v6b": vault }),
+    ...(skyConverter
+      ? {
+          "fea-multistep-v6c": {
+            ...multistep,
+            contracts: { ...multistep.contracts, ...adapter },
+          },
+        }
+      : {}),
+  }
+  const tst = entry.bridges[1]!
+  const [token, portal] = [
+    "0x00000000000000000000000000000000000005a1",
+    "0x00000000000000000000000000000000000005a2",
+  ]
+  const shares = {
+    ...tst,
+    key: "shr",
+    bridgeId: "brg-shr-v6b",
+    token,
+    underlying: token,
+    portal,
+    l2Token: `0x${"5a".repeat(32)}`,
+    l2TokenImmutables: { ...tst.l2TokenImmutables, portal },
   }
   const manifest = {
     ...staging,
     deployments: [
       staging.deployments[0],
-      { ...entry, features: { ...entry.features, "fea-vault-psm-v6b": vault } },
+      { ...entry, bridges: [...entry.bridges, shares], features },
     ],
   }
-  return pinned(manifest, entry.bridges[1]!.portal)
+  const savings = [{ id: "psm", portal: shares.portal, base: tst.portal, conversion: "Psm" }]
+  return pinnedHoldings(
+    pinnedOxideDeployment(manifest, { portal: tst.portal }),
+    named ? savings : undefined,
+  )
 }
 
 describe("moveRails", () => {
@@ -109,6 +148,36 @@ describe("moveRails", () => {
       ],
       executorPorts: 1,
     })
+  })
+
+  it("has the executor swap Sky's holding when its executor has the Sky converter adapter", () => {
+    const deployment = withVault(true)
+    const { routes } = countingRoutes()
+    const { holdings } = holdingCatalog(deployment, ["fea-sky-v6b", "fea-vault-psm-v6b"])
+    const [, executor] = shown(moveRails(deployment.holdings, holdings, routes, false))
+    expect(executor).toEqual({
+      rail: "executor",
+      holdings: ["fea-vault-psm-v6b"],
+      listed: ["fea-vault-psm-v6b"],
+      vaultSwapOnly: ["fea-sky-v6b"],
+    })
+  })
+
+  it("offers Sky and a vault as each other's swap targets, whether the manifest or the profile names the vault", () => {
+    const routes: Routes = {
+      sky: () => ({ rail: "skyEscrow" } as ReturnType<Routes["sky"]>),
+      executor: () => ({ rail: "executor", vaultSwap: {} } as ReturnType<Routes["executor"]>),
+    }
+    for (const [named, vault] of [
+      [false, "fea-vault-psm-v6b"],
+      [true, "psm"],
+    ] as const) {
+      const deployment = withVault(true, named)
+      const { holdings } = holdingCatalog(deployment, ["fea-sky-v6b", vault])
+      const targets = vaultSwapTargets(moveRails(deployment.holdings, holdings, routes, false))
+      expect(targets.get("fea-sky-v6b")).toEqual([vault])
+      expect(targets.get(vault)).toEqual(["fea-sky-v6b"])
+    }
   })
 })
 
@@ -153,6 +222,14 @@ describe("liveMoveRails", () => {
     expect(shown(rails.get())).toEqual(EXIT_ONLY)
     expect(built.executorPorts).toBe(1)
     movesStore.set(loaded([move("claimed")]))
+    expect(shown(rails.get())).toEqual(SKY_ONLY)
+  })
+
+  it("binds an unlisted vault's rail while a swap out of Sky into it is unfinished", () => {
+    const out = { ...move("burned"), holdingId: SKY, intoHoldingId: VAULT } as MoveRecord
+    const { rails, movesStore } = live([out], 0n)
+    expect(shown(rails.get())).toEqual(EXIT_ONLY)
+    movesStore.set(loaded([{ ...out, phase: "claimed" } as MoveRecord]))
     expect(shown(rails.get())).toEqual(SKY_ONLY)
   })
 

@@ -39,11 +39,19 @@ describe("transferScan task", () => {
     vi.useRealTimers()
   })
 
-  function start(opts: { lookupFails?: number; incomplete?: boolean; tag?: string } = {}) {
+  function start(
+    opts: {
+      lookupFails?: number
+      vaultFails?: number
+      vaultOpensInMs?: number
+      incomplete?: boolean
+      tag?: string
+    } = {},
+  ) {
     const events: string[] = []
     const contexts: TransferScanContext[] = []
     let readBalances!: () => Promise<WalletBalanceRead>
-    let { lookupFails = Infinity } = opts
+    let { lookupFails = Infinity, vaultFails } = opts
     const shares = vi.fn(async () => 7n)
     const lookups = vi.fn()
     const readBalanceCoalesced = vi.fn(async () => true)
@@ -77,7 +85,17 @@ describe("transferScan task", () => {
     const lookup = async () => {
       lookups()
       if (lookupFails-- > 0) throw new Error("no deployment")
-      return [{ tokenService: { tokenAddress: "0xshares", ...reader(shares) } }]
+      const open = (tokenAddress: string) => async () => ({
+        tokenService: { tokenAddress, ...reader(shares) },
+      })
+      const vault = async () => {
+        if (vaultFails!-- > 0) throw new Error("no instance")
+        if (opts.vaultOpensInMs) {
+          await new Promise((resolve) => setTimeout(resolve, opts.vaultOpensInMs))
+        }
+        return open("0xvault")()
+      }
+      return vaultFails === undefined ? [open("0xshares")] : [open("0xshares"), vault]
     }
     h.tasks.push(scan.task, savingsLookup({ wallet, account: account.service, lookup, scan }))
     ends.push(h.end, scan.dispose)
@@ -148,6 +166,38 @@ describe("transferScan task", () => {
     await expect(balances()).resolves.toEqual({ [TOKEN.address]: 100n, "0xshares": 7n })
     t.shares.mockRejectedValueOnce(new Error("unreadable"))
     await expect(balances()).resolves.toEqual({ [TOKEN.address]: 100n })
+  })
+
+  it("reads the shares that open while it retries one that does not", async () => {
+    const t = start({ lookupFails: 0, vaultFails: 1 })
+    t.account.ready(ME)
+    t.token.ready(mainToken())
+    t.h.start()
+    const balances = async () => (await t.read()).balances
+    await flush()
+    await expect(balances()).resolves.toEqual({ [TOKEN.address]: 100n, "0xshares": 7n })
+    await vi.advanceTimersByTimeAsync(SAVINGS_LOOKUP_RETRY_MS)
+    await expect(balances()).resolves.toEqual({
+      [TOKEN.address]: 100n,
+      "0xshares": 7n,
+      "0xvault": 7n,
+    })
+  })
+
+  it("reads the shares that open while another token is still opening", async () => {
+    const t = start({ lookupFails: 0, vaultFails: 0, vaultOpensInMs: 60_000 })
+    t.account.ready(ME)
+    t.token.ready(mainToken())
+    t.h.start()
+    const balances = async () => (await t.read()).balances
+    await flush()
+    await expect(balances()).resolves.toEqual({ [TOKEN.address]: 100n, "0xshares": 7n })
+    await vi.advanceTimersByTimeAsync(60_000)
+    await expect(balances()).resolves.toEqual({
+      [TOKEN.address]: 100n,
+      "0xshares": 7n,
+      "0xvault": 7n,
+    })
   })
 
   it("stamps each balance with when its own read resolved", async () => {

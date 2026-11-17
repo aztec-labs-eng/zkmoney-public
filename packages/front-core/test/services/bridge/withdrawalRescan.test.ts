@@ -10,8 +10,9 @@ import {
   predictAcrossBridgeEscrowAddressLocally,
   type ScannedWithdrawEvent,
 } from "@obsidion/sdk"
+import type { Holding } from "@obsidion/core/oxide"
 import { createWithdrawals, type Withdrawals } from "../../../src/engine/withdrawals"
-import { rebuildWithdrawals } from "../../../src/core/services/bridge/withdrawalRescan"
+import { isMoveBurn, rebuildWithdrawals } from "../../../src/core/services/bridge/withdrawalRescan"
 import { escrowLeg } from "../../../src/core/services/bridge/escrowLeg"
 import { withdrawalRecipients } from "../../../src/core/services/bridge/withdrawalRecipients"
 import { syncCatchUp } from "../../../src/engine/catchUp"
@@ -340,7 +341,11 @@ describe("rebuildWithdrawals", () => {
         relayerTip: (2n * TIP).toString(),
       },
     })
-    expect(withdrawalRecipients(record)).toEqual({ release: escrow, final: RECIPIENT, viaEscrow: true })
+    expect(withdrawalRecipients(record)).toEqual({
+      release: escrow,
+      final: RECIPIENT,
+      viaEscrow: true,
+    })
     expect(escrowLeg(record)).toMatchObject({ kind: "bridge", escrow })
   })
 
@@ -446,5 +451,22 @@ describe("rebuildWithdrawals", () => {
     })
     expect(again).toEqual([])
     expect([...(await store.all())].sort((a, b) => b.startTime - a.startTime)).toHaveLength(3)
+  })
+})
+
+describe("isMoveBurn", () => {
+  const EXECUTOR = getAddress(`0x${"e7".repeat(20)}`)
+  const holdings = [
+    { rail: "skyEscrow" },
+    { rail: "executor", executor: { address: EXECUTOR } },
+  ] as Holding[]
+
+  it("names a Sky burn by its memo and a vault burn by the move executor it pays", () => {
+    const plain = { executor: getAddress(`0x${"aa".repeat(20)}`) }
+    expect(isMoveBurn(plain, holdings)).toBe(false)
+    expect(isMoveBurn({ ...plain, sky: {} as never }, holdings)).toBe(true)
+    expect(isMoveBurn({ executor: EXECUTOR.toLowerCase() as Hex }, holdings)).toBe(true)
+    // The executor of a deployment with no vault is no move's.
+    expect(isMoveBurn({ executor: EXECUTOR }, holdings.slice(0, 1))).toBe(false)
   })
 })

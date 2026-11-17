@@ -33,6 +33,7 @@ export function operationEntry(record: OperationRecord) {
       withdrawals: none,
       bridgeIns: none,
       upgrades: { items: [], recipients: new Set<string>(), loaded: true },
+      moves: [],
       upgradePricing: { settled: true },
       processing: new Map(),
       registrations: [],

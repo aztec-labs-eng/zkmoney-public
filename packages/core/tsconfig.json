@@ -17,6 +17,7 @@
     "src/cadence/index.ts",
     "src/oxide/index.ts",
     "src/oxide/manifestEntriesCli.ts",
+    "src/oxide/profileHoldingsCli.ts",
     "src/text/index.ts",
     "src/errors/index.ts"
   ],

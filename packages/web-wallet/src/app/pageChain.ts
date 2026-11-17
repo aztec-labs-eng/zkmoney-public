@@ -37,6 +37,7 @@ import {
   keyedService,
   loadOxideManifestTuple,
   rpcOriginChain,
+  savingsHolding,
   savingsHoldings,
   sipaIntentName,
   fixed,
@@ -191,9 +192,9 @@ export function createPageChain(
   const holdingPrice = holdingPrices(query, client, now)
   const savingsPrices = query<[], readonly SavingsPriceRead[]>("savingsPrices", {
     load: async (signal) => {
-      const sky = savingsHoldings(await holdings.read(signal), config.holdings)
+      const priced = savingsHoldings(await holdings.read(signal), config.holdings)
       return Promise.all(
-        sky.map(async (holding): Promise<SavingsPriceRead> => {
+        priced.map(async (holding): Promise<SavingsPriceRead> => {
           const entry = holdingPrice(holding)
           const read = await bestEffort("unknown", entry.read(signal))
           signal.throwIfAborted()
@@ -483,7 +484,7 @@ export function createPageChain(
     savingsPrices,
     savingsPrice: query<[], SavingsPrice | null>("savingsPrice", {
       load: async (signal) => {
-        const [holding] = savingsHoldings(await holdings.read(signal), config.holdings)
+        const holding = savingsHolding(await holdings.read(signal), config.holdings)
         return holding ? { ...(await holdingPrice(holding).read(signal)), holding } : null
       },
       poll: HOLDING_PRICE_EVERY_MS,

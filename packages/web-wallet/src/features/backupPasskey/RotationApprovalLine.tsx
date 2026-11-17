@@ -28,7 +28,7 @@ export function RotationApprovalLine() {
           </button>
         </div>
       )}
-      {sheet && <PasskeysSheet onClose={() => setSheet(false)} />}
+      {sheet && <PasskeysSheet from="home_card" onClose={() => setSheet(false)} />}
     </>
   )
 }

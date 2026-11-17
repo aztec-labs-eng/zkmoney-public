@@ -7,7 +7,14 @@ import { describe, expect, it, vi } from "vitest"
 import type { Hex } from "viem"
 import { createPace } from "@obsidion/core/cadence"
 import { WalletError } from "@obsidion/core/errors"
-import { admitDeposit, memoryStore, NOMINAL_USD_VALUATION } from "@obsidion/front-core"
+import {
+  admitDeposit,
+  createContacts,
+  memoryBackend,
+  memoryStore,
+  NOMINAL_USD_VALUATION,
+  openDatabase,
+} from "@obsidion/front-core"
 import type { L1WalletView } from "../../../src/session/l1Wallet"
 import { createWalletPrompt } from "../../../src/session/walletPrompt"
 import {
@@ -46,7 +53,12 @@ const admission = admitDeposit(
 )
 const balance = { raw: 10n ** 18n, value: 1, decimals: 18, symbol: "DAI", display: "1" }
 
-function world(fundDeposit: (params: FundDepositParams) => Promise<unknown>, chainId = 1) {
+function world(
+  fundDeposit: (params: FundDepositParams) => Promise<unknown>,
+  chainId = 1,
+  payee?: string,
+) {
+  const contacts = createContacts({ db: openDatabase(memoryBackend()), now: () => 1 })
   const view = memoryStore<L1WalletView>({
     account: ACCOUNT,
     accounts: [ACCOUNT],
@@ -77,7 +89,7 @@ function world(fundDeposit: (params: FundDepositParams) => Promise<unknown>, cha
     deposit: { address: `0x${"5e".repeat(20)}`, name: "alice.oxide.eth" },
     token,
     fee: "0.25",
-    payee: undefined,
+    payee,
     mint: false,
     ...callbacks,
   })
@@ -89,6 +101,7 @@ function world(fundDeposit: (params: FundDepositParams) => Promise<unknown>, cha
       now: () => clock,
       chainId: 1,
       fundDeposit,
+      contacts,
       report,
     },
     inputs,
@@ -98,6 +111,7 @@ function world(fundDeposit: (params: FundDepositParams) => Promise<unknown>, cha
   flow.review("0.25")
   return {
     flow,
+    contacts,
     view,
     pace,
     switchNetwork,
@@ -229,6 +243,29 @@ describe("a send that stops before any transfer", () => {
     )
     expect(callbacks.onSendFailed).toHaveBeenCalledOnce()
     expect(report).toHaveBeenCalledWith(broken, "deposit:confirm")
+  })
+})
+
+describe("the sending wallet", () => {
+  const broadcast = async (params: FundDepositParams) =>
+    params.onSubmitted?.(`0x${"12".repeat(32)}`)
+
+  it("joins the saved wallets once the transfer is broadcast", async () => {
+    const { flow, contacts } = world(broadcast)
+    await flow.send()
+    await vi.waitFor(async () =>
+      expect(await contacts.all()).toMatchObject([
+        { address: ACCOUNT, l1Wallet: { provenance: "deposit-attested", walletName: "Rabby" } },
+      ]),
+    )
+  })
+
+  it("stays out of the saved wallets when it pays someone else", async () => {
+    const { flow, contacts, callbacks } = world(broadcast, 1, "bob")
+    await flow.send()
+    expect(callbacks.onSent).toHaveBeenCalledOnce()
+    await settle()
+    expect(await contacts.all()).toEqual([])
   })
 })
 

@@ -2,10 +2,12 @@ import { useState } from "react"
 import { AlertBadge, NudgeCard, StatusBadge } from "@obsidion/web-ds"
 import { fmt } from "../../../lib/fmt"
 import { PasskeysSheet } from "../../../ui/PasskeysSheet/PasskeysSheet"
+import { Opened } from "../../../ui/useScreenFlow"
 import { AccountHistorySheet } from "../AccountHistorySheet/AccountHistorySheet"
+import { reportNudgeExit, reportNudgeShown, type NudgeSurface } from "../backupFunnel"
 import type { HomeNudge } from "../backupReminder"
 import { useBackupRotation } from "../backupRotations"
-import { selectAddStep } from "../backupScreen"
+import { selectAddBadge } from "../backupScreen"
 import { minutes } from "../screens/AddTracker/AddTracker"
 import { useBackupNudge, useHomeNudge } from "../useBackupNudge"
 import copy from "./BackupNudge.copy"
@@ -41,11 +43,13 @@ function bodyOf(nudge: HomeNudge) {
 
 function Card({
   nudge,
+  surface,
   className,
   onOpen,
   onDismiss,
 }: {
   nudge: HomeNudge
+  surface: NudgeSurface
   className?: string
   onOpen: () => void
   onDismiss?: () => void
@@ -56,6 +60,7 @@ function Card({
       data-testid="backup-nudge"
       data-kind={nudge.kind}
     >
+      <Opened key={nudge.kind} fire={() => reportNudgeShown(surface, nudge)} />
       {/* Announces a step change, not the network card's minute countdown. */}
       {underWay(nudge) && (
         <span className={styles.announce} aria-live="polite">
@@ -65,9 +70,21 @@ function Card({
       <NudgeCard
         title={copy[nudge.kind].title}
         body={bodyOf(nudge)}
-        action={{ label: actionLabel(nudge), onClick: onOpen }}
+        action={{
+          label: actionLabel(nudge),
+          onClick: () => {
+            reportNudgeExit(surface, nudge, "open")
+            onOpen()
+          },
+        }}
         dismissLabel={copy.notNow}
-        onDismiss={onDismiss}
+        onDismiss={
+          onDismiss &&
+          (() => {
+            reportNudgeExit(surface, nudge, "not_now")
+            onDismiss()
+          })
+        }
       />
     </div>
   )
@@ -86,12 +103,15 @@ export function BackupNudge() {
       {nudge && (
         <Card
           nudge={nudge}
+          surface="home"
           onOpen={() => setSheet(nudge.kind === "moveFunds" ? "history" : "passkeys")}
           onDismiss={underWay(nudge) ? undefined : dismiss}
         />
       )}
       {/* Stays open once the add it starts saves its record and the card turns to its step. */}
-      {sheet === "passkeys" && <PasskeysSheet onClose={() => setSheet(undefined)} />}
+      {sheet === "passkeys" && (
+        <PasskeysSheet from="home_card" onClose={() => setSheet(undefined)} />
+      )}
       {sheet === "history" && <AccountHistorySheet onClose={() => setSheet(undefined)} />}
     </>
   )
@@ -101,18 +121,15 @@ export function BackupNudge() {
 export function SettingsBackupNudge({ onAdd }: { onAdd: () => void }) {
   const nudge = useBackupNudge()
   if (nudge !== "oneDevice") return null
-  return <Card nudge={{ kind: nudge }} className={styles.settings} onOpen={onAdd} />
+  return (
+    <Card nudge={{ kind: nudge }} surface="settings" className={styles.settings} onOpen={onAdd} />
+  )
 }
 
 /** Settings' Passkeys row while an add is saved: "Finish setup" while it is on its tracker. */
 export function BackupAddBadge() {
-  const saved = useBackupRotation()
-  const label = selectAddStep(saved)
-    ? copy.finishSetup
-    : saved !== null && typeof saved === "object"
-    ? copy.pending
-    : undefined
-  return label ? <StatusBadge label={label} badgeStyle="pending" /> : null
+  const badge = selectAddBadge(useBackupRotation())
+  return badge ? <StatusBadge label={copy[badge]} badgeStyle="pending" /> : null
 }
 
 /** The "!" on Settings and its Passkeys row while the account's only passkey lives on one device. */

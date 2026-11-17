@@ -1,0 +1,22 @@
+/* What Savings earns on: one row per line. */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+  padding: var(--space-24);
+  box-sizing: border-box;
+  border-radius: var(--radius-16);
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.07);
+}
+.card h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 23px;
+}
+.rows {
+  display: grid;
+  gap: var(--space-16);
+}

@@ -42,6 +42,7 @@ const sources = (over: Partial<NotificationSources> = {}): NotificationSources =
   withdrawals: { records: [], hydrated: true },
   bridgeIns: { records: [], hydrated: true },
   upgrades: { items: [], recipients: new Set(), loaded: true },
+  moves: [],
   upgradePricing: PRICED,
   processing: new Map(),
   registrations: [],

@@ -76,6 +76,12 @@ sponsored onboarding and the paylink rail both fail closed without it.
 
 Run `pnpm ui:capture --plan scripts/ui-capture/plans/phone.json --preset all` for isolated demo captures at 390×844, 402×879, and 390×667. Add `--record` for matching-size WebM recordings. The command owns its local config and server; generated output stays outside the repository. See [the capture guide](scripts/ui-capture/README.md) for setup, route/interaction plans, safe-area conventions, and the separate real-device verification requirements.
 
+## Home Screen app
+
+Added to a Home Screen, the wallet opens as its own app. [manifest.webmanifest](public/manifest.webmanifest) names it and gives Android and desktop browsers their icons. iOS reads the `apple-*` tags in [index.html](index.html) instead. It uses `apple-touch-icon.png` over the manifest's icons and restyles it for its tinted and clear Home Screen looks; the icon is opaque because iOS fills transparency with black. iOS colors the status bar to match the page, so it follows the theme. There is deliberately no `apple-mobile-web-app-status-bar-style`: WebKit deprecated `black-translucent` (WebKit bug 317153), and iOS keeps the style an app was added with until it is added again. [startupImages.ts](startupImages.ts) links a launch screen for each iOS screen size and orientation in the boot screen's background, so a launch does not flash white; add a row to its table when Apple ships a new screen size.
+
+The three icons are `src/assets/home/earn-coin.webp` at 64% of the width, centered on the brand tile color `#181818`, with the brand's blue and purple glow along the bottom edge. The coin sits inside the maskable safe zone, so the same files serve as maskable icons. iOS gives the Home Screen app its own storage, separate from Safari's, so its first launch asks for a passkey sign-in.
+
 ## Demo mode
 
 `pnpm dev` then open `http://localhost:5173/?demo=recovery`. The wallet comes up populated — no

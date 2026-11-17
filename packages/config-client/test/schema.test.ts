@@ -377,6 +377,45 @@ describe("versions", () => {
     })
   })
 
+  it("carries each holding's words by holding id, and refuses a listed holding without them", () => {
+    const withCopy = (holdings: string[] | undefined, holdingCopy: unknown) => {
+      const doc = stagingDoc()
+      if (holdings) doc.versions["0.0.2"].holdings = holdings
+      doc.versions["0.0.2"].holdingCopy = holdingCopy
+      return doc
+    }
+    const sky = {
+      rateName: "Sky Savings Rate",
+      yieldFrom: "Sky Savings Rate, set by Sky governance",
+      moveBack: "Any time",
+      risk: "Low",
+      provider: "Sky",
+      terms: [{ label: "Terms of Use", url: "https://docs.sky.money/terms" }],
+    }
+    const vault = { ...sky, rateName: "Vault Rate", new: true }
+    expect(
+      parseConfigProfile(
+        withCopy(["fea-sky-v6", "fea-vault-a-v6"], { "fea-sky-v6": sky, "fea-vault-a-v6": vault }),
+      ).versions["0.0.2"],
+    ).toMatchObject({ holdingCopy: { "fea-sky-v6": sky, "fea-vault-a-v6": vault } })
+    // No list: the default holding's words are keyed by its id, which the document cannot check.
+    expect(() => parseConfigProfile(withCopy(undefined, { "fea-sky-v6": sky }))).not.toThrow()
+    expect(() =>
+      parseConfigProfile(withCopy(["fea-sky-v6", "fea-vault-a-v6"], { "fea-sky-v6": sky })),
+    ).toThrow(/fea-vault-a-v6/)
+    const bad = [
+      { "fea-sky-v6": {} },
+      { "fea-sky-v6": { ...sky, rateName: "" } },
+      { "fea-sky-v6": { rateName: sky.rateName } },
+      { "fea-sky-v6": { ...sky, terms: [] } },
+      { "fea-sky-v6": { ...sky, terms: [{ label: "Terms", url: "http://docs.sky.money" }] } },
+      { "fea-sky-v6": { ...sky, extra: 1 } },
+    ]
+    for (const holdingCopy of bad) {
+      expect(() => parseConfigProfile(withCopy(undefined, holdingCopy))).toThrow(/holdingCopy/)
+    }
+  })
+
   it("validates a vkey hash when present, and a version may omit the block entirely", () => {
     const doc = stagingDoc()
     for (const version of Object.values<any>(doc.versions)) {

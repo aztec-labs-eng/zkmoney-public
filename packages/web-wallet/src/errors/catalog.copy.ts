@@ -172,6 +172,9 @@ export default {
   "move.overNetworkLimit": "This withdrawal is over the network's maximum per withdrawal.",
   "move.overspent": "Balance not enough",
   "move.signerUnreachable": "The Savings co-signer isn't reachable. Try again in a moment.",
+  "move.exitOnly": "This vault no longer takes new funds. You can still move funds out.",
+  "move.routeUnread": "Couldn't get a quote for this move. Try again.",
+  "holding.noRoute": "The wallet can't move funds for this vault.",
   // Proposed copy for the two operation refusals, pending review.
   "operation.running": "This transaction is already in progress.",
   "operation.sent": "This transaction was already sent.",

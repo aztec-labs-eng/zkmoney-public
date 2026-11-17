@@ -6,6 +6,7 @@ import type { BridgeInRecord } from "../../src/core/services/crossChain/types"
 import { createBridgeIns } from "../../src/engine/bridgeIns"
 import { openDatabase } from "../../src/engine/database"
 import { memoryBackend } from "../../src/engine/memoryBackend"
+import type { MoveRecord } from "../../src/engine/moveTransition"
 import {
   deriveNotifications,
   selectNotifications,
@@ -44,6 +45,7 @@ const sources = (over: Partial<NotificationSources> = {}): NotificationSources =
   processing: new Map(),
   registrations: [],
   operations: { ended: [], running: [] },
+  moves: [],
   loaded: true,
   ...over,
 })
@@ -136,5 +138,43 @@ describe("bridge entries", () => {
     expect(select(sources({ bridgeIns }))).toMatchObject([
       { id: `${saved!.id}:filled`, target: { id: saved!.id } },
     ])
+  })
+})
+
+describe("a vault move's burn", () => {
+  const vault = burn({
+    localId: "w-vault",
+    phase: "finalizing_l1",
+    endTime: undefined,
+    vaultMove: { holdingId: "fea-vault", nonce: "0x02" },
+  })
+  const move = { withdrawalLocalId: "w-vault", direction: "out" } as MoveRecord
+  const aboutOf = (s: NotificationSources) =>
+    deriveNotifications(s, new Map(), NOW).map((e) => e.about)
+
+  it("carries its move's direction while it runs and once it ends, which its record does not hold", () => {
+    const live = sources({ withdrawals: hydrated([vault]), moves: [move] })
+    expect(aboutOf(live)).toMatchObject([{ kind: "bridgeLive", move: { direction: "out" } }])
+    const ended = { ...vault, phase: "done", endTime: NOW - 1 } as WithdrawalRecord
+    expect(aboutOf(sources({ withdrawals: hydrated([ended]), moves: [move] }))).toMatchObject([
+      { kind: "bridgeEnded", move: { direction: "out" } },
+    ])
+  })
+
+  it("carries a swap's destination", () => {
+    const vaultSwapped = { ...move, intoHoldingId: "fea-vault-b" } as MoveRecord
+    expect(
+      aboutOf(sources({ withdrawals: hydrated([vault]), moves: [vaultSwapped] })),
+    ).toMatchObject([
+      { kind: "bridgeLive", move: { direction: "out", intoHoldingId: "fea-vault-b" } },
+    ])
+  })
+
+  it("names no move for a burn of another kind, or one whose move is not read yet", () => {
+    const plain = burn({ localId: "w-vault", phase: "finalizing_l1", endTime: undefined })
+    const [other] = aboutOf(sources({ withdrawals: hydrated([plain]), moves: [move] }))
+    expect(other).not.toHaveProperty("move")
+    const [unread] = aboutOf(sources({ withdrawals: hydrated([vault]) }))
+    expect(unread).not.toHaveProperty("move")
   })
 })

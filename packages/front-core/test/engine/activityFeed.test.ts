@@ -492,7 +492,7 @@ describe("selectFeed", () => {
       for (const over of [
         { fundingTxHash: undefined },
         {},
-        { funding: "transfer" as const },
+        { funding: "plain" as const },
         { funding: "bridge" as const },
       ])
         expect(kinds(feedOf({ deposits: [replayed(over)] }).items)).toEqual(row)

@@ -6,6 +6,7 @@ import { formatUnits } from "viem"
 import { DEFAULT_DECIMALS, PaylinkActionEnum } from "@obsidion/core/constants"
 import type { StatusLabel } from "@obsidion/web-ds"
 import {
+  depositFunder,
   depositAmounts,
   depositPhaseCopy,
   failureReason,
@@ -97,23 +98,32 @@ export function linkFragmentOf(paylink: string): string | null {
   return i >= 0 && i < paylink.length - 1 ? paylink.slice(i + 1) : null
 }
 
-/** On-chain funder + funding tx for the deposit detail sheet. Prefers the Transfer sender. */
-export function depositAttribution(record: SipaDeposit): {
+/**
+ * On-chain funder + funding tx for the deposit detail sheet. Prefers the Transfer sender. No funder
+ * while the funding is unread (`readsFills`), or for a bridge fill, whose bridge-in names it.
+ */
+export function depositAttribution(
+  record: SipaDeposit,
+  readsFills: boolean,
+): {
   funder?: string
   fundingTxHash?: string
 } {
   return {
-    funder: record.fundingFromAddress ?? record.walletAddress,
+    funder: depositFunder(record, readsFills),
     // A direct migration deposit has no funding transfer: its portal deposit is the one L1 tx.
     fundingTxHash: record.fundingTxHash ?? (record.direct ? record.sweepTxHash : undefined),
   }
 }
 
 /** Source-wallet name and funder address the deposit detail sheet puts over the facts. */
-export function depositHeadline(record: SipaDeposit): { title?: string; address?: string } {
+export function depositHeadline(
+  record: SipaDeposit,
+  readsFills: boolean,
+): { title?: string; address?: string } {
   return {
     title: record.walletName?.trim() || undefined,
-    address: depositAttribution(record).funder,
+    address: depositAttribution(record, readsFills).funder,
   }
 }
 

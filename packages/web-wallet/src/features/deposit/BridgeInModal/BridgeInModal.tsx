@@ -577,7 +577,7 @@ export function BridgeInModal({
             />
           ),
           symbol: origin.symbol,
-          chain: chainName,
+          detail: chainName,
           onPick: onChangeOrigin ?? (() => flow.go("chain")),
         },
       }}
@@ -602,7 +602,7 @@ export function BridgeInModal({
         asset: {
           icon: <CoinIcon token={settlement ?? coins[0]} size={32} badge="brand" />,
           symbol: settlement?.symbol ?? "",
-          chain: brandCopy.name,
+          detail: brandCopy.name,
         },
       }}
       errors={[typedError, short && copy.short].filter((e): e is string => !!e)}

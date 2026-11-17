@@ -67,9 +67,9 @@ const DELIVERY_LOG_LENGTH = SUBSCRIPTION_NOTE_LOG_EMITTED_LENGTH
 export const WITHDRAWAL_RECOVERY_CHUNKS = 2
 /**
  * The most recovery chunks a sponsored withdrawal may emit, which its per-call budget is priced at:
- * a vault move's route takes up to five, and one more leaves room for a longer step.
+ * a vault move's route takes up to five, and a swap from a USDC vault into a USDS vault seven.
  */
-export const MAX_WITHDRAWAL_RECOVERY_CHUNKS = 6
+export const MAX_WITHDRAWAL_RECOVERY_CHUNKS = 7
 /** TEEMetadata: 4 pubkey limbs, the anchor block hash and the signer's registration leaf index. */
 export const TEE_METADATA_FIELDS = 6
 

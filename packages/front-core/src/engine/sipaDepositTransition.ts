@@ -62,11 +62,17 @@ export type SipaDepositEvent =
       type: "fundingSent"
       fields: Pick<
         Partial<SipaDeposit>,
-        "fundingTxHash" | "walletName" | "walletAddress" | "tokenSymbol"
+        "fundingTxHash" | "walletName" | "walletAddress" | "tokenSymbol" | "funding"
       >
     }
-  /** The funding tx's receipt was read: it was a plain transfer or a bridge fill. Set once. */
-  | { type: "fundingRead"; funding: NonNullable<SipaDeposit["funding"]> }
+  /**
+   * What funded the address: a plain transfer or a bridge's fill. Set once. `lookupUntil` is set
+   * where the bridge may still name the origin call of the fill.
+   */
+  | { type: "fundingRead"; funding: "plain" }
+  | { type: "fundingRead"; funding: "bridge"; lookupUntil?: number }
+  /** The bridge named the fill's origin call, disagreed with the fill, or never answered. */
+  | { type: "fundingLookupEnded" }
   /** A sweep this wallet sent, or one the registration's detection saw. */
   | { type: "sweepSent"; txHash: Hash }
   /**
@@ -508,8 +514,25 @@ export function sipaDepositTransition(
       if (defined.length === 0 && job === record.broadcast) return undefined
       return { ...record, ...Object.fromEntries(defined), broadcast: job }
     }
-    case "fundingRead":
-      return record.funding ? undefined : { ...record, funding: event.funding }
+    case "fundingRead": {
+      if (record.funding) return undefined
+      if (event.funding === "plain") return { ...record, funding: "plain" }
+      // The scan backfilled the wallet from the transfer's sender, which was the bridge's relayer.
+      const { walletAddress, ...rest } = record
+      const stamped =
+        walletAddress && walletAddress.toLowerCase() !== record.fundingFromAddress?.toLowerCase()
+      return {
+        ...rest,
+        ...(stamped ? { walletAddress } : {}),
+        funding: "bridge",
+        ...(event.lookupUntil !== undefined ? { fundingLookupUntil: event.lookupUntil } : {}),
+      }
+    }
+    case "fundingLookupEnded": {
+      if (record.fundingLookupUntil === undefined) return undefined
+      const { fundingLookupUntil: _, ...ended } = record
+      return ended
+    }
     case "sweepSent": {
       const phase = BEFORE_SWEEP.has(record.phase) ? "sweeping" : record.phase
       if (phase === record.phase && record.sweepTxHash) return undefined

@@ -8,6 +8,7 @@ import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
   ACROSS_INPUT_DECIMALS,
+  acrossFills,
   WalletError,
   type BridgeOutProvider,
   type QueryFactory,
@@ -251,10 +252,13 @@ export function acrossBridgeOut(
       if (status?.status === "filled" || status?.status === "refunded") return status
       return status && { status: "pending" }
     },
-    fill: async (chainId, fillTxHash, recipient) =>
-      acrossBridge(config)?.chains.some((c) => c.chainId === chainId)
-        ? (await fillReader(deps.client(chainId)).fill(fillTxHash, recipient))?.value
-        : undefined,
+    fill: async (chainId, fillTxHash, recipient) => {
+      // The chain's listed contracts hold its SpokePool, the one emitter of its fills.
+      const pools = acrossBridge(config)?.chains.find((c) => c.chainId === chainId)?.contracts
+      if (!pools) return undefined
+      const reader = fillReader(deps.client(chainId), [acrossFills(pools as Address[])])
+      return (await reader.fill(fillTxHash, recipient))?.value
+    },
   }
 }
 

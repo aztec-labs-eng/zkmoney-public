@@ -161,6 +161,29 @@
     },
     {
       "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=finish-vaults"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=finish]"
+    },
+    {
+      "action": "screenshot",
+      "file": "a6-finish-vaults.png",
+      "state": "A6: Main Account and the first vault moved; the second vault's shares, in the same Savings row, ask for approval"
+    },
+    {
+      "action": "goto",
       "path": "/settings?flowFixture=success&backupFixture=finish-upper-bound"
     },
     {

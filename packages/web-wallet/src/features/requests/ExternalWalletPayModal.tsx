@@ -8,7 +8,7 @@
  * its own fee read and URI.
  */
 import { useState, type ReactNode } from "react"
-import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
+import { WALLET_TOKEN_SYMBOL, displayTokenSymbol } from "@obsidion/core/constants"
 import { formatUnits, type Address } from "viem"
 import {
   addressShareDecision,
@@ -143,7 +143,7 @@ export function ExternalWalletPayModal({
   )
   const token: DepositTokenOption = listed ?? {
     address: result.token,
-    symbol: packet.tokenSymbol ?? WALLET_TOKEN_SYMBOL,
+    symbol: displayTokenSymbol(packet.tokenSymbol ?? WALLET_TOKEN_SYMBOL),
     decimals: result.decimals,
     icon: testIcon,
     settlesIn: result.token,

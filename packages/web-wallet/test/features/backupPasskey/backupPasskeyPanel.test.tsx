@@ -719,6 +719,20 @@ describe("the pay step's speed", () => {
     expect(sentPlan(made)).toMatchObject(UNTIPPED)
   })
 
+  it("prices a plan that credits a single unit as its fee alone, with no hold or total", async () => {
+    await mount(signedRecord({ phase: "published", plan: { ...PLAN, credited: "1" } }), {
+      world: { cap: 5n * DAI, faster: OFFER },
+    })
+    await flush(3)
+    await pickSpeed("standard")
+    expect(fact(approveCopy.pay.fee)).toBe(figures.standard.total)
+    expect(fact(holdCopy.label)).toBeUndefined()
+    expect(fact(approveCopy.pay.total)).toBeUndefined()
+    expect(fundButton()!.textContent).toBe(
+      fmt(approveCopy.pay.pay, { amount: figures.standard.total }),
+    )
+  })
+
   it("refuses Faster when one transfer cannot carry the funding and the tip, and sends none", async () => {
     // The cap equals the untipped funding, so the tip on top never fits.
     const made = await payStep({ faster: OFFER, cap: 2n * DAI })

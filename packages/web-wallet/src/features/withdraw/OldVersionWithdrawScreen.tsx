@@ -108,7 +108,14 @@ export function OldVersionWithdrawScreen({ pace }: { pace: Pick<Pace, "wait" | "
   const sources = useWithdrawableSources()
   const l1 = useL1Wallet({ expectedChainId: config.l1ChainId, rpcUrl: config.l1RpcUrl })
   const bridgeMode = isDesktopL1SubmitActive()
-  const sharePrice = useStore(session.savingsLine, (s) => s.price?.sharePrice)
+  // An old version's Savings shares are worth the price of the holding on their token, which the
+  // profile may no longer list.
+  const savingsToken = sources.find((s) => s.savings)?.source.underlying?.toLowerCase()
+  const sharePrice = useStore(session.page.chain.savingsPrices, (s) => {
+    const read = s.status === "ready" ? s.value : []
+    const price = read.find((r) => r.holding.held.underlying.toLowerCase() === savingsToken)
+    return price && !("failed" in price) ? price.sharePrice : undefined
+  })
   // The sources the screen opened with: a scan after the withdrawal must not reset them.
   const opened = useRef(sources)
   const [destination, setDestination] = useState("")

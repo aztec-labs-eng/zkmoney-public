@@ -1,4 +1,5 @@
 import { InfoBox, KeyStatusRow, SheetCard, SheetShell } from "@obsidion/web-ds"
+import { reportAddTapped } from "../../backupFunnel"
 import { panelCopy } from "../../backupPasskeyCopy"
 import type { BackupKey, BackupScreenProps } from "../../backupScreen"
 import copy from "./KeysScreen.copy"
@@ -31,7 +32,10 @@ export function KeysScreen({ screen, actions }: BackupScreenProps<"keys">) {
       {...(add.kind !== "none" && {
         primary: {
           label: copy.add,
-          onClick: () => actions.start("intro"),
+          onClick: () => {
+            reportAddTapped(add)
+            actions.start("intro")
+          },
           loading: add.kind === "checking" || busy,
           testId: "backup-start",
         },

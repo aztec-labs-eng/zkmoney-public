@@ -1092,6 +1092,35 @@ describe("withdrawal self-finalize", () => {
   })
 })
 
+describe("deposit mock", () => {
+  it("seeds over the demo deployment, whose bridge an Across feature binds", async () => {
+    window.history.replaceState({}, "", "/dev/mock/deposit/address")
+    expect(await seed("fresh")).toBe(true)
+  })
+})
+
+describe("mock switch", () => {
+  it("seeds the next mock over a new page and session, and the last page's journey stops", async () => {
+    const { openedSession } = await import("../../src/session/session")
+    const { opfsBackend } = await import("../../src/platform/storage/walletStorage")
+    // The withdrawal the journey's later steps write.
+    const journeyed = async () =>
+      (await opfsBackend.range("")).filter(([, value]) => value.includes("wdraw_mock"))
+    window.history.replaceState({}, "", "/dev/mock/withdraw/withdraw-journey")
+    await seed("fresh")
+    const first = seeded
+    // The boot marks the page it leaves.
+    first.leaving.set(true)
+    window.history.replaceState({}, "", "/dev/mock/withdraw/landing")
+    await seed("fresh")
+    expect(seeded).not.toBe(first)
+    expect(openedSession.get()?.page).toBe(seeded)
+    first.pace.wake()
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(await journeyed()).toEqual([])
+  })
+})
+
 describe("demo profile", () => {
   it("boots with no profile pair in the environment", async () => {
     await bootConfig()
@@ -1124,9 +1153,9 @@ describe("demo profile", () => {
     const { demoBootInput } = await import("../../src/dev/demoProfile")
     const env = {
       MODE: "ui-capture",
-      VITE_CONFIG_PROFILE_URL: "http://127.0.0.1:5499/__ui-capture/profile.json",
+      VITE_CONFIG_PROFILE_URL: "http://127.0.0.1:5499/__ui-capture/profiles/ui-capture.json",
       VITE_CONFIG_EXPECTED_PROFILE_ID: "ui-capture",
     }
-    expect(demoBootInput(env)).toEqual({ env, demoStorage: true })
+    expect(demoBootInput(env)).toMatchObject({ env, demoStorage: true })
   })
 })

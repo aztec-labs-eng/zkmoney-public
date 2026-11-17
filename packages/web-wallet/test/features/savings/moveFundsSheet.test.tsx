@@ -7,13 +7,19 @@ import type { Address } from "viem"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { liveBalances } from "../../support/balances"
-import { memoryStore, WalletError, type MoveQuote } from "@obsidion/front-core"
-import type { SavingsLine, SavingsPosition } from "../../../src/features/savings/savingsLine"
+import { memoryStore, WalletError, type HoldingLine, type MoveQuote } from "@obsidion/front-core"
+import type {
+  SavingsLine,
+  SavingsLineFigures,
+  SavingsPosition,
+} from "../../../src/features/savings/savingsLine"
 import type { Session } from "../../../src/session/session"
-import { usdAtomicFloor } from "../../../src/ui/format"
+import { usdAtomic, usdAtomicFloor } from "../../../src/ui/format"
+import { defaultConfig } from "../../support/page"
 import { openTestSession } from "../../support/session"
 
 const ONE = 10n ** 18n
+const NO_READS: ReadonlyMap<string, number> = new Map()
 const state = vi.hoisted(() => ({
   quote: vi.fn(),
   move: vi.fn(),
@@ -65,27 +71,6 @@ vi.mock("../../../src/features/limits/publicLimit", () => ({
     </div>
   ),
 }))
-vi.mock("@obsidion/web-ds", () => ({
-  Icon: () => null,
-  Spinner: () => <span data-testid="spinner" />,
-  GradientText: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
-  TopNavIconButton: ({ onClick }: { onClick: () => void }) => (
-    <button aria-label="Close" onClick={onClick} />
-  ),
-  PrimaryGradientButton: ({
-    title,
-    onClick,
-    isDisabled,
-  }: {
-    title: string
-    onClick: () => void
-    isDisabled?: boolean
-  }) => (
-    <button disabled={isDisabled} onClick={onClick}>
-      {title}
-    </button>
-  ),
-}))
 vi.mock("../../../src/ui/Modal", () => ({
   Modal: ({ children }: { children: ReactNode }) => <div role="dialog">{children}</div>,
 }))
@@ -113,7 +98,8 @@ vi.mock("../../../src/features/operations/OperationHandOff", () => ({
     )
   },
 }))
-vi.mock("../../../src/features/savings/savingsMoveTiming", () => ({
+vi.mock("../../../src/features/savings/savingsMoveTiming", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/features/savings/savingsMoveTiming")>()),
   useSavingsMoveTiming: () => state.timing,
   savingsEtaCopy: (eta: { seconds: number; remaining: boolean }) =>
     `${eta.remaining ? "About" : "Usually about"} ${Math.round(eta.seconds / 60)} min${
@@ -131,23 +117,38 @@ import {
   MoveFundsSheet,
   sharesFor,
   sheetQuote,
+  vaultSwapSheetQuote,
 } from "../../../src/features/savings/MoveFundsSheet/MoveFundsSheet"
 
-const LINE = { id: "fea-sky", held: { portal: `0x${"5d".repeat(20)}` } } as SavingsLine["line"]
+const LINE = { id: "fea-sky", held: { portal: `0x${"5d".repeat(20)}` } } as HoldingLine
+const TERMS = ["https://vault.example/terms", "https://vault.example/risks"]
+const WORDS = {
+  rateName: "Vault Rate",
+  yieldFrom: "Lending",
+  moveBack: "Any time",
+  risk: "Contract risk",
+  provider: "Vault",
+  terms: TERMS.map((url, i) => ({ label: `Terms ${i}`, url })),
+}
+const LEDGER = { basis: 0n, counted: 0, shares: 0n, excluded: [] }
+const figures = (held: HoldingLine, position: SavingsPosition | null): SavingsLineFigures => ({
+  line: held,
+  ...(position ? { shares: position.shares } : {}),
+  position,
+  ledger: LEDGER,
+})
 const line = memoryStore<SavingsLine>({
-  line: LINE,
-  position: null,
-  others: [],
+  lines: [figures(LINE, null)],
   hydrated: true,
+  sharesReadAt: NO_READS,
 })
 const setPosition = (
   next: Omit<SavingsPosition, "shareDecimals" | "assetDecimals"> & { assetDecimals?: number },
 ) =>
   line.set({
-    line: LINE,
-    position: { assetDecimals: 18, ...next, shareDecimals: 18 },
-    others: [],
+    lines: [figures(LINE, { assetDecimals: 18, ...next, shareDecimals: 18 })],
     hydrated: true,
+    sharesReadAt: NO_READS,
   })
 /** `state.quote`'s figures as the rail's quote: what lands, and the value the burn is worth. */
 const railQuote = (q: {
@@ -198,6 +199,14 @@ const moveCommands = {
 let host: HTMLDivElement
 let root: Root
 let session: Session
+/** The page a test opens with: `words` stands in for it until the test ends. */
+let page: Session["page"]
+/** The profile's words for each line, in place of the session's. */
+const words = (holdingCopy: Record<string, typeof WORDS>) =>
+  Object.defineProperty(session, "page", {
+    configurable: true,
+    value: { ...page, config: { ...page.config, holdingCopy } },
+  })
 beforeEach(() => {
   building = undefined
   movedHoldings = []
@@ -206,7 +215,9 @@ beforeEach(() => {
     savingsLine: line.readonly,
     moveQuote,
     moveCommands,
+    config: { ...defaultConfig, holdingCopy: { [LINE.id]: WORDS } },
   })
+  page = session.page
   setPosition({
     shares: 100n * 10n ** 18n,
     value: 105n * 10n ** 18n,
@@ -236,12 +247,13 @@ beforeEach(() => {
   }))
 })
 afterEach(() => {
+  Object.defineProperty(session, "page", { configurable: true, value: page })
   act(() => root.unmount())
   host.remove()
   vi.useRealTimers()
 })
 
-const input = () => host.querySelector<HTMLInputElement>('input[aria-label="Amount to move"]')!
+const input = () => host.querySelector<HTMLInputElement>('input[inputmode="decimal"]')!
 const type = (value: string) =>
   act(() => {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!
@@ -250,8 +262,9 @@ const type = (value: string) =>
   })
 const button = (label: string) =>
   [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === label)!
+const change = () => host.querySelector<HTMLButtonElement>(".zkm-holding-select__change")
 const termsBox = () =>
-  host.querySelector<HTMLInputElement>('.ww-savings__terms input[type="checkbox"]')
+  host.querySelector<HTMLInputElement>('[data-testid="savings-terms"] input[type="checkbox"]')
 const accept = () => act(() => termsBox()!.click())
 // The debounce, then the quote and the quote of the way back, each a tick of microtasks.
 const settle = () =>
@@ -355,25 +368,148 @@ describe("MoveFundsSheet", () => {
     expect(state.move).toHaveBeenCalledWith("in", state.balance)
   })
 
-  it("refuses more than the balance and swaps direction in place", async () => {
+  it("refuses more than the balance", async () => {
     act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
     type("60")
     await settle()
-    expect(host.textContent).toContain("Balance not enough")
+    expect(button("Review").disabled).toBe(true)
     expect(state.quote).not.toHaveBeenCalled()
-    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Swap direction"]')!.click())
-    await settle()
-    expect(host.textContent).toContain("Available: $105.00")
-    expect(state.quote).toHaveBeenCalledWith("out", expect.any(BigInt))
+  })
+
+  describe("with funds in vaults it can swap between", () => {
+    const vaultLine = (id: string, byte: string) =>
+      ({ id, held: { portal: `0x${byte.repeat(20)}` } } as HoldingLine)
+    const [A, B, C] = [vaultLine("fea-a", "aa"), vaultLine("fea-b", "bb"), vaultLine("fea-c", "cc")]
+    /** Each vault's rate, which its card shows: B's alone is 7.2%. */
+    const position = (rate: bigint): SavingsPosition => ({
+      shares: 100n * ONE,
+      value: 105n * ONE,
+      sharePrice: 105n * 10n ** 16n,
+      rate,
+      readAt: 1,
+      assetDecimals: 18,
+      shareDecimals: 18,
+    })
+    const B_RATE = "7.2%"
+    const price = {
+      sharePrice: 105n * 10n ** 16n,
+      shareDecimals: 18,
+      shareSymbol: "sv",
+      assetDecimals: 18,
+      assetSymbol: "USDC",
+      readAt: 1,
+    }
+    const priced = (held: HoldingLine, rate: bigint) => ({
+      ...figures(held, position(rate)),
+      price: price as SavingsLineFigures["price"],
+    })
+    /** What every swap lands: a figure whose cents round up but floor down. */
+    const LANDS = (99_435n * ONE) / 1000n
+    /** The switches quoted, each `from>to`. */
+    let swapsQuoted: string[] = []
+    const swapQuote = (from: string, to: string, amount: bigint) => {
+      swapsQuoted.push(`${from}>${to}`)
+      return { read: async () => railQuote({ value: amount, net: LANDS }), refresh: () => {} }
+    }
+    /** A session where the profile gives words to the vaults in `worded`. */
+    const open = (worded: readonly HoldingLine[]) => {
+      session = openTestSession({
+        balances: liveBalances(() => ({ main: state.balance, readThisSession: true })),
+        savingsLine: line.readonly,
+        moveQuote,
+        moveCommands,
+        vaultSwapQuote: swapQuote,
+        vaultSwapTargets: memoryStore(
+          new Map([
+            [A.id, [B.id]],
+            [B.id, [C.id]],
+            [C.id, []],
+          ]),
+        ).readonly,
+      })
+      words(Object.fromEntries(worded.map((held) => [held.id, WORDS])))
+    }
+    beforeEach(() => {
+      swapsQuoted = []
+      line.set({
+        lines: [
+          priced(A, 55n * 10n ** 15n),
+          priced(B, 72n * 10n ** 15n),
+          priced(C, 30n * 10n ** 15n),
+        ],
+        hydrated: true,
+        sharesReadAt: NO_READS,
+      })
+      open([A, B, C])
+    })
+    const changeIn = (side: "from" | "to") =>
+      act(() =>
+        host.querySelector<HTMLButtonElement>(`[data-testid="move-change-${side}"]`)!.click(),
+      )
+    const pick = (held: HoldingLine) =>
+      act(() => host.querySelector<HTMLButtonElement>(`[data-testid="picker-${held.id}"]`)!.click())
+    const to = () => host.querySelector('[data-testid="move-to"]')?.textContent ?? ""
+
+    it("drops a destination the new source cannot swap into, so it does not come back", () => {
+      act(() => root.render(<MoveFundsSheet direction="out" onClose={() => {}} />))
+      changeIn("to")
+      pick(B)
+      expect(to()).toContain(B_RATE)
+      changeIn("from")
+      pick(B)
+      expect(to()).not.toContain(B_RATE)
+      changeIn("from")
+      pick(A)
+      expect(to()).not.toContain(B_RATE)
+    })
+
+    it("shows the review the figure the sheet showed for what lands", async () => {
+      act(() => root.render(<MoveFundsSheet direction="out" onClose={() => {}} />))
+      changeIn("to")
+      pick(B)
+      type("100")
+      await settle()
+      expect(
+        `$${host.querySelector<HTMLInputElement>('[data-testid="move-to"] input')!.value}`,
+      ).toBe(usdAtomicFloor(LANDS))
+      act(() => button("Review").click())
+      expect(host.textContent).toContain(usdAtomicFloor(LANDS))
+      expect(host.textContent).not.toContain(usdAtomic(LANDS))
+    })
+
+    it("blocks a switch into a vault with no words for its terms, whatever the source has", async () => {
+      open([A, C])
+      act(() => root.render(<MoveFundsSheet direction="out" onClose={() => {}} />))
+      changeIn("to")
+      pick(B)
+      type("10")
+      await settle()
+      expect(host.querySelector('[data-testid="move-no-terms"]')).not.toBeNull()
+      expect(button("Review").disabled).toBe(true)
+      expect(swapsQuoted).toEqual([])
+    })
+
+    it("lets a switch out of a vault with no words go into one that has them, on its terms", async () => {
+      open([B])
+      act(() => root.render(<MoveFundsSheet direction="out" onClose={() => {}} />))
+      changeIn("to")
+      pick(B)
+      type("10")
+      await settle()
+      expect(host.querySelector('[data-testid="move-no-terms"]')).toBeNull()
+      act(() => button("Review").click())
+      expect(button("Confirm move").disabled).toBe(true)
+      accept()
+      expect(button("Confirm move").disabled).toBe(false)
+    })
   })
 
   describe("with shares in a vault the profile no longer lists", () => {
-    const OLD = { ...LINE!, id: "fea-sky-old", exitOnly: true } as NonNullable<SavingsLine["line"]>
+    const OLD: HoldingLine = { ...LINE, id: "fea-sky-old", exitOnly: true }
     beforeEach(() => {
-      const first = line.get().position
-      const position = { ...first!, shares: 20n * ONE, value: 21n * ONE }
-      const ledger = { basis: 0n, counted: 0, shares: 0n, excluded: [] }
-      line.set({ ...line.get(), others: [{ line: OLD, position, ledger }] })
+      const [first] = line.get().lines
+      const position = { ...first!.position!, shares: 20n * ONE, value: 21n * ONE }
+      line.set({ lines: [first!, figures(OLD, position)], hydrated: true, sharesReadAt: NO_READS })
     })
 
     it("moves out of that vault first, up to what it holds", async () => {
@@ -386,34 +522,133 @@ describe("MoveFundsSheet", () => {
       expect(movedHoldings).toEqual([OLD.id])
     })
 
-    it("takes a move that vault cannot cover from the first line", async () => {
+    it("moves out of the vault picked instead, keeping what was typed", async () => {
       act(() => root.render(<MoveFundsSheet direction="out" onClose={() => {}} />))
       type("50")
+      act(() => change()!.click())
+      act(() => host.querySelector<HTMLButtonElement>(`[data-testid="picker-${LINE.id}"]`)!.click())
+      expect(input().value).toBe("50")
       await settle()
       act(() => button("Review").click())
       await act(async () => button("Confirm move").click())
-      expect(movedHoldings).toEqual([LINE!.id])
+      expect(movedHoldings).toEqual([LINE.id])
     })
 
-    it("still moves in to the first line, and lets the direction swap", async () => {
+    it("still moves in to the first line, the one vault that takes it", async () => {
       act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
-      const swap = host.querySelector<HTMLButtonElement>('button[aria-label="Swap direction"]')!
-      expect(swap.disabled).toBeFalsy()
+      expect(change()).toBeNull()
       type("10")
       await settle()
       act(() => button("Review").click())
       accept()
       await act(async () => button("Confirm move").click())
-      expect(movedHoldings).toEqual([LINE!.id])
+      expect(movedHoldings).toEqual([LINE.id])
+    })
+  })
+
+  describe("beside a second vault", () => {
+    const VAULT: HoldingLine = { ...LINE, id: "fea-vault" }
+    const withVault = (shares: bigint) => {
+      const [first] = line.get().lines
+      const position = { ...first!.position!, shares, value: (shares * 105n) / 100n }
+      line.set({
+        lines: [first!, figures(VAULT, position)],
+        hydrated: true,
+        sharesReadAt: NO_READS,
+      })
+    }
+    const hint = () => host.querySelector('[data-testid="move-other-vault"]')
+
+    it("points a move out past this vault's value to another vault that holds shares", async () => {
+      withVault(50n * ONE)
+      act(() => root.render(<MoveFundsSheet direction="out" onClose={() => {}} />))
+      type("120")
+      await settle()
+      expect(hint()).not.toBeNull()
+      expect(button("Review").disabled).toBe(true)
+      type("20")
+      await settle()
+      expect(hint()).toBeNull()
+    })
+
+    it("gives no such pointer when no other vault holds shares", async () => {
+      withVault(0n)
+      act(() => root.render(<MoveFundsSheet direction="out" onClose={() => {}} />))
+      type("120")
+      await settle()
+      expect(hint()).toBeNull()
+      expect(button("Review").disabled).toBe(true)
+    })
+
+    it("blocks a move in through a picked vault the profile no longer lists", async () => {
+      withVault(50n * ONE)
+      line.set({
+        ...line.get(),
+        lines: line
+          .get()
+          .lines.map((l) =>
+            l.line.id === VAULT.id ? { ...l, line: { ...VAULT, exitOnly: true } } : l,
+          ),
+      })
+      act(() =>
+        root.render(<MoveFundsSheet direction="in" holdingId={VAULT.id} onClose={() => {}} />),
+      )
+      type("10")
+      await settle()
+      expect(button("Review").disabled).toBe(true)
+      expect(state.quote).not.toHaveBeenCalled()
+    })
+
+    it("drops the terms accepted for one vault when the review's vault changes", async () => {
+      words({ [LINE.id]: WORDS, [VAULT.id]: { ...WORDS, provider: "Other" } })
+      act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
+      type("10")
+      await settle()
+      act(() => button("Review").click())
+      accept()
+      expect(button("Confirm move").disabled).toBe(false)
+      // The vault becomes the first listed line, the one a move in with nothing picked goes through.
+      const [first] = line.get().lines
+      line.set({ ...line.get(), lines: [figures(VAULT, first!.position), first!] })
+      await settle()
+      expect(termsBox()!.checked).toBe(false)
+      expect(button("Confirm move").disabled).toBe(true)
+    })
+  })
+
+  describe("through a vault the profile gives no words", () => {
+    beforeEach(() => {
+      words({})
+    })
+
+    it("blocks a move in, and says why", async () => {
+      act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
+      expect(host.querySelector('[data-testid="move-no-terms"]')).not.toBeNull()
+      type("10")
+      await settle()
+      expect(button("Review").disabled).toBe(true)
+      expect(state.quote).not.toHaveBeenCalled()
+    })
+
+    it("leaves a move out open", async () => {
+      act(() => root.render(<MoveFundsSheet direction="out" onClose={() => {}} />))
+      expect(host.querySelector('[data-testid="move-no-terms"]')).toBeNull()
+      type("10")
+      await settle()
+      act(() => button("Review").click())
+      await act(async () => button("Confirm move").click())
+      expect(state.move).toHaveBeenCalledWith("out", expect.any(BigInt))
     })
   })
 
   it("only lets an exit-only line's shares leave, however it was opened", async () => {
-    const position = line.get().position
-    line.set({ line: { ...LINE!, exitOnly: true }, position, others: [], hydrated: true })
+    const { position } = line.get().lines[0]!
+    line.set({
+      lines: [figures({ ...LINE, exitOnly: true }, position)],
+      hydrated: true,
+      sharesReadAt: NO_READS,
+    })
     act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
-    const swap = host.querySelector<HTMLButtonElement>('button[aria-label="Swap direction"]')!
-    expect(swap.disabled).toBe(true)
     type("21")
     await settle()
     act(() => button("Review").click())
@@ -440,6 +675,18 @@ describe("sheetQuote", () => {
   })
 })
 
+describe("vaultSwapSheetQuote", () => {
+  it("takes the shares' worth as what leaves and the destination's 6-decimal intake as what lands", () => {
+    // $798 of shares swap into a vault that takes in 797.50 USDC.
+    const quote = railQuote({ value: 760n * ONE, net: 797_500_000n })
+    expect(vaultSwapSheetQuote(760n * ONE, 798n * ONE, quote, 6)).toMatchObject({
+      value: 798n * ONE,
+      net: (7975n * ONE) / 10n,
+      fee: ONE / 2n,
+    })
+  })
+})
+
 describe("sharesFor", () => {
   it("prices dollars in shares at the position's rate, capping at every share", () => {
     const position = { shares: 100n, value: 105n }
@@ -454,15 +701,15 @@ describe("MoveFundsSheet, notes", () => {
   it("shows the fee loading while a quote is in flight, and holds Review until it lands", async () => {
     act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
     expect(host.textContent).toContain("L1 fee$--")
-    expect(host.querySelector('[data-testid="spinner"]')).toBeNull()
+    expect(host.querySelector(".zkm-spinner-icon")).toBeNull()
     type("10")
     expect(host.textContent).toContain("Getting fee…")
-    expect(host.querySelector('[data-testid="spinner"]')).not.toBeNull()
+    expect(host.querySelector(".zkm-spinner-icon")).not.toBeNull()
     expect(host.textContent).not.toContain("$--")
     expect(button("Review").disabled).toBe(true)
     await settle()
     expect(host.textContent).not.toContain("Getting fee…")
-    expect(host.querySelector('[data-testid="spinner"]')).toBeNull()
+    expect(host.querySelector(".zkm-spinner-icon")).toBeNull()
     expect(host.textContent).toContain("L1 fee$2.00")
     expect(button("Review").disabled).toBe(false)
   })
@@ -492,6 +739,27 @@ describe("MoveFundsSheet, notes", () => {
   })
 })
 
+describe("MoveFundsSheet, payback", () => {
+  it("warns that a small move in takes long to earn back its fee, on a vault not yet held", async () => {
+    const price = { assetDecimals: 18, shareDecimals: 18, sharePrice: ONE, rate: 55n * 10n ** 15n }
+    line.set({
+      lines: [{ ...figures(LINE, null), price: price as SavingsLineFigures["price"] }],
+      hydrated: true,
+      sharesReadAt: NO_READS,
+    })
+    const warning = () => host.querySelector('.ww-withdraw__warning[data-tone="warning"]')
+    act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
+    // A $2 fee on $10 at 5.5% takes years to earn back.
+    type("10")
+    await settle()
+    expect(warning()).not.toBeNull()
+    type("45")
+    await settle()
+    expect(button("Review").disabled).toBe(false)
+    expect(warning()).toBeNull()
+  })
+})
+
 describe("MoveFundsSheet, confirm step", () => {
   const review = async () => {
     act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
@@ -500,15 +768,11 @@ describe("MoveFundsSheet, confirm step", () => {
     act(() => button("Review").click())
   }
 
-  it("holds Confirm on a move in until the terms are accepted, and links all three", async () => {
+  it("holds Confirm on a move in until the terms are accepted, and links the vault's", async () => {
     await review()
     expect(host.textContent).toContain("Confirm you have read and accept the terms")
-    const links = [...host.querySelectorAll<HTMLAnchorElement>(".ww-savings__terms a")]
-    expect(links.map((a) => a.href)).toEqual([
-      "https://docs.zk.money/terms",
-      "https://docs.sky.money/legal/skybase-international/terms-of-use",
-      "https://docs.sky.money/legal/skybase-international/user-risks",
-    ])
+    const links = [...host.querySelectorAll<HTMLAnchorElement>('[data-testid="savings-terms"] a')]
+    expect(links.map((a) => a.href)).toEqual(["https://docs.zk.money/terms", ...TERMS])
     expect(links.every((a) => a.target === "_blank")).toBe(true)
     expect(button("Confirm move").disabled).toBe(true)
     await act(async () => button("Confirm move").click())
@@ -517,6 +781,17 @@ describe("MoveFundsSheet, confirm step", () => {
     expect(button("Confirm move").disabled).toBe(false)
     act(() => termsBox()!.click())
     expect(button("Confirm move").disabled).toBe(true)
+  })
+
+  it("names the vault and its provider's terms before every line's shares are read", async () => {
+    line.set({ ...line.get(), hydrated: false })
+    act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
+    expect(host.querySelector(".zkm-holding-select")).not.toBeNull()
+    type("10")
+    await settle()
+    act(() => button("Review").click())
+    const links = [...host.querySelectorAll<HTMLAnchorElement>('[data-testid="savings-terms"] a')]
+    expect(links.map((a) => a.href)).toEqual(["https://docs.zk.money/terms", ...TERMS])
   })
 
   it("cancels a move while it builds, and comes back to the review", async () => {

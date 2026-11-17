@@ -9,7 +9,7 @@ import {
 } from "@obsidion/front-core"
 import { useSession } from "../../session/session"
 import { isEtherfiContact, type SavedL1Wallet } from "../../session/savedL1Wallets"
-import { localVerdict, withdrawalsTo } from "./addressFacts"
+import { localVerdict, useDepositFunders, withdrawalsTo } from "./addressFacts"
 import type { AddressFacts, L1AddressActivity } from "./addressFacts"
 import { privacyLevel, privacyRing } from "./privacyRing"
 import type { PrivacyLevel, PrivacyRing } from "./privacyRing"
@@ -41,11 +41,12 @@ export function ratePrivacy(facts: AddressFacts, etherfi: boolean): WalletPrivac
 
 /**
  * Rates each saved wallet from its L1 activity and, but for an ether.fi address, its ENS name. Each
- * rating shows once both read; a new mount reads the activity again.
+ * rating shows once both read and the deposits load; a new mount reads the activity again.
  */
 export function useWalletPrivacy(wallets: SavedL1Wallet[]): Map<string, WalletPrivacy> {
   const { page } = useSession()
   const { records } = useWithdrawals()
+  const funders = useDepositFunders()
   const asked = wallets.map((w) => `${w.address}:${isEtherfiContact(w.entry)}`).join(",")
   const reads = useMemo(() => {
     const entries = asked
@@ -62,6 +63,7 @@ export function useWalletPrivacy(wallets: SavedL1Wallet[]): Map<string, WalletPr
   }, [page, asked])
   const states = useStore(reads)
   return useMemo(() => {
+    if (!funders.read) return new Map()
     const contacts = wallets.map((w) => w.entry)
     return new Map(
       wallets.flatMap((wallet, i): [string, WalletPrivacy][] => {
@@ -71,14 +73,14 @@ export function useWalletPrivacy(wallets: SavedL1Wallet[]): Map<string, WalletPr
         const facts = {
           ...read.activity.value,
           ensName: read.name.status === "ready" ? read.name.value : undefined,
-          local: localVerdict(lower, records, contacts),
+          local: localVerdict(lower, records, contacts, funders.addresses),
           withdrawals: withdrawalsTo(lower, records),
           localRead: true,
         }
         return [[lower, ratePrivacy(facts, isEtherfiContact(wallet.entry))]]
       }),
     )
-  }, [wallets, records, states])
+  }, [wallets, records, funders, states])
 }
 
 interface WalletReads {

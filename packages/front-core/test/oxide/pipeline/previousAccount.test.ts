@@ -51,7 +51,7 @@ describe("a payment to the old account while signed out", () => {
     expect(kept).toMatchObject({ phase: "claimed", amount: "0.9" })
     const later = Date.now() + STUCK_SWEEP_MS
     // A replayed deposit shows once the bridge-in rebuild has read its funding receipt.
-    expect(feed({ ...kept, funding: "transfer" }, later)).toMatchObject([
+    expect(feed({ ...kept, funding: "plain" }, later)).toMatchObject([
       { kind: "deposit", offer: null },
     ])
 

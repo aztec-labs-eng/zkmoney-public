@@ -20,6 +20,7 @@ import {
 } from "../../../withdraw/speedChoice"
 import { SpeedCheckingPill, SpeedChoicePill } from "../../../withdraw/WithdrawalSpeedPicker"
 import { addCost, feeSplit } from "../../backupCost"
+import { reportPaySubmitted } from "../../backupFunnel"
 import { costCopy, holdCopy } from "../../backupPasskeyCopy"
 import type { BackupPayFacts, BackupScreenProps } from "../../backupScreen"
 import { mainBalance } from "../../useBackupNudge"
@@ -56,7 +57,12 @@ export function ApproveScreen({ screen, actions }: BackupScreenProps<"approve">)
   }, [shown])
   const hero = failure ? "warning" : "key"
   const cancel: SheetAction | undefined = screen.canCancel
-    ? { label: copy.cancel, onClick: actions.askCancel, disabled: busy, testId: "backup-cancel" }
+    ? {
+        label: copy.cancel,
+        onClick: () => actions.askCancel(),
+        disabled: busy,
+        testId: "backup-cancel",
+      }
     : undefined
   if (shown === "sign")
     return (
@@ -107,7 +113,8 @@ export function ApproveScreen({ screen, actions }: BackupScreenProps<"approve">)
 }
 
 /**
- * The payment from Main Account, as its fee, the hold that comes back and their total. Its
+ * The payment from Main Account, as its fee. A plan an older build saved with a hold also shows
+ * the hold that comes back and the total. Its
  * Standard/Faster choice opens on Faster: the tip is small next to the wait it saves, and the
  * funding has to settle before the key is installed. The tip rides inside the funding, so Faster is
  * refused when the one-key account cannot fund both in one transfer; a fit read that fails lets the
@@ -183,6 +190,12 @@ function PaySheet({
         label: fmt(copy.pay.pay, { amount }),
         onClick: () => {
           setSent({ choice, outcome })
+          reportPaySubmitted({
+            speed: choice.speed,
+            faster: !offer ? "none" : outcome.blocked ? "blocked" : "offered",
+            fee: cost.fee,
+            approvals: pay.approvals,
+          })
           actions.fund(proverTip)
         },
         loading: busy,
@@ -204,11 +217,15 @@ function PaySheet({
               rows: feeRows(quote, cost.fee),
             },
           },
-          {
-            label: holdCopy.label,
-            value: fmt(holdCopy.value, { amount: usdFromCents(cost.hold) }),
-          },
-          { label: copy.pay.total, value: amount },
+          ...(cost.hold > 0n
+            ? [
+                {
+                  label: holdCopy.label,
+                  value: fmt(holdCopy.value, { amount: usdFromCents(cost.hold) }),
+                },
+                { label: copy.pay.total, value: amount },
+              ]
+            : []),
           ...(speed ? [{ label: copy.pay.speed, value: speed }] : []),
           ...(time ? [{ label: copy.pay.time, value: time }] : []),
         ]}

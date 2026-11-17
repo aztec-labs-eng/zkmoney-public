@@ -1,47 +1,52 @@
-import type { DeploymentHoldings } from "@obsidion/core/oxide"
 import {
   memoryStore,
   type HoldingPrice,
-  savingsHolding,
   useAfter,
   useStore,
   type After,
   type QueryState,
 } from "@obsidion/front-core"
-import { useCallback, useMemo } from "react"
+import { useMemo } from "react"
 import { useSession } from "../../session/session"
-import { selectHoldingPrices, selectSavingsListed, type SavingsLine } from "./savingsLine"
+import {
+  selectHoldingPrices,
+  selectSavingsListed,
+  selectSavingsTokens,
+  type SavingsLine,
+} from "./savingsLine"
 
 /** The Savings surfaces show after the first balance. */
 const SHOWN_AFTER: After = { firstBalance: true }
 
 /**
- * The session's Savings for a view: its line, valued at the vault's price, and whether Savings
- * shows. It shows once the first balance is in, where the account has a Sky line.
+ * The session's Savings for a view: its lines, each valued at its vault's price, and whether
+ * Savings shows. It shows once the first balance is in, where the account has a line.
  */
 export function useSavings(): SavingsLine & { available: boolean } {
   const { milestones, savingsLine } = useSession()
   const shown = useAfter(milestones, SHOWN_AFTER)
   const line = useStore(savingsLine)
-  return { available: shown && !!line.line, ...line }
+  return { available: shown && line.lines.length > 0, ...line }
 }
 
 const NO_HOLDINGS = memoryStore<QueryState<never>>({ status: "pending" }).readonly
 
-const skyAsset = (listed: readonly string[] | undefined) => (s: QueryState<DeploymentHoldings>) =>
-  s.status === "ready" ? savingsHolding(s.value, listed)?.held.underlying ?? null : undefined
-
-/** The Savings asset once the deployment is read; null where it has none; pending for a visitor. */
-export function useSavingsAsset(): string | null | undefined {
+/**
+ * The holding a deposit swept on each L1 token lands in, once the deployment is read; pending for
+ * a visitor.
+ */
+export function useSavingsTokens(): ReadonlyMap<string, string> | undefined {
   const { moveCommands, page } = useSession()
-  return useStore(moveCommands ? page.chain.holdings : NO_HOLDINGS, skyAsset(page.config.holdings))
+  const holdings = useStore(moveCommands ? page.chain.holdings : NO_HOLDINGS)
+  const listed = page.config.holdings
+  return useMemo(() => selectSavingsTokens(holdings, listed), [holdings, listed])
 }
 
-/** Whether the nav offers Savings: the wallet lists a Sky holding, or the account has a Sky line. */
+/** Whether the nav offers Savings: the wallet lists a holding, or the account has a line. */
 export function useSavingsAvailable(): boolean {
   const { page, savingsLine } = useSession()
   const listed = useStore(page.chain.holdings, (s) => selectSavingsListed(s, page.config.holdings))
-  const held = useStore(savingsLine, (s) => !!s.line)
+  const held = useStore(savingsLine, (s) => s.lines.length > 0)
   return listed || held
 }
 
@@ -51,10 +56,4 @@ export function useHoldingPrices(): ReadonlyMap<string, HoldingPrice> {
   const holdings = useStore(moveCommands ? page.chain.holdings : NO_HOLDINGS)
   const prices = useStore(moveCommands ? page.chain.savingsPrices : NO_HOLDINGS)
   return useMemo(() => selectHoldingPrices(holdings, prices), [holdings, prices])
-}
-
-/** Values a move's shares at its own holding's share price; a visitor has none. */
-export function useMoveSharePrice(): (holdingId: string) => bigint | undefined {
-  const prices = useHoldingPrices()
-  return useCallback((holdingId) => prices.get(holdingId)?.sharePrice, [prices])
 }

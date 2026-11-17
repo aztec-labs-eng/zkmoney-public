@@ -22,6 +22,7 @@ import { nativePasskeyLock } from "./nativePasskeyLock.js"
 import { slimArtifactsIfAsked } from "./slimArtifacts.js"
 import { socialPreview } from "./socialPreview.js"
 import { sourceGenerations } from "./sourceGenerations.js"
+import { startupImages } from "./startupImages.js"
 import { metricsBuildPlugin } from "@obsidion/metrics-policy/build"
 
 const require = createRequire(import.meta.url)
@@ -222,6 +223,7 @@ export default defineConfig(({ command, mode }) => {
       bakedConfigProfile(),
       desktopSettingsGuard(),
       l1RpcCapability(),
+      startupImages(env),
       socialPreview(env),
       nativePasskeyLock(),
       sourceGenerations(),

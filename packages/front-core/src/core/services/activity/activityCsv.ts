@@ -8,15 +8,19 @@
  * phase, intent or feed item kind fails the build until someone decides how it is reported.
  */
 import { formatUnits } from "viem"
-import { PaylinkActionEnum } from "@obsidion/core/constants"
+import { PaylinkActionEnum, displayTokenSymbol } from "@obsidion/core/constants"
 import type { SIPADepositPhase, WithdrawalPhase } from "@obsidion/core/types"
 import type { Transaction, TransactionStatus } from "../../../types/transactions"
 import type { PaylinkRecord } from "../../../engine/paylinkTransition"
 import { fundingKeys, isLinkFunding } from "../../../engine/paylinks"
 import type { PaymentRequest } from "../../../engine/requests"
 import type { ActivityItem } from "../../../engine/feedRules"
+import { bridgeInPaying } from "../../../engine/bridgeIns"
+import { depositFunder } from "../../../engine/depositFunding"
+import type { BridgeInRecord } from "../crossChain/types"
 import type { WithdrawalRecord } from "../bridge/types"
 import { withdrawalAmounts } from "../bridge/withdrawalAmounts"
+import type { HoldingPrice } from "../holdings/holdingFigures"
 import type { SipaDeposit, SIPASweep } from "../../../engine/sipaDeposits"
 import type { MoveRecord } from "../../../engine/moveTransition"
 import type { UpgradeBatchItem } from "../../migration/upgradeActivity"
@@ -58,7 +62,8 @@ export type ActivityCsvType =
 interface Counterparty {
   name?: string
   address?: string
-  network?: "Aztec" | "Ethereum"
+  /** "Aztec", "Ethereum", or a bridge's origin chain. */
+  network?: string
 }
 
 interface Money {
@@ -92,6 +97,11 @@ export interface ActivityCsvSources {
   links?: readonly { link: PaylinkRecord; status: TransactionStatus }[]
   items: readonly ActivityItem[]
   requests: readonly PaymentRequest[]
+  /** What paid the deposits from another chain. */
+  bridgeIns: readonly BridgeInRecord[]
+  chainName: (chainId: number) => string
+  /** Whether the profile reads deposits' funding for bridge fills. */
+  readsFills: boolean
 }
 
 export interface SavingsCsvSources {
@@ -99,6 +109,8 @@ export interface SavingsCsvSources {
   moves: readonly MoveRecord[]
   /** The moves' burns by local id. */
   burns: ReadonlyMap<string, WithdrawalRecord>
+  /** Each priced holding's asset decimals, by holding id: a vault's figures are in its asset. */
+  prices: ReadonlyMap<string, Pick<HoldingPrice, "assetDecimals">>
 }
 
 /** Only settled transactions moved funds; pending ones may still fail. */
@@ -231,6 +243,9 @@ interface ItemContext {
   migrationArrivals: ReadonlySet<string>
   /** The deposit payments fulfilled requests count, by `paymentKey`. */
   requestPayments: ReadonlySet<string>
+  bridgeIns: readonly BridgeInRecord[]
+  chainName: (chainId: number) => string
+  readsFills: boolean
 }
 
 const paymentKey = (address: string, inboxIndex: string | undefined) =>
@@ -280,6 +295,9 @@ export function buildActivityCsvRows(sources: ActivityCsvSources): ActivityCsvRo
         paid ? [paymentKey(paid.sipaAddress, paid.inboxIndex)] : [],
       ),
     ),
+    bridgeIns: sources.bridgeIns,
+    chainName: sources.chainName,
+    readsFills: sources.readsFills,
   }
   const funded = fundingKeys((sources.links ?? []).map(({ link }) => link))
   const transfers = sources.transactions.filter((tx) => !isLinkFunding(tx, funded))
@@ -298,26 +316,32 @@ export function buildActivityCsvRows(sources: ActivityCsvSources): ActivityCsvRo
  * The Savings account's rows: each move as that side sees it, in the wallet token, once its deposit
  * is claimed where the funds land. In: what the vault took, the figure the earnings basis counts,
  * else its quote's, else what the move burned. Out: what landed on Main, with the rest of what the
- * vault paid as the fee.
+ * vault paid as the fee. A vault's figures are unknown while its holding is unpriced.
  */
 export function buildSavingsCsvRows({
   walletToken: { symbol, decimals },
   moves,
   burns,
+  prices,
 }: SavingsCsvSources): ActivityCsvRow[] {
   return moves
     .flatMap((move): ActivityCsvRow[] => {
-      if (move.phase !== "claimed" || !move.deposit) return []
+      // A swap's funds stay in Savings.
+      if (move.phase !== "claimed" || !move.deposit || move.intoHoldingId !== undefined) return []
       const burn =
         move.withdrawalLocalId === undefined ? undefined : burns.get(move.withdrawalLocalId)
       const landed = move.deposit.amount
-      const paid = move.assets
+      const price = prices.get(move.holdingId)
+      /** An amount of the vault's asset, in the wallet token's units. */
+      const assets = (amount: bigint | undefined) =>
+        amount === undefined || !price ? undefined : rescale(amount, price.assetDecimals, decimals)
+      const paid = assets(move.assets)
       const hashes = {
         aztecTxHash: burn?.l2TxHash ?? move.replayedFrom,
         ethereumTxHash: move.l1?.depositTx ?? move.l1?.releaseTx,
       }
       if (move.direction === "in") {
-        const took = move.assets ?? move.quote?.conversionOut ?? move.amount
+        const took = paid ?? assets(move.quote?.conversionOut) ?? move.amount
         return [
           {
             timestampMs: move.deposit.at,
@@ -404,7 +428,7 @@ function txMoney(tx: Transaction, walletToken: ActivityCsvToken): Money | undefi
     amount: atomic
       ? formatUnits(BigInt(atomic), tx.token.decimals)
       : tx.token.amount.toLocaleString("en-US", { useGrouping: false, maximumFractionDigits: 18 }),
-    currency: tx.token.symbol || walletToken.symbol,
+    currency: displayTokenSymbol(tx.token.symbol || walletToken.symbol),
   }
 }
 
@@ -425,8 +449,12 @@ function money(atomic: bigint, decimals: number, currency: string): Money | unde
 
 function withdrawalRow(record: WithdrawalRecord): ActivityCsvRow {
   const gross = withdrawalAmounts(record).grossAtomic
-  const { tokenSymbol: currency, tokenDecimals: decimals } = record
-  const paidTo = (record.phase === "recovered" && record.recoveryTarget) || record.recipient
+  const currency = displayTokenSymbol(record.tokenSymbol)
+  const decimals = record.tokenDecimals
+  // A recovery pays out of the escrow on Ethereum; a bridge-out lands on its own chain.
+  const recovered = record.phase === "recovered" && record.recoveryTarget
+  const paidTo = recovered || record.recipient
+  const network = !recovered && record.bridgeOut ? record.bridgeOut.chainName : "Ethereum"
   // Only a direct withdrawal arrives in the burned token, so only its difference is a fee.
   const received =
     record.receivedAmount != null && !record.swapOutput ? BigInt(record.receivedAmount) : undefined
@@ -435,7 +463,7 @@ function withdrawalRow(record: WithdrawalRecord): ActivityCsvRow {
     type: WITHDRAWAL_TYPE[withdrawalKind(record)],
     sent: money(received ?? gross, decimals, currency),
     fee: received === undefined ? undefined : money(gross - received, decimals, currency),
-    counterparty: { name: record.recipientAlias, address: paidTo, network: "Ethereum" },
+    counterparty: { name: record.recipientAlias, address: paidTo, network },
     aztecTxHash: record.l2TxHash,
     ethereumTxHash: record.swapExecuteTxHash ?? record.recoveryTxHash ?? record.l1TxHash,
   }
@@ -481,8 +509,12 @@ function depositRows(record: SipaDeposit, ctx: ItemContext): ActivityCsvRow[] {
       : ctx.requestPayments.has(paymentKey(address, sweep.inboxIndex))
       ? "request"
       : "deposit")
-  const counterparty: Counterparty | undefined = record.fundingFromAddress
-    ? { address: record.fundingFromAddress, network: "Ethereum" }
+  const bridged = bridgeInPaying(ctx.bridgeIns, record.sipaAddress)
+  const funder = depositFunder(record, ctx.readsFills)
+  const counterparty: Counterparty | undefined = bridged
+    ? { address: bridged.depositor, network: ctx.chainName(bridged.originChainId) || undefined }
+    : funder
+    ? { address: funder, network: "Ethereum" }
     : undefined
   return settledSweeps(record).map((sweep, i) => {
     // As in `creditOf`: a sweep that names no token credited the wallet token.

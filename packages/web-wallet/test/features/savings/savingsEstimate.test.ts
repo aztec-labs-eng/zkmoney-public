@@ -1,16 +1,21 @@
 // @vitest-environment node
 /** The Savings figure: its cents, the digits that tick beneath them, and its carry at the rate. */
 import { describe, expect, it } from "vitest"
-import { RATE_SCALE } from "@obsidion/front-core"
+import { RATE_SCALE, type HoldingLedger, type HoldingLine } from "@obsidion/front-core"
 import {
   selectSavingsEstimate,
   splitTicking,
   tickingDigits,
 } from "../../../src/features/savings/savingsEstimate"
-import type { SavingsPosition } from "../../../src/features/savings/savingsLine"
+import type {
+  SavingsLine,
+  SavingsLineFigures,
+  SavingsPosition,
+} from "../../../src/features/savings/savingsLine"
 import { usdAtomicFloor } from "../../../src/ui/format"
 
 const WAD = 10n ** 18n
+const NO_READS: ReadonlyMap<string, number> = new Map()
 const T0 = 1_700_000_000_000
 
 describe("splitTicking", () => {
@@ -62,23 +67,68 @@ describe("selectSavingsEstimate", () => {
     shareDecimals: 18,
     assetDecimals: 18,
   }
-  const at = (ms: number) => selectSavingsEstimate(position, true, T0 + ms)
+  /** The 900 shares went in for 950. */
+  const ledger: HoldingLedger = { basis: 950n * WAD, counted: 1, shares: 900n * WAD, excluded: [] }
+  const line = (id: string, held: SavingsPosition | null = position): SavingsLineFigures => ({
+    line: { id } as HoldingLine,
+    ...(held ? { shares: held.shares } : {}),
+    position: held,
+    ledger: held ? { ...ledger, shares: held.shares } : { ...ledger, counted: 0, shares: 0n },
+  })
+  const one = (held: SavingsPosition | null = position): SavingsLine => ({
+    lines: [line("sky", held)],
+    hydrated: true,
+    sharesReadAt: NO_READS,
+  })
+  const at = (ms: number, savings = one()) => selectSavingsEstimate(savings, true, T0 + ms)
 
-  it("carries the value forward at the rate while funded with a rate", () => {
-    expect(at(0)).toEqual({ value: 1000n * WAD, ticking: true })
+  it("carries the value forward at the rate while funded with a rate, and Earned with it", () => {
+    expect(at(0)).toEqual({ value: 1000n * WAD, earned: 50n * WAD, ticking: true })
     expect(at(1_200).value!).toBeGreaterThan(1000n * WAD)
     expect(at(2_400).value!).toBeGreaterThan(at(1_200).value!)
+    expect(at(1_200).earned).toBe(at(1_200).value! - 950n * WAD)
   })
 
   it("reads plain while off, unfunded or without a rate, and unknown without a position", () => {
-    expect(selectSavingsEstimate(position, false, T0 + 1_200)).toEqual({
+    expect(selectSavingsEstimate(one(), false, T0 + 1_200)).toMatchObject({
       value: 1000n * WAD,
       ticking: false,
     })
     const unfunded = { ...position, shares: 0n, value: 0n }
-    expect(selectSavingsEstimate(unfunded, true, T0 + 1_200)).toEqual({ value: 0n, ticking: false })
+    expect(at(1_200, one(unfunded))).toMatchObject({ value: 0n, ticking: false })
     const { rate: _, ...unrated } = position
-    expect(selectSavingsEstimate(unrated, true, T0)).toEqual({ value: 1000n * WAD, ticking: false })
-    expect(selectSavingsEstimate(null, true, T0)).toEqual({ value: undefined, ticking: false })
+    expect(at(1_200, one(unrated))).toMatchObject({ value: 1000n * WAD, ticking: false })
+    expect(at(0, one(null))).toEqual({ value: undefined, earned: undefined, ticking: false })
+  })
+
+  it("carries each line at its own rate, in dollars, and leaves a line without one as read", () => {
+    const { rate: _, ...unrated } = position
+    // 500 of a six-decimal asset at twice the rate.
+    const usdc = {
+      ...position,
+      value: 500n * 10n ** 6n,
+      assetDecimals: 6,
+      rate: position.rate! * 2n,
+    }
+    const savings = {
+      lines: [line("flat", unrated), line("usdc", usdc)],
+      hydrated: true,
+      sharesReadAt: NO_READS,
+    }
+    expect(at(0, savings).value).toBe(1500n * WAD)
+    const later = at(1_200, savings).value!
+    const alone = at(1_200, { lines: [line("usdc", usdc)], hydrated: true, sharesReadAt: NO_READS })
+      .value!
+    expect(alone).toBeGreaterThan(500n * WAD)
+    expect(later).toBe(1000n * WAD + alone)
+  })
+
+  it("stays still while the total is unknown, though a line could tick", () => {
+    const unread: SavingsLine = {
+      lines: [line("sky"), line("vault", null)],
+      hydrated: false,
+      sharesReadAt: NO_READS,
+    }
+    expect(at(1_200, unread)).toEqual({ value: undefined, earned: undefined, ticking: false })
   })
 })

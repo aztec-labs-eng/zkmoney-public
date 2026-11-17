@@ -9,6 +9,7 @@ import {
   type Address,
   type Hex,
 } from "viem"
+import type { BridgeFill, BridgeFillDetector, ReceiptLog } from "./types"
 
 /** Across's SpokePool fill event. Its `recipient` is the multicall handler, not the deposit address. */
 export const FILLED_RELAY = parseAbiItem(
@@ -19,67 +20,52 @@ const FILLED_RELAY_TOPIC = toEventSelector(FILLED_RELAY)
 const TRANSFER = erc20Abi.find((item) => item.type === "event" && item.name === "Transfer")!
 const TRANSFER_TOPIC = toEventSelector(TRANSFER)
 
-/** A receipt log, as viem formats one. */
-export interface ReceiptLog {
-  address: Address
-  topics: readonly Hex[]
-  data: Hex
-  logIndex: number | null
-}
-
-/** A bridge-in Across filled: its deposit on the origin chain, and what the fill paid. */
-export interface AcrossFill {
-  originChainId: number
-  depositId: string
-  depositor: Address
-  /** On the origin chain; `inputAmount` is in its base units. */
-  inputToken: Address
-  inputAmount: bigint
-  /** The token and base units the deposit address received. */
-  token: Address
-  value: bigint
-}
-
 const asAddress = (word: Hex): Address => getAddress(sliceHex(word, 12))
 
 /**
- * The fill that paid `recipient` in a receipt: the first token transfer to it with a `FilledRelay`
- * before it, and the nearest such. Undefined when no fill pays it.
+ * Reads Across fills off a receipt: the first token transfer to `recipient` with a `FilledRelay`
+ * from one of `spokePools` before it, and the nearest such. Any contract can emit a look-alike.
  */
-export function acrossFillIn(
-  logs: readonly ReceiptLog[],
-  recipient: Address,
-): AcrossFill | undefined {
-  const ordered = [...logs].sort((a, b) => (a.logIndex ?? 0) - (b.logIndex ?? 0))
-  for (const [index, log] of ordered.entries()) {
-    if (log.topics[0] !== TRANSFER_TOPIC || log.topics.length !== 3) continue
-    const transfer = decodeEventLog({
-      abi: [TRANSFER],
-      eventName: "Transfer",
-      topics: log.topics as [Hex, ...Hex[]],
-      data: log.data,
-    })
-    if (!isAddressEqual(transfer.args.to, recipient)) continue
-    const fill = ordered
-      .slice(0, index)
-      .reverse()
-      .find((l) => l.topics[0] === FILLED_RELAY_TOPIC && l.topics.length === 4)
-    if (!fill) continue
-    const { args } = decodeEventLog({
-      abi: [FILLED_RELAY],
-      eventName: "FilledRelay",
-      topics: fill.topics as [Hex, ...Hex[]],
-      data: fill.data,
-    })
-    return {
-      originChainId: Number(args.originChainId),
-      depositId: args.depositId.toString(),
-      depositor: asAddress(args.depositor),
-      inputToken: asAddress(args.inputToken),
-      inputAmount: args.inputAmount,
-      token: log.address,
-      value: transfer.args.value,
+export const acrossFills =
+  (spokePools: readonly Address[]): BridgeFillDetector =>
+  (logs: readonly ReceiptLog[], recipient: Address): BridgeFill | undefined => {
+    const ordered = [...logs].sort((a, b) => (a.logIndex ?? 0) - (b.logIndex ?? 0))
+    for (const [index, log] of ordered.entries()) {
+      if (log.topics[0] !== TRANSFER_TOPIC || log.topics.length !== 3) continue
+      const transfer = decodeEventLog({
+        abi: [TRANSFER],
+        eventName: "Transfer",
+        topics: log.topics as [Hex, ...Hex[]],
+        data: log.data,
+      })
+      if (!isAddressEqual(transfer.args.to, recipient)) continue
+      const fill = ordered
+        .slice(0, index)
+        .reverse()
+        .find(
+          (l) =>
+            l.topics[0] === FILLED_RELAY_TOPIC &&
+            l.topics.length === 4 &&
+            spokePools.some((pool) => isAddressEqual(l.address, pool)),
+        )
+      if (!fill) continue
+      const { args } = decodeEventLog({
+        abi: [FILLED_RELAY],
+        eventName: "FilledRelay",
+        topics: fill.topics as [Hex, ...Hex[]],
+        data: fill.data,
+      })
+      return {
+        provider: "across",
+        originChainId: Number(args.originChainId),
+        depositId: args.depositId.toString(),
+        depositor: asAddress(args.depositor),
+        inputToken: asAddress(args.inputToken),
+        inputAmount: args.inputAmount,
+        deadline: args.fillDeadline * 1000,
+        token: log.address,
+        value: transfer.args.value,
+      }
     }
+    return undefined
   }
-  return undefined
-}

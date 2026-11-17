@@ -31,11 +31,7 @@ async function fetchGoldenTicketOffer(config: WebWalletConfig): Promise<GoldenTi
   return { threshold: ticket.threshold, schedule: ticket.schedule }
 }
 
-/**
- * The page's offer, read again by each view that opens after the last one closed. The pre-boot
- * visitor page reads it early; the app's first screen opens while that page still shows, so it
- * takes the same read.
- */
+/** The page's offer, read again by each view that opens after the last one closed. */
 export function pageTicketOffer(
   query: QueryFactory,
   config: WebWalletConfig,

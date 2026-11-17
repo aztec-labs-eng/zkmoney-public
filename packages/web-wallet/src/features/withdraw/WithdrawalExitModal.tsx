@@ -4,6 +4,7 @@
  * The node and the TEE signer come from React context, which is why `selfFinalize` takes them as
  * an argument.
  */
+import { displayTokenSymbol } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { RegisteredTeeSigner } from "@obsidion/sdk"
 import {
@@ -50,7 +51,7 @@ export function WithdrawalExitModal({
   deployment?: () => Promise<{ tuple: OxideEnvTuple; signer: RegisteredTeeSigner }>
   onClose: () => void
 }) {
-  const amount = `${record.amount} ${record.tokenSymbol}`
+  const amount = `${record.amount} ${displayTokenSymbol(record.tokenSymbol)}`
   const recipient = record.recipientAlias ?? truncateMiddle(record.recipient, 12)
   const { release, viaEscrow } = withdrawalRecipients(record)
   const swap = viaEscrow ? record.swapOutput : undefined

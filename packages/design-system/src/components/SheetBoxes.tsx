@@ -21,6 +21,10 @@ export interface Fact {
 
 export interface FactBoxProps {
   facts: Fact[]
+  /** Above the facts, past a divider, such as the `HoldingRow` they describe. */
+  head?: ReactNode
+  /** `columns` sets each value beside its label, for facts that read as sentences. */
+  layout?: "split" | "columns"
 }
 
 /**
@@ -120,19 +124,24 @@ function FactHintButton({ hint }: { hint: FactHint }) {
 }
 
 /** Label and value lines in a bordered box: cost, time, what was charged. */
-export function FactBox({ facts }: FactBoxProps) {
+export function FactBox({ facts, head, layout = "split" }: FactBoxProps) {
+  const columns = layout === "columns" ? " zkm-fact-box--columns" : ""
+  const rows = facts.map((fact, i) => (
+    <div key={i} className="zkm-fact-box__row">
+      <dt className="zkm-fact-box__label">
+        {fact.label}
+        {fact.hint && <FactHintButton hint={fact.hint} />}
+      </dt>
+      <dd className="zkm-fact-box__value">{fact.value}</dd>
+    </div>
+  ))
+  if (head === undefined) return <dl className={`zkm-sheet-card zkm-fact-box${columns}`}>{rows}</dl>
   return (
-    <dl className="zkm-sheet-card zkm-fact-box">
-      {facts.map((fact, i) => (
-        <div key={i} className="zkm-fact-box__row">
-          <dt className="zkm-fact-box__label">
-            {fact.label}
-            {fact.hint && <FactHintButton hint={fact.hint} />}
-          </dt>
-          <dd className="zkm-fact-box__value">{fact.value}</dd>
-        </div>
-      ))}
-    </dl>
+    <div className="zkm-sheet-card zkm-fact-box">
+      {head}
+      <hr className="zkm-fact-box__divider" />
+      <dl className={`zkm-fact-box__list${columns}`}>{rows}</dl>
+    </div>
   )
 }
 

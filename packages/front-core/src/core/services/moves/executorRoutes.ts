@@ -4,22 +4,23 @@ import type { ExecutorHolding, MultiStepExecutor } from "@obsidion/core/oxide"
 import {
   buildMove,
   buildMultiStepRecoverCall,
+  buildVaultSwap,
   encodeWithdrawalMemo,
   HOLDING_ADAPTERS,
   quoteMove,
+  quoteVaultSwap,
   readHoldingRoute,
   readMultiStepRecovery,
   readPortalDeposits,
-  readTermsLimits,
 } from "@obsidion/sdk"
 import type { EthUsdSource, HoldingRoute, VaultMoveBurn } from "@obsidion/sdk"
-import { erc4626Abi, isAddressEqual, zeroHash, type Address } from "viem"
+import { erc4626Abi, isAddressEqual, zeroHash, type Address, type Hex } from "viem"
 import type { PublicClient } from "viem"
 import { WalletError } from "../../../engine/errors"
 import { SWAP_ESCROW_RECOVERY_DEADLINE_S } from "../../../oxide/swapEscrowRecovery"
 import type { MoveQuote } from "../../../engine/moveTransition"
 import { l1MoveReads, movePortals } from "./moveReads"
-import type { MoveBurn, MoveRoute, MoveRoutes } from "./types"
+import type { BlockRange, MoveBurn, MoveOutcome, MoveRoute, MoveRoutes } from "./types"
 
 export interface ExecutorRoute extends MoveRoute {
   /** The holding's deployment, with its terms and conversion bound to the executor's adapters. */
@@ -47,6 +48,62 @@ export interface ExecutorRoutesDeps {
 
 /** Every vault move's memo is this long, whatever its nonce: it sizes a quote's route. */
 const SIZING_MEMO = encodeWithdrawalMemo({ vaultMove: { nonce: zeroHash } })
+
+/**
+ * What became of a burn's released funds through the executor. The route runs in the release and
+ * ends in the deposit into `deposit.portal`, so the deposit shows the run, and what the vault took
+ * in or paid out is `vault.token`'s last `vault.event` before the deposit, in the same tx. A recovery
+ * spends the same withdrawal and returns `recovered`, so a burn shows one or the other.
+ */
+async function releasedFunds(
+  l1: ExecutorL1,
+  {
+    executor,
+    withdrawalId,
+    deposit,
+    vault,
+    recovered,
+  }: {
+    executor: Address
+    withdrawalId: Hex
+    deposit: { portal: Address; recipientCommitment: Hex }
+    vault: { token: Address; event: "Deposit" | "Withdraw" }
+    recovered: Address
+  },
+  range: BlockRange,
+  signal?: AbortSignal,
+): Promise<MoveOutcome | undefined> {
+  signal?.throwIfAborted()
+  const [found] = await readPortalDeposits(
+    l1,
+    [deposit.portal],
+    [deposit.recipientCommitment],
+    range.from,
+    range.to,
+  )
+  signal?.throwIfAborted()
+  if (!found) {
+    const recovery = await readMultiStepRecovery(l1, { executor, withdrawalId, ...range })
+    if (!recovery) return undefined
+    const { txHash, recipient: to, blockNumber } = recovery
+    return { kind: "recovered", txHash, to, token: recovered, blockNumber }
+  }
+  const logs = await l1.getContractEvents({
+    address: vault.token,
+    abi: erc4626Abi,
+    eventName: vault.event,
+    fromBlock: found.blockNumber,
+    toBlock: found.blockNumber,
+  })
+  signal?.throwIfAborted()
+  const ran = logs
+    .filter((log) => log.transactionHash === found.txHash && log.logIndex < found.logIndex)
+    .at(-1)
+  if (ran?.args.assets === undefined) {
+    throw new WalletError("move.routeUnread", `no vault event in ${found.txHash}`)
+  }
+  return { kind: "ran", assets: ran.args.assets }
+}
 
 /** The executor rail's port over `deps.l1`. */
 export function executorRoutes(
@@ -132,46 +189,19 @@ export function executorRoutes(
       })
     },
 
-    // The route runs in the release and ends in the deposit, so the deposit shows the run. What the
-    // vault took in or paid out is its last ERC-4626 event before the deposit, in the same tx. A
-    // recovery spends the same withdrawal, so a move shows one or the other.
-    outcome: async (route, move, range, signal) => {
-      signal?.throwIfAborted()
-      const { destination } = movePortals(route, move.direction)
-      const [deposit] = await readPortalDeposits(
-        l1,
-        [destination],
-        [move.recipientCommitment],
-        range.from,
-        range.to,
-      )
-      signal?.throwIfAborted()
-      if (!deposit) {
-        const recovery = await readMultiStepRecovery(l1, {
-          executor: route.executor.address as Address,
-          withdrawalId: move.withdrawalId,
-          ...range,
-        })
-        if (!recovery) return undefined
-        const token = move.direction === "in" ? route.base.token : route.held.token
-        const { txHash, recipient: to, blockNumber } = recovery
-        return { kind: "recovered", txHash, to, token, blockNumber }
-      }
-      const logs = await l1.getContractEvents({
-        address: route.held.token,
-        abi: erc4626Abi,
-        eventName: move.direction === "in" ? "Deposit" : "Withdraw",
-        fromBlock: deposit.blockNumber,
-        toBlock: deposit.blockNumber,
-      })
-      signal?.throwIfAborted()
-      const ran = logs
-        .filter((log) => log.transactionHash === deposit.txHash && log.logIndex < deposit.logIndex)
-        .at(-1)
-      if (ran?.args.assets === undefined) {
-        throw new WalletError("move.routeUnread", `no vault event in ${deposit.txHash}`)
-      }
-      return { kind: "ran", assets: ran.args.assets }
+    outcome: (route, move, range, signal) => {
+      const into = move.direction === "in"
+      const funds = {
+        executor: route.executor.address as Address,
+        withdrawalId: move.withdrawalId,
+        deposit: {
+          portal: movePortals(route, move.direction).destination,
+          recipientCommitment: move.recipientCommitment,
+        },
+        vault: { token: route.held.token, event: into ? "Deposit" : "Withdraw" },
+        recovered: into ? route.base.token : route.held.token,
+      } as const
+      return releasedFunds(l1, funds, range, signal)
     },
 
     owns: (route, burn): burn is MoveBurn<"executor"> =>
@@ -180,7 +210,65 @@ export function executorRoutes(
         isAddressEqual(portal, burn.destination),
       ),
 
-    limits: (route) => readTermsLimits(route.holding),
+    vaultSwap: {
+      quote: async (from, to, amount) => {
+        const quote = await quoteVaultSwap(l1, from.holding, to.holding, {
+          amount,
+          eth: deps.eth,
+          recoveryMemo: SIZING_MEMO,
+        })
+        return {
+          routed: quote.routed,
+          relayerTip: quote.relayerTip,
+          conversionOut: quote.assetOut,
+          conversionMinOut: quote.assetMinOut,
+          expectedOut: quote.expectedOut,
+          minOut: quote.minOut,
+          withdrawalFee: 0n,
+          out: { minOut: quote.redeemMinOut, conversionMinOut: quote.baseMinOut },
+        }
+      },
+
+      build: (from, to, args, quote) => {
+        if (!quote.out) throw new WalletError("invariant", "a swap's quote has no floors out")
+        const { operation } = buildVaultSwap(from.holding, to.holding, {
+          redeemMinOut: quote.out.minOut,
+          baseMinOut: quote.out.conversionMinOut,
+          assetMinOut: quote.conversionMinOut,
+          minOut: quote.minOut,
+          recipientCommitment: args.recipientCommitment,
+          from: args.from,
+          amount: args.amount,
+          proverTip: 0n,
+          relayerTip: quote.relayerTip,
+          recovery: args.recovery,
+          recoveryMemo: encodeWithdrawalMemo({ vaultMove: { nonce: args.nonce } }),
+        })
+        return {
+          rail: "executor",
+          destination: to.held.portal,
+          target: from.holding.deployment.executor,
+          withdrawal: { multiStep: { operation, executor: from.executor } },
+          releaseTip: quote.relayerTip,
+        }
+      },
+
+      outcome: (from, to, move, range, signal) => {
+        const funds = {
+          executor: from.executor.address as Address,
+          withdrawalId: move.withdrawalId,
+          deposit: { portal: to.held.portal, recipientCommitment: move.recipientCommitment },
+          vault: { token: to.held.token, event: "Deposit" },
+          recovered: from.held.token,
+        } as const
+        return releasedFunds(l1, funds, range, signal)
+      },
+
+      owns: (from, to, burn): burn is MoveBurn<"executor"> =>
+        burn.rail === "executor" &&
+        !isAddressEqual(from.held.portal, to.held.portal) &&
+        isAddressEqual(burn.destination, to.held.portal),
+    },
 
     assetsOf: (route, amount) => route.holding.terms.reader.convertToAssets(amount),
   }

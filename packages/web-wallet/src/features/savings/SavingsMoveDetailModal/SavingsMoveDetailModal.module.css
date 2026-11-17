@@ -1,0 +1,6 @@
+/* A check line under the facts: aligned with them, wrapping anywhere a long error needs. */
+.check {
+  width: 100%;
+  text-align: left;
+  overflow-wrap: anywhere;
+}

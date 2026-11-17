@@ -11,13 +11,14 @@ export interface AddCost {
 }
 
 /**
- * The add's figures in whole cents, each rounded once: the total up, so paying or depositing it is
- * always enough, and the hold down, so it never promises more back. The fee is what is left, so
- * the three add up.
+ * The add's figures in whole cents, each rounded once: the hold down, so it never promises more
+ * back, and the total up, so with a hold it never reads less than leaves the balance. The fee is
+ * what is left, so the three add up. A credit under a cent shows no hold, and the total leaves it
+ * out: the one unit a fee-only add credits would otherwise round its fee up a cent.
  */
 export function addCost({ sent, credited }: BackupFundingSplit): AddCost {
-  const total = toCents(sent, DEFAULT_DECIMALS, true)
   const hold = toCents(credited, DEFAULT_DECIMALS, false)
+  const total = toCents(hold > 0n ? sent : sent - credited, DEFAULT_DECIMALS, true)
   return { fee: total - hold, hold, total }
 }
 

@@ -15,7 +15,7 @@ describe("addCost", () => {
     expect(cost.fee + cost.hold).toBe(cost.total)
   })
 
-  it("never asks for less than leaves, nor promises more back than comes", () => {
+  it("with a hold, never asks for less than leaves, nor promises more back than comes", () => {
     const cost = addCost({ sent: 2n * DAI + 1n, credited: (15n * DAI) / 10n - 1n })
     expect(cost).toEqual({ total: 201n, hold: 149n, fee: 52n })
   })
@@ -25,6 +25,19 @@ describe("addCost", () => {
       total: 200n,
       hold: 140n,
       fee: 60n,
+    })
+  })
+
+  // A fee-only add sends its charges plus the one unit the sweep bridges back.
+  it.each([
+    // The sandbox's Standard add: the unit would read as a cent more.
+    { case: "a whole-cent charge reads as itself", charges: at(5500n), cents: 55n },
+    { case: "a fraction of a cent still rounds up", charges: at(5547n), cents: 56n },
+  ])("leaves out a credit too small to show as a hold: $case", ({ charges, cents }) => {
+    expect(addCost({ sent: charges + 1n, credited: 1n })).toEqual({
+      total: cents,
+      hold: 0n,
+      fee: cents,
     })
   })
 })

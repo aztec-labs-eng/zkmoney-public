@@ -97,20 +97,18 @@ export function BridgeInStatus({
   const blocks: RingStageBlock[] = [
     {
       key: "bridging",
-      chip: {
-        text:
-          fillMinutes === undefined
-            ? copy.bridging.chip
-            : fmt(sendCopy.chipAbout, { chip: copy.bridging.chip, minutes: fillMinutes }),
-        tone: "live",
-      },
       title: payee
         ? fmt(copy.paying.title, { payee })
         : fmt(copy.bridging.title, { coin: record.symbol }),
       line: payee
         ? fmt(copy.paying.line, { amount, chain: chainName, payee })
         : fmt(copy.bridging.line, { amount, chain: chainName }),
-      note: fmt(sendCopy.confirming, { network: chainName }),
+      noteLines: [
+        fillMinutes === undefined
+          ? fmt(copy.bridging.confirming, { chain: chainName })
+          : fmt(copy.bridging.confirmingAbout, { chain: chainName, minutes: fillMinutes }),
+        copy.bridging.activity,
+      ],
       noteTone: "pending",
     },
     {

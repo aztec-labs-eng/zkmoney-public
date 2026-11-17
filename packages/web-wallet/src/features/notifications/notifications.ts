@@ -152,6 +152,7 @@ export function notificationSources(
       withdrawals: feed.withdrawals,
       bridgeIns: feed.bridgeIns,
       upgrades: feed.upgrades,
+      moves: feed.moves.records,
       processing: feed.processing,
       // Newest first: the bell speaks for the account's latest registration.
       registrations: [...registrations.records].sort((a, b) => b.startTime - a.startTime),

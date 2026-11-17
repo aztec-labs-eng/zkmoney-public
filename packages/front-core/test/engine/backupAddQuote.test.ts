@@ -28,10 +28,8 @@ describe("backupAddFees", () => {
       relayerTip: cents(15n),
       sweepTip: cents(35n),
       beneficiaryFee: cents(5n),
-      minCredited: DAI,
-      margin: cents(50n),
     }
-    const credited = cents(150n)
+    const credited = 1n
     const amount = cents(70n) + credited
     expect(backupAddFees({ amount, credited, breakdown })).toEqual({
       total: cents(70n),

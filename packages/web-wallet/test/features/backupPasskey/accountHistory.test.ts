@@ -19,15 +19,24 @@ import type {
 const CENT = 10n ** 16n
 const PREVIOUS = `0x${"0a".repeat(32)}`
 const ELSEWHERE = `0x${"0b".repeat(32)}`
-const main = (amount: bigint): PreviousHolding => ({ kind: "main", amount, dust: CENT })
+const MAIN = "0xmain"
+const SAVINGS = "0xsavings"
+const main = (amount: bigint): PreviousHolding => ({
+  kind: "main",
+  token: MAIN,
+  amount,
+  dust: CENT,
+})
 const savings = (amount: bigint, value?: bigint): PreviousHolding => ({
   kind: "savings",
+  token: SAVINGS,
   amount,
   dust: CENT,
   ...(value === undefined ? {} : { value }),
 })
 const row = (kind: "main" | "savings", over: { moved?: number; done?: boolean } = {}) => ({
   kind,
+  token: kind === "main" ? MAIN : SAVINGS,
   moved: 0,
   ...over,
 })
@@ -82,7 +91,7 @@ describe("selectAccountHistory", () => {
 
   it("lists a running move's balances, the one it is on by its phase", () => {
     const run = (phase?: "preparing" | "confirming") => ({
-      rows: [{ kind: "main" as const, moved: 0, ...(phase && { phase }) }, row("savings")],
+      rows: [{ ...row("main"), ...(phase && { phase }) }, row("savings")],
       approvals: phase ? 1 : 0,
     })
     const rows = (state: string) => [
@@ -112,7 +121,7 @@ describe("selectAccountHistory", () => {
   it("counts the approvals a running move still asks for, the one being prepared included", () => {
     const forecast = { approvals: 2, upper: false }
     const run = (approvals: number, phase?: "preparing" | "confirming") => ({
-      rows: [{ kind: "main" as const, moved: 0, ...(phase && { phase }) }],
+      rows: [{ ...row("main"), ...(phase && { phase }) }],
       approvals,
     })
     const left = (state: Partial<PreviousAccountState>) =>

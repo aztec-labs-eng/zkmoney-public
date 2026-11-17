@@ -32,6 +32,7 @@ import {
   type CreatorLinkAction,
   type Feed,
   type FeedItem,
+  type HoldingPrice,
   type PaymentRequest,
   type DepositOffer,
   type OldVersionRefund,
@@ -64,6 +65,7 @@ import { acrossBridge } from "../../../session/walletChains"
 import { upgradeRunTitle } from "../../../features/migration/upgradeCopy"
 import { upgradeRunAccount } from "../../../features/migration/upgradeRunAccount"
 import { RegistrationDepositDetailModal } from "../../../features/onboarding/RegistrationDepositDetailModal/RegistrationDepositDetailModal"
+import { readsBridgeFills } from "../../../session/bridgeFillDetectors"
 import {
   useRegistrationDepositEntry,
   type RegistrationDepositEntry,
@@ -73,11 +75,12 @@ import { usePaylinkDeps } from "../../../features/paylink/usePaylinkDeps"
 import { CancelRequestLinkModal } from "../../../features/requests/CancelRequestLinkModal"
 import { IncomingRequestDetailModal } from "../../../features/requests/IncomingRequestDetailModal"
 import { SharePaylinkModal } from "../../../features/requests/SharePaylinkModal"
-import { SavingsMoveDetailModal } from "../../../features/savings/SavingsMoveDetailModal"
+import { SavingsMoveDetailModal } from "../../../features/savings/SavingsMoveDetailModal/SavingsMoveDetailModal"
 import { moveFinalizeDeployment } from "../../../features/savings/movesSession"
+import { ledgerNote } from "../../../features/savings/savingsLine"
 import { useSavingsMoveTiming } from "../../../features/savings/savingsMoveTiming"
 import { OldVersionRefundExitModal } from "../../../features/withdraw/OldVersionRefundExitModal"
-import { useMoveSharePrice } from "../../../features/savings/useSavings"
+import { useHoldingPrices } from "../../../features/savings/useSavings"
 import { SwapExitModal } from "../../../features/withdraw/SwapExitModal"
 import { useWithdrawals } from "../../../features/withdraw/useWithdrawals"
 import { WithdrawalExitModal } from "../../../features/withdraw/WithdrawalExitModal"
@@ -196,8 +199,8 @@ export interface ActivityHost {
   chainName(chainId: number): string
   copiedLinkId: string | null
   registration?: RegistrationDepositEntry
-  /** The share price of the holding a move is in. */
-  moveSharePrice(holdingId: string): bigint | undefined
+  /** The price of the holding a move is in, once read. */
+  movePrice(holdingId: string | undefined): HoldingPrice | undefined
   /** What values an upgrade run in its credited asset. */
   upgradePricing: UpgradePricing
   /** The decimals of the row a deposit of `token` settles on. */
@@ -262,8 +265,9 @@ export function ActivityDetailHost({
   const paylinkDeps = usePaylinkDeps()
   const { checkAgain } = useWithdrawals()
   const savingsLine = useStore(session.savingsLine)
-  const savingsPosition = savingsLine.position
-  const moveSharePrice = useMoveSharePrice()
+  const holdingPrices = useHoldingPrices()
+  const movePrice = (holdingId: string | undefined) =>
+    holdingId === undefined ? undefined : holdingPrices.get(holdingId)
   const settleTask = session.tasks.settleMoves
   const recoverable = useStore(session.recoverableRails)
   const runnable = useStore(session.runnableRails)
@@ -414,25 +418,11 @@ export function ActivityDetailHost({
   ])
 
   // The savings ledger's figure may be off: the console says why, once per change.
-  const { ledger } = savingsLine
-  const position = savingsPosition
-  const ledgerKey =
-    ledger && position
-      ? `${ledger.shares}/${position.shares}/${ledger.excluded.map((e) => e.moveId).join(",")}`
-      : undefined
+  const ledgerOff = ledgerNote(savingsLine)
   // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
-    if (!ledger || !position || !ledgerKey) return
-    if (ledger.shares !== position.shares || ledger.excluded.length > 0)
-      console.info(
-        `[savings] earnings: the counted moves add up to ${ledger.shares} shares, ${position.shares} held` +
-          (ledger.excluded.length
-            ? `; left out: ${ledger.excluded.map((e) => `${e.moveId} (${e.reason})`).join(", ")}`
-            : ""),
-      )
-    // Keyed on what the line would say, so it prints once per change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt
-  }, [ledgerKey])
+    if (ledgerOff) console.info(`[savings] earnings: ${ledgerOff}`)
+  }, [ledgerOff])
 
   const host: ActivityHost = {
     feed,
@@ -474,7 +464,7 @@ export function ActivityDetailHost({
       acrossBridge(session.page.config)?.chains.find((c) => c.chainId === chainId)?.name ?? "",
     copiedLinkId,
     registration: registrationDeposit ?? undefined,
-    moveSharePrice,
+    movePrice,
     upgradePricing,
     depositDecimals: (token) => settlementDecimals(depositTokens, token),
     savingsEta,
@@ -493,7 +483,9 @@ export function ActivityDetailHost({
     if (exit) return exitModal(exit)
     if (sheet && "passkeys" in sheet) {
       const { back } = sheet.passkeys
-      return <PasskeysSheet onClose={back ? () => open(back) : close} onLeave={close} />
+      return (
+        <PasskeysSheet from="activity" onClose={back ? () => open(back) : close} onLeave={close} />
+      )
     }
     if (!detail) return null
     switch (detail.kind) {
@@ -627,6 +619,7 @@ export function ActivityDetailHost({
           savedWallets.find((w) => w.address.toLowerCase() === bridgeIn.depositor.toLowerCase())
         return (
           <DepositDetailModal
+            readsFills={readsBridgeFills(session.page.config)}
             record={record}
             bridgeIn={
               bridgeIn && {
@@ -679,7 +672,8 @@ export function ActivityDetailHost({
             move={move}
             state={item.state}
             burn={burn}
-            sharePrice={moveSharePrice(move.holdingId)}
+            price={holdingPrices.get(move.holdingId)}
+            into={movePrice(move.intoHoldingId)}
             eta={savingsEta(move, burn)}
             onCheckAgain={settleTask ? () => void session.wake(settleTask) : undefined}
             exit={

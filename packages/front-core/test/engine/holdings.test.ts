@@ -10,7 +10,12 @@ import {
 } from "@obsidion/core/oxide"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { BalanceEntry } from "../../src/engine/balances"
-import { selectHoldings } from "../../src/engine/holdings"
+import {
+  savingsHolding,
+  savingsHoldingRef,
+  savingsHoldings,
+  selectHoldings,
+} from "../../src/engine/holdings"
 import type { RecordSet } from "../../src/engine/persistentStore"
 import prod from "../fixtures/oxideReleases.v6-prod.json"
 import staging from "../fixtures/oxideReleases.v6-staging.json"
@@ -86,6 +91,37 @@ describe("selectHoldings", () => {
     expect(lines([], [SKY_OLD, SKY], held)).toEqual([
       { id: SKY_OLD.id, exitOnly: true, holdingIds: [SKY_OLD.id, SKY.id] },
     ])
+  })
+})
+
+describe("savingsHoldings", () => {
+  const EXECUTOR: Holding = {
+    ...VAULT,
+    rail: "executor",
+    executor: { id: "fea-multistep-v6", address: "0xe0", adapters: {} },
+  }
+  const priced = (listed: string[] | undefined, deployment: Holding[]) =>
+    savingsHoldings({ holdings: deployment, rejected: [] }, listed).map((h) => h.id)
+
+  it("prices a holding on every rail, the listed first, one per share token", () => {
+    expect(priced([EXECUTOR.id], [SKY_OLD, SKY, EXECUTOR])).toEqual([EXECUTOR.id, SKY_OLD.id])
+    expect(priced([SKY.id, EXECUTOR.id], [SKY_OLD, EXECUTOR, SKY])).toEqual([SKY.id, EXECUTOR.id])
+  })
+
+  it("gives a reader of one holding the first priced, whatever its rail", () => {
+    const pick = (listed: string[] | undefined, deployment: Holding[]) =>
+      savingsHolding({ holdings: deployment, rejected: [] }, listed)?.id
+    expect(pick([EXECUTOR.id, SKY.id], [SKY, EXECUTOR])).toBe(EXECUTOR.id)
+    expect(pick([SKY.id, SKY_OLD.id], [SKY_OLD, SKY])).toBe(SKY.id)
+    expect(pick([EXECUTOR.id], [EXECUTOR])).toBe(EXECUTOR.id)
+    expect(pick(undefined, [])).toBeUndefined()
+  })
+
+  it("counts an older build's moves in the first holding with an escrow, past a vault", () => {
+    const ref = (listed: string[], deployment: Holding[]) =>
+      savingsHoldingRef({ holdings: deployment, rejected: [] }, listed)?.id
+    expect(ref([EXECUTOR.id, SKY.id], [SKY, EXECUTOR])).toBe(SKY.id)
+    expect(ref([EXECUTOR.id], [EXECUTOR])).toBeUndefined()
   })
 })
 

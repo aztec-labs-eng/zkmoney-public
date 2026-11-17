@@ -1,19 +1,8 @@
 import { adapters } from "@oxide/l1-contracts/multi_step/index.js"
-import { BaseError, ContractFunctionRevertedError, erc4626Abi, maxUint256 } from "viem"
+import { erc4626Abi } from "viem"
 import type { Address, PublicClient } from "viem"
 import { executorAdapter } from "../holdingDeployment.js"
 import type { TermsAdapter, TermsReader } from "../terms.js"
-
-/** A revert with no data: what a contract without the function gives. */
-function isMissingFunction(error: unknown): boolean {
-  const reverted =
-    error instanceof BaseError &&
-    error.walk((cause) => cause instanceof ContractFunctionRevertedError)
-  return (
-    reverted instanceof ContractFunctionRevertedError &&
-    (reverted.raw === undefined || reverted.raw === "0x")
-  )
-}
 
 /** The reads a move needs from an ERC-4626 vault. */
 export function erc4626Reader(
@@ -21,17 +10,7 @@ export function erc4626Reader(
   vault: Address,
 ): TermsReader {
   const at = { address: vault, abi: erc4626Abi } as const
-  // The sandbox's stand-in for sUSDS has no `maxDeposit` or `maxRedeem`: no limit.
-  const limit = (read: Promise<bigint>) =>
-    read.catch((error: unknown) => {
-      if (isMissingFunction(error)) return maxUint256
-      throw error
-    })
   return {
-    maxDeposit: (receiver) =>
-      limit(client.readContract({ ...at, functionName: "maxDeposit", args: [receiver] })),
-    maxRedeem: (owner) =>
-      limit(client.readContract({ ...at, functionName: "maxRedeem", args: [owner] })),
     previewDeposit: (assets) =>
       client.readContract({ ...at, functionName: "previewDeposit", args: [assets] }),
     previewRedeem: (shares) =>
