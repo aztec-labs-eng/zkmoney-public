@@ -25,3 +25,5 @@ packages:
   - vendor/oxide/yarn-project/telemetry
   - vendor/oxide/yarn-project/watcher-lib
   - vendor/oxide/yarn-project/oxide-relayer
+  - vendor/oxide/yarn-project/resolver-proof
+  - vendor/oxide/yarn-project/resolver-service

@@ -17,18 +17,10 @@
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.1045.0",
-    "@aws-sdk/client-ssm": "^3.1045.0",
-    "@aztec-labs/accounts": "6.0.0",
-    "@aztec-labs/aztec.js": "6.0.0",
-    "@aztec-labs/constants": "6.0.0",
     "@aztec-labs/foundation": "6.0.0",
     "@aztec-labs/kv-store": "6.0.0",
-    "@aztec-labs/noir-contracts.js": "6.0.0",
     "@aztec-labs/stdlib": "6.0.0",
-    "@aztec-labs/wallets": "6.0.0",
     "@oxide/l1-contracts": "workspace:^",
-    "@oxide/noir-contracts.js": "workspace:^",
-    "@oxide/oxide-client": "workspace:^",
     "@oxide/oxide-lib": "workspace:^",
     "@oxide/resolver-lib": "workspace:^",
     "@oxide/resolver-proof": "workspace:^",
@@ -36,7 +28,6 @@
     "@oxide/watcher-lib": "workspace:^",
     "ioredis": "^5.6.1",
     "pg": "^8.16.0",
-    "secp256k1": "^5.0.1",
     "viem": "2.57.1"
   },
   "devDependencies": {
@@ -46,7 +37,6 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^22.15.17",
     "@types/pg": "^8.15.0",
-    "@types/secp256k1": "^4.0.6",
     "jest": "^30.0.0",
     "typescript": "^5.3.3"
   }

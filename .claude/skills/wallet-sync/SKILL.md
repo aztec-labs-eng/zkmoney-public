@@ -66,7 +66,8 @@ The exporter stops if a checkout has tracked changes or if the Oxide checkout is
 2. Run `node "$WALLET/public-export/check-public-only.mjs" . "$SCRATCH/exp-$TARGET"`. Each file that it flags must be a file that the private repository deleted, or a public edit that step 1 shows. The check also flags the files of this skill and `.github/workflows/copy-v5-bundle.yml`, until the private exporter has them in `public-export/overlay/`.
 3. Scan the added lines for the items in [Rules](#rules): `node .claude/skills/wallet-sync/scan.mjs origin/main..HEAD`. The script prints each item with its file and line, and exits with 1 when it finds an item. It does not report a line that the sync only moves. Remove each item that it reports, unless it cites a public item, such as an issue of `aztec-packages`. If an item is a standard name, such as `SHA-256`, add its prefix to `STANDARDS` in `scan.mjs`.
 4. Make sure that `EXPORT-MANIFEST.json` names the target as `source`.
-5. Make sure that `packages/generation-v5/scripts/fetch.mjs` has `BUNDLE_RELEASE`. Without it, `fetch:bundle` reads only `source-generations`, and a new bundle cannot reach this repository. `BUNDLE_RELEASE` is a public edit that the private repository does not have. If the sync has a conflict in `fetch.mjs`, keep it.
+5. If the Oxide pin moved, update the resolver. The private repository does not export it, so the delta does not change it. Copy `yarn-project/resolver-service` (without its `Dockerfile`), `yarn-project/resolver-proof`, `noir-projects/resolver_circuit/pinned` and `noir-projects/resolver_circuit/repin.sh` from Oxide at the new pin into `vendor/oxide`. If the pin does not have the removal of the SIPA watcher yet, apply it to `resolver-service`: `git diff d4f57bf5 3feb1b4ea -- yarn-project/resolver-service | git apply --3way`. Then remove the ticket IDs, the Linear URLs and the SSM parameter names (see [Rules](#rules)), and change the commit in the Resolver section of `README.md`. Keep `yarn-project/yarn.lock` in step with the resolver manifests, as Oxide does: the enclave build installs with an immutable lockfile. Then run `scripts/build-enclave.sh` and make sure that the measurements are the release values in `README.md`.
+6. Make sure that `packages/generation-v5/scripts/fetch.mjs` has `BUNDLE_RELEASE`. Without it, `fetch:bundle` reads only `source-generations`, and a new bundle cannot reach this repository. `BUNDLE_RELEASE` is a public edit that the private repository does not have. If the sync has a conflict in `fetch.mjs`, keep it.
 
 ## 5. Verify the build
 
@@ -85,6 +86,7 @@ The script clones the branch. It then runs the `bundle` job and the Linux row of
 | `classids` | Each built class ID is the same as the live profile. |
 | `circuits` | The 3 refund circuits match their L1 verifiers. |
 | `relayer`, `relayer-help` | The relayer builds and starts. |
+| `resolver` | The resolver builds. |
 | `typecheck-*`, `test-*` | The typecheck and the tests of each package, and the tests of this skill, pass. |
 | Clean tree | `git status --porcelain` is empty after the build. |
 

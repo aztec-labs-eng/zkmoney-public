@@ -10,7 +10,7 @@
 #   SOURCE_GENERATIONS_REPO  The repository whose releases fetch:bundle reads.
 #                            Default: this repository's origin.
 #   V5_ARCHIVE_NODE_URL      The v5 node with all historical state. Default: the mainnet v5 archive node.
-#   TESTS                    1 also builds the relayer and runs the typecheck and the tests of each package.
+#   TESTS                    1 also builds the relayer and the resolver, and runs the typecheck and the tests of each package.
 #                            0 does not. Default: 1.
 #
 # Needs nvm with the Node.js version in the .nvmrc of BRANCH, Foundry, jq, and gh with a token that can read the release.
@@ -87,6 +87,7 @@ if [[ "$TESTS" == 1 ]]; then
   step relayer pnpm build:relayer
   step relayer-help node vendor/oxide/yarn-project/oxide-relayer/dest/bin/oxide-relayer.js run --help
   step test-wallet-sync node --test '.claude/skills/wallet-sync/*.test.mjs'
+  step resolver pnpm build:resolver
   # packages/web-wallet-desktop is not a workspace member. The installers row tests it.
   for dir in packages/*/; do
     grep -qxF "  - ${dir%/}" pnpm-workspace.yaml || continue
@@ -96,7 +97,7 @@ if [[ "$TESTS" == 1 ]]; then
         TZ=UTC step "$script-$(basename "$dir")" pnpm --filter "$name" "$script"
     done
   done
-  for dir in vendor/oxide/yarn-project/oxide-relayer vendor/oxide/yarn-project/experiments; do
+  for dir in vendor/oxide/yarn-project/{oxide-relayer,experiments,resolver-proof,resolver-service}; do
     (cd "$dir" && NODE_NO_WARNINGS=1 step "test-$(basename "$dir")" node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand)
   done
 fi

@@ -68,7 +68,6 @@ RUN corepack enable && corepack prepare yarn@4.5.2 --activate
 # yarn itself comes from corepack (above); the repo commits no .yarn/ releases,
 # plugins, or file patches, so there is nothing under .yarn/ to copy.
 COPY yarn-project/package.json yarn-project/yarn.lock yarn-project/.yarnrc.yml yarn-project/tsconfig.base.json /repo/yarn-project/
-COPY yarn-project/account-service/package.json /repo/yarn-project/account-service/package.json
 COPY yarn-project/l1-contracts/package.json /repo/yarn-project/l1-contracts/package.json
 COPY yarn-project/l1-observer/package.json /repo/yarn-project/l1-observer/package.json
 COPY yarn-project/noir-contracts.js/package.json /repo/yarn-project/noir-contracts.js/package.json

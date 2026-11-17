@@ -637,7 +637,7 @@ importers:
         version: link:../design-system
       '@rainbow-me/rainbowkit':
         specifier: ^2.2.11
-        version: 2.2.11(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.7.3)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(wagmi@2.19.5(@tanstack/query-core@5.101.4)(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(zod@4.4.3))
+        version: 2.2.11(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.7.3)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(wagmi@2.19.5(@tanstack/query-core@5.101.4)(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(zod@4.4.3))
       '@tanstack/react-query':
         specifier: ^5
         version: 5.101.4(react@19.2.0)
@@ -667,7 +667,7 @@ importers:
         version: 2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
       wagmi:
         specifier: ^2
-        version: 2.19.5(@tanstack/query-core@5.101.4)(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(zod@4.4.3)
+        version: 2.19.5(@tanstack/query-core@5.101.4)(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(zod@4.4.3)
     devDependencies:
       '@aztec-labs/sqlite3mc-wasm':
         specifier: v6.0.0
@@ -1111,6 +1111,113 @@ importers:
         specifier: ^5.3.3
         version: 5.7.3
 
+  vendor/oxide/yarn-project/resolver-proof:
+    dependencies:
+      '@aztec-foundation/bb.js':
+        specifier: 6.0.0
+        version: 6.0.0
+      '@aztec-foundation/noir-noir_js':
+        specifier: 6.0.0
+        version: 6.0.0
+      '@aztec-labs/foundation':
+        specifier: 6.0.0
+        version: 6.0.0
+      '@aztec-labs/stdlib':
+        specifier: 6.0.0
+        version: 6.0.0(bufferutil@4.1.0)(encoding@0.1.14)(typescript@5.7.3)(utf-8-validate@5.0.10)
+      '@oxide/resolver-lib':
+        specifier: workspace:^
+        version: link:../resolver-lib
+    devDependencies:
+      '@jest/globals':
+        specifier: ^30.0.0
+        version: 30.4.1
+      '@swc/core':
+        specifier: ^1.10.12
+        version: 1.15.40(@swc/helpers@0.5.23)
+      '@swc/jest':
+        specifier: ^0.2.36
+        version: 0.2.39(@swc/core@1.15.40(@swc/helpers@0.5.23))
+      '@types/jest':
+        specifier: ^30.0.0
+        version: 30.0.0
+      '@types/node':
+        specifier: ^22.15.17
+        version: 22.19.20
+      jest:
+        specifier: ^30.0.0
+        version: 30.4.2(@types/node@22.19.20)(esbuild-register@3.6.0(esbuild@0.28.2))(ts-node@10.9.2(@swc/core@1.15.40(@swc/helpers@0.5.23))(@types/node@22.19.20)(typescript@5.7.3))
+      typescript:
+        specifier: ^5.3.3
+        version: 5.7.3
+
+  vendor/oxide/yarn-project/resolver-service:
+    dependencies:
+      '@aws-sdk/client-secrets-manager':
+        specifier: ^3.1045.0
+        version: 3.1170.0
+      '@aztec-labs/foundation':
+        specifier: 6.0.0
+        version: 6.0.0
+      '@aztec-labs/kv-store':
+        specifier: 6.0.0
+        version: 6.0.0(patch_hash=ud5hv65twfrg6enwfedphclafq)(bufferutil@4.1.0)(encoding@0.1.14)(typescript@5.7.3)(utf-8-validate@5.0.10)
+      '@aztec-labs/stdlib':
+        specifier: 6.0.0
+        version: 6.0.0(bufferutil@4.1.0)(encoding@0.1.14)(typescript@5.7.3)(utf-8-validate@5.0.10)
+      '@oxide/l1-contracts':
+        specifier: workspace:^
+        version: link:../l1-contracts
+      '@oxide/oxide-lib':
+        specifier: workspace:^
+        version: link:../oxide-lib
+      '@oxide/resolver-lib':
+        specifier: workspace:^
+        version: link:../resolver-lib
+      '@oxide/resolver-proof':
+        specifier: workspace:^
+        version: link:../resolver-proof
+      '@oxide/telemetry':
+        specifier: workspace:^
+        version: link:../telemetry
+      '@oxide/watcher-lib':
+        specifier: workspace:^
+        version: link:../watcher-lib
+      ioredis:
+        specifier: ^5.6.1
+        version: 5.11.1
+      pg:
+        specifier: ^8.16.0
+        version: 8.23.0
+      viem:
+        specifier: 2.57.1
+        version: 2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+    devDependencies:
+      '@jest/globals':
+        specifier: ^30.0.0
+        version: 30.4.1
+      '@swc/core':
+        specifier: ^1.10.12
+        version: 1.15.40(@swc/helpers@0.5.23)
+      '@swc/jest':
+        specifier: ^0.2.36
+        version: 0.2.39(@swc/core@1.15.40(@swc/helpers@0.5.23))
+      '@types/jest':
+        specifier: ^30.0.0
+        version: 30.0.0
+      '@types/node':
+        specifier: ^22.15.17
+        version: 22.19.20
+      '@types/pg':
+        specifier: ^8.15.0
+        version: 8.20.0
+      jest:
+        specifier: ^30.0.0
+        version: 30.4.2(@types/node@22.19.20)(esbuild-register@3.6.0(esbuild@0.28.2))(ts-node@10.9.2(@swc/core@1.15.40(@swc/helpers@0.5.23))(@types/node@22.19.20)(typescript@5.7.3))
+      typescript:
+        specifier: ^5.3.3
+        version: 5.7.3
+
   vendor/oxide/yarn-project/tee-enclave:
     dependencies:
       '@aztec-foundation/bb.js':
@@ -1288,72 +1395,80 @@ packages:
     resolution: {integrity: sha512-ETn+vvmZVK1MmOZwVBXmWANpmD5iTbzojIqyEIoZ86qo+8oWy35S8QyQNE/ZDI+WHgMU1dS+VSYbpRl1QkEySg==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/core@3.974.18':
-    resolution: {integrity: sha512-JDYCPI0j7zGrzXTDFsLB346cxss7J/AxH7+O0MzWlqppJBEyB9Qe6TQXRL6iwLUo/xZkNv9KFmBL2hqElmwW0g==}
-    engines: {node: '>=20.0.0'}
-
-  '@aws-sdk/core@3.977.6':
-    resolution: {integrity: sha512-QiaJV4/zDrB4ZY2mfeSXSzSTc36W16sZXcGz+SPFk0CJ26gziO0cS+4LjJUMAbdeeBOvS0k0Aq1cZpfGdUXxSw==}
+  '@aws-sdk/client-secrets-manager@3.1170.0':
+    resolution: {integrity: sha512-JVeRR9sbhLrNrNJJqigEj9ecXYM/K1L9Vyaxa3rqsd/170hymg8yFHXuiYIo6vJcExODyyJ6ggJcq13x+rsglg==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/core@3.977.9':
     resolution: {integrity: sha512-reqPFEQrZxDZpeGj4PFMepBeR5LGYHRqq/L0motTzgFkCRBA4rFdaVXDSLYyGHhxVz7sT2PDnPN9CluGSfgyJA==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/credential-provider-env@3.972.44':
-    resolution: {integrity: sha512-3hKJVrZ7bqXzDAXCQp+OaQ1ASN+vWstaNuEH418wQVl//cRZhqhfR9Bjk1qIWmgUGe8/D3gdO73PgidRj378EQ==}
+  '@aws-sdk/core@3.981.0':
+    resolution: {integrity: sha512-Mnu7gaDrC5UCdyH8uLxLfB2eWbjE/HbjKX1U1J2VQxG3TTATUDObW2wU3I8iH3e9YH5NN2CY6w1mlAIe2XJ3jg==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-env@3.972.67':
     resolution: {integrity: sha512-rcIpk5kxUqDaaNa6Xk23pQ6ViY7jlqzmfFWCahQcBT97ddXaXYYwzCen9Tz1Jvo6aJft6wDl5bN44/Jw5B4oLA==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/credential-provider-http@3.972.46':
-    resolution: {integrity: sha512-VhwC9pGAZHhiQ2xSViyOPDFqvr9aRxGCAXZtADsUhU3R65nad7y//CwynE6mQnWNR+suRlqE79W36IVayL+m1g==}
+  '@aws-sdk/credential-provider-env@3.972.84':
+    resolution: {integrity: sha512-akZJetiMVeLRHsKzYh3LamDCo74ZUCeo0XoyRKMEMZT5qP7ReM6LhpioBCyuqKP5Vav5gEOeCmaQV0VVQr1Meg==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-http@3.972.69':
     resolution: {integrity: sha512-nggwJtZ4eeNsUw5IeWBMXsi1ryct5idi0K+/SCRF3kybLubOMaNTb3XCihXpWMiVpyzyPeIrl0zTkzhBH9porA==}
     engines: {node: '>=20.0.0'}
 
+  '@aws-sdk/credential-provider-http@3.972.86':
+    resolution: {integrity: sha512-U4mHaDRPWAn63yhl7FXIzbppNmW1F+4dSLeuiUpej2v3Xb6rGwvayEJ8SdlrdMV+/mZtd+GStTEP2HqurEzXtw==}
+    engines: {node: '>=20.0.0'}
+
   '@aws-sdk/credential-provider-ini@3.972.50':
     resolution: {integrity: sha512-09Xi6ovxiK42+De/qBGF71sT5F2bWgYM+1fFyDwSOpy1xpsQ5R/naIu7MVDpH6Dic36QNc8dAv4KADtMGK2JYg==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/credential-provider-ini@3.973.30':
+    resolution: {integrity: sha512-r6r6499GWoGN943NA5YEhBEQ6TEOGTf7tTOBhHd/zw0UbNvSzd1/zPCNcDkPmRarA+e24X7KgxutqxjoWcskBg==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-login@3.972.49':
     resolution: {integrity: sha512-EfJF/1Fh9mI4pZyoheU2RY9xUhTcugIZNkD63+orXMkYj/QXacJNbKVDUK90Yv5hE+aX+rt9J/EZ9Qr3vKOa7g==}
     engines: {node: '>=20.0.0'}
 
+  '@aws-sdk/credential-provider-login@3.972.92':
+    resolution: {integrity: sha512-96bcp9Pe/Xd60OEwncZ+kAQTQSu+fJnpUGz1qE6ghF5jnETmrk8XMU86mIP3lolvnCgR61XbZ+Ht6hdBjiQOmQ==}
+    engines: {node: '>=20.0.0'}
+
   '@aws-sdk/credential-provider-node@3.972.52':
     resolution: {integrity: sha512-7QX+PbyiWBEOVipJq8Nke/TqXT6lAPLE7fvTaopa39/IVWuLfS+Fzdy71sZJONf/mLGgmtj6aU17+REw3+aRrw==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/credential-provider-process@3.972.44':
-    resolution: {integrity: sha512-V+UUhZpRP7QDRhi+qgBDisM9tUBnYmMje8Bk77A6MZsfeGeGdMsQXmaHP1CDYFcept0o/Rz5g2Y0TMeVlG9dzg==}
+  '@aws-sdk/credential-provider-node@3.972.97':
+    resolution: {integrity: sha512-E4a0IXXJVsIdo/K9roX4JAEfI0JJr7KTPymkbKgETRDqEcLygE4ZlLTe24+7Qkh8Dl5YpnPd+Tt0DOPJDFXIwA==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-process@3.972.67':
     resolution: {integrity: sha512-IlUEejorGTWKb4/Dm7K5Yw4QxUmXLThLhrvBmzVBqZFTbW72cv9LTcITmo1dsnYriALE4h68mOq4LB99x6sQ7Q==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/credential-provider-sso@3.972.49':
-    resolution: {integrity: sha512-9QqOYGuh5tZ76OzaT68kwI78AH+5lS/uZGGvkfxb3fc8FzRrIz2jOufNTliEBEeSAwmgK2rWLNsK+IB3zbtNPA==}
+  '@aws-sdk/credential-provider-process@3.972.84':
+    resolution: {integrity: sha512-199C6OpNejd0nq9GFAkEFIKids1FL0R6LJtL9c1OTiDOXki7S1OduuPxW4+hE0LwndcYJ7YHOuYTlqScfpCocA==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-sso@3.973.11':
     resolution: {integrity: sha512-gAQBkBZxUB84d71+pPcI9L+jh2ujhuAVxc/4FgGiWFDjkPBlMKxzd5XDtkSXTFX8Ro7ansnT88+XadasxMeCRw==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/credential-provider-web-identity@3.972.49':
-    resolution: {integrity: sha512-IYx1lN38MnnPXv+NBLpuATu0cZakbZ321TAfjW+aVkw7HIJF38YnEwdeEO55MSl3pl7hIX1IvvnD6EmnAzmAJw==}
-    engines: {node: '>=20.0.0'}
-
-  '@aws-sdk/credential-provider-web-identity@3.972.73':
-    resolution: {integrity: sha512-SnlEmQa6SjOgs6iOPLUQl1Eyq4AKiAdPQlkOhFhqNfDtDCwibMGvL6QlkSmf3o6vAUSImzdPCxowT5dfQUZP1A==}
+  '@aws-sdk/credential-provider-sso@3.973.28':
+    resolution: {integrity: sha512-bGg7wH8wVDJQIcJggO9lg1ZYbG7l+PbLwHuM3Bi/e1TlCZhU712JS1W3tdRpyptdJD1UGyhBNGO/YrhrQCHKbg==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-web-identity@3.972.74':
     resolution: {integrity: sha512-0YfczxGXF3RjGj8z7QG/Ho2HnLGKDHfPSHiTs47UU1U/+mmwISDN+rvGKt2zh+3FX8NdT4xd95LGBGyhQw2dgQ==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/credential-provider-web-identity@3.972.90':
+    resolution: {integrity: sha512-duLeE3xlf0viHeH+1RM4z5duR3b32BCZTWVMu+MbxFPjQBxy7hmIGEqt5hekuFPRuXoyhMovjNl+PNNsb5oiGQ==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/middleware-flexible-checksums@3.974.27':
@@ -1364,73 +1479,49 @@ packages:
     resolution: {integrity: sha512-MRTqx8wD/T3REt6LTT3/yN8rrp6+xIHrbUekkDYJTYWVch70mwtdJBovR4qKJz1jIPlbN+9R/Sn6R04BfsglzA==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/nested-clients@3.997.17':
-    resolution: {integrity: sha512-lDRgraoTfKRawUyc176Ow93mrNrOho/x+EoK4C+lKU+vKkHWhNhzvSMVAx0WEJUJoeQxxDN5ZdKMfiGEyNejig==}
-    engines: {node: '>=20.0.0'}
-
-  '@aws-sdk/nested-clients@3.997.41':
-    resolution: {integrity: sha512-RDHqPGQWlF6tatA/Tp3rg6oIwtgN9IVderxE+9av2Y93Dfyu+mO1hZ5Bu2jpfZg2rwdNbsssnwM+sLafIczMlQ==}
-    engines: {node: '>=20.0.0'}
-
   '@aws-sdk/nested-clients@3.997.42':
     resolution: {integrity: sha512-XWRyon2MTHXD/zMoo0Mbge6Vwf+iE0qQaM/RyGO6NfZ9WukCFiQL27nQVZjYy2JwSIg+iXZxKOX95OBXqlSM4w==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/signature-v4-multi-region@3.996.32':
-    resolution: {integrity: sha512-llvApLcsWtmRFhG2wT3WIp1CmDeRaIYutqty1ZZXoMzK7TiJ6MOLOimk9eXUS8PwgG4ew4pa4QAbt0lfhn++1w==}
-    engines: {node: '>=20.0.0'}
-
-  '@aws-sdk/signature-v4-multi-region@3.996.43':
-    resolution: {integrity: sha512-lKekx8bLBXSv4O+cslk9Zfnw2XKSkWBs3uWL5QGhH2ZAQfNS7FE0vcSSN2vD/AhxX54ZTywWxR4STThoeOXlBA==}
+  '@aws-sdk/nested-clients@3.998.3':
+    resolution: {integrity: sha512-acHTTzMB13CU6dU4sxABYExMI3PQM2zStWH2MiUwJp/7QKTrLg2f7mbzSXoegW2kYOk2tdqQYagsZrWB8Xv7eA==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/signature-v4-multi-region@3.996.44':
     resolution: {integrity: sha512-ZSfQ35Qn4MhSY+A0Whyr+KBx+wJKZUyBsOrjB2pSHOafRzbFe47T8XcXM8hZqUAC69qnqIy0C9ArxTuud0CC2w==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/token-providers@3.1063.0':
-    resolution: {integrity: sha512-nYDaWWdzjKiDP5xj8k4oUgcYd4WPgzfAOgdU5vJsaqH/07Dfvm7ffisHCFJ+NEl7kUC9JEIUxh0kznvenbo3NQ==}
+  '@aws-sdk/signature-v4-multi-region@3.996.52':
+    resolution: {integrity: sha512-6W6SjGc8OXUhMzNxU1X922ghD+PP1XvzmCk5Scui0jaYsLezycMYR1RaLp5xTIOUrhTXyb4DnAbPr3fBgmdnzg==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/token-providers@3.1103.0':
     resolution: {integrity: sha512-N4wy26MNn31ItGVHYHPrEuCIFY4MBBjC+C5v1lJKqIUSA7OZBdhleCY53zCCrXn27hsk7YNOaTuhQu807S4AfQ==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/types@3.973.11':
-    resolution: {integrity: sha512-YjS0qFuECClRh4qhEyW8XagW0fwEPBeZ1cfsW/gU73Kh/ExFILxbzxOfPCmzF/2DwEvhvsHYt0b0qnvStwKYrg==}
-    engines: {node: '>=20.0.0'}
-
-  '@aws-sdk/types@3.974.2':
-    resolution: {integrity: sha512-3W6IUtSxFbH6X7Wb7DzGCV5QiFQsd0g8bOfntpmDxQlzBoKWUMBu/JPQR0DwkE+Hpnxd6db1tXbOwdeHddG6cA==}
-    engines: {node: '>=20.0.0'}
-
-  '@aws-sdk/types@3.974.3':
-    resolution: {integrity: sha512-ECAqfpNsef+7MO8qtR0h9KcFIBAygaE7Cm6UOiQl+ft+uVap+1G7bNEjs4mdJE2OnA4m6k7i8peH8uGIAsOMGw==}
+  '@aws-sdk/token-providers@3.1166.0':
+    resolution: {integrity: sha512-ngJ8mxXqtQ9mnp7QV6TWKJCxkpjVfPWxKQSc2FYhCyCfOVFIGdFv7P+/RqVffFrJAorwBPpktnv32gNlcEgF4g==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/types@3.974.5':
     resolution: {integrity: sha512-LkwLL2BLbC6wNNm4JaH9mbEqBMdOZCct6VAYqhdN4U1xrWM+fUJQEfbHwQgDypapOWTRtlk25akb5afM0P8CIQ==}
     engines: {node: '>=20.0.0'}
 
+  '@aws-sdk/types@3.975.1':
+    resolution: {integrity: sha512-7rGxUkCB2QPoQOeJmonmAICTN2zrH+fpmi1p4Iwu72lnxNaMhOgqcbpyddifnM1DBb19TWQ1u6z/XjkaFNEDWw==}
+    engines: {node: '>=20.0.0'}
+
   '@aws-sdk/util-locate-window@3.965.6':
     resolution: {integrity: sha512-ZfHjfwSzeXj+Lg9AK5ZNmeDkXev6V+w2tn1t4kgDdRtUaRCthepTQiFwbD06EF9oNGH4LaLg+Mb6U16Ypv5bSw==}
-    engines: {node: '>=20.0.0'}
-
-  '@aws-sdk/xml-builder@3.972.28':
-    resolution: {integrity: sha512-lI/l3c/vPvsxmspzV63NfS3x9q4CkMmdhJy4QiM+NThAufVkDvi/PZZQ6xETnICL0UD7jI808pY83gllf86RFg==}
-    engines: {node: '>=20.0.0'}
-
-  '@aws-sdk/xml-builder@3.972.37':
-    resolution: {integrity: sha512-zKq4HQum8JwDyEuyfuI4bbiAcU0KxP6qy+9PR/IsR92IyE/DaBAikzAS50tjxip4bqIIANpCcG+Yyj6CVhXupg==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/xml-builder@3.972.40':
     resolution: {integrity: sha512-wlFmCIGUlwF4zx/kncw+bmxTQh1HeSJq4mYV/V5cZUSJadDP3kXvGW8Rn21cimj/7y9ju+47oYWXi97vF7czaA==}
     engines: {node: '>=20.0.0'}
 
-  '@aws/lambda-invoke-store@0.2.4':
-    resolution: {integrity: sha512-iY8yvjE0y651BixKNPgmv1WrQc+GZ142sb0z4gYnChDDY2YqI4P/jsSopBWrKfAt7LOJAkOXt7rC/hms+WclQQ==}
-    engines: {node: '>=18.0.0'}
+  '@aws-sdk/xml-builder@3.972.43':
+    resolution: {integrity: sha512-rG8QVx4DOrJWptsogu1Aq+CDsnPKaBrAlJpKLxrJrIDXAq1ElnW0yQjjBnlWSXll0cDakCG6UDvaqwz0A9d9Og==}
+    engines: {node: '>=20.0.0'}
 
   '@aws/lambda-invoke-store@0.3.0':
     resolution: {integrity: sha512-sl4Bm6yiMNYrZKkqqDFWN0UfnWhlS8ivKxrYl+6t0gCLrqr8y3B2IqZZbFRkfaVVp7C/baApyh71P+LeE1A2sQ==}
@@ -2699,6 +2790,9 @@ packages:
 
   '@iarna/toml@2.2.5':
     resolution: {integrity: sha512-trnsAYxU3xnS1gPHPyU961coFyLkh4gAD/0zQ5mymY4yOZ+CYvsPqUbOFSw0aDM4y0tV7tiFxL/1XfXPNC6IPg==}
+
+  '@ioredis/commands@1.10.0':
+    resolution: {integrity: sha512-UmeW7z4LfctwoQ5wkhVzgq8tXkreED2xZGpX+Bg+zA+WJFZCT6c062AfCK/Dfk81xZnnwdhJCUMkitihRaoC2Q==}
 
   '@isaacs/cliui@8.0.2':
     resolution: {integrity: sha512-O8jcjabXaleOG9DQ0+ARXWZBTfnP4WNAqzuiJK7ll44AmxGKv/J2M4TPjxjY3znBCfvBXFzucm1twdyFybFqEA==}
@@ -4026,20 +4120,6 @@ packages:
   '@sinonjs/fake-timers@15.4.0':
     resolution: {integrity: sha512-DsG+8/LscQIQg68J6Ef3dv10u6nVyetYn923s3/sus5eaGfTo1of5WMZSLf0UJc9KDuKPilPH0UDJCjvNbDNCA==}
 
-  '@smithy/core@3.24.6':
-    resolution: {integrity: sha512-wBXDRup6UU97VKyaiRo8AssnfStPtG0oAAfpq/bC0a1YYau8pM86YB4kM6ccoVi1mS8l/UHbn9oDM+7uozr/ug==}
-    engines: {node: '>=18.0.0'}
-    deprecated: |-
-      Deprecated due to a bug in custom logger data redaction. Upgrade to the latest version. If you used a custom logger with this
-        version, review your logs and rotate any credentials or other secrets. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
-
-  '@smithy/core@3.31.1':
-    resolution: {integrity: sha512-CyogUINxvi7C7LDsh8Syo6hVJOT9ckz4rG8dRZfTJ8r91HkMY59PnNooaj7WcHyxEkxPfBAmbgztZU+xTo76lg==}
-    engines: {node: '>=18.0.0'}
-    deprecated: |-
-      Deprecated due to a bug in custom logger data redaction. Upgrade to the latest version. If you used a custom logger with this
-        version, review your logs and rotate any credentials or other secrets. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
-
   '@smithy/core@3.33.3':
     resolution: {integrity: sha512-CsOeKq/9kA3y6VJHt+/+VTCtBaxJ4OTFpgrjIUhPpDIKxBci1k2bJaQASF2h/ELWrulGp+t97DZ0mevfAD8idg==}
     engines: {node: '>=18.0.0'}
@@ -4047,20 +4127,24 @@ packages:
       Deprecated due to a bug in custom logger data redaction. Upgrade to the latest version. If you used a custom logger with this
         version, review your logs and rotate any credentials or other secrets. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
-  '@smithy/credential-provider-imds@4.3.8':
-    resolution: {integrity: sha512-5cAM+KZC02sTqDt6NaLXyu50M/GNMd1eTzDVR8Lb0BBsVtu7RWHo47VPPEEv1vt3Yub6uzr+M5FHC+GtoT0USg==}
+  '@smithy/core@3.41.0':
+    resolution: {integrity: sha512-fuZ34H1uizS3WgcX9VXG7Uy8od5A5/kCc+CR3NkHLNm2H/BE9AUHG02VIdu8ZB7FYhLqsr/RZbqAoXuOCg/Oxg==}
     engines: {node: '>=18.0.0'}
 
   '@smithy/credential-provider-imds@4.4.16':
     resolution: {integrity: sha512-QfuLWAkLzptffFW980AFeHZFdqds2B64rpEd3uJ6lgs3xVn9QegGMUgUcj+4d7dRrAsya3r58ZKpku97WcFb4w==}
     engines: {node: '>=18.0.0'}
 
-  '@smithy/fetch-http-handler@5.4.6':
-    resolution: {integrity: sha512-FEwEYJ1jlBKdhe9TPzfghEi1bP55ZeEImlDkEa62bBBYzUcnB6RUCyuiS2mqKt6ZVjUbBgcNhzfIctH+Hevx9g==}
+  '@smithy/credential-provider-imds@4.5.2':
+    resolution: {integrity: sha512-A9uSdn72ozbRUSit0eib0TW7nXuNPlaeM0zcGkJ+nE6tFcSDbnmtwoxbTCFBukVQcszDAyvsd7+rTduPTXpygg==}
     engines: {node: '>=18.0.0'}
 
   '@smithy/fetch-http-handler@5.8.0':
     resolution: {integrity: sha512-ycSJu3tFAQ4v04CBB0agqFMVsSQ1iG3yw+SpgxRqKfaURpQD4CZ8Wn0zPMmSnOuTpTh65Vz+EA0rMrw089wvkA==}
+    engines: {node: '>=18.0.0'}
+
+  '@smithy/fetch-http-handler@5.8.1':
+    resolution: {integrity: sha512-h8BdMUrUBhMhMaeK7QqAdINRZezCGuYOCpcOZZ1ewxbHST9rdTd09xwNpvLTYfzDRehxQiReK4SKbdYZxBA+ew==}
     engines: {node: '>=18.0.0'}
 
   '@smithy/is-array-buffer@2.2.0':
@@ -4071,28 +4155,24 @@ packages:
     resolution: {integrity: sha512-ThMkboGeONWXAelq9FvGsuJC4rOi+qyC4/zhUF58xYpxUg5sQKx2VXZYJmtNjr4dSuBJ1HeJXETQILCz3wOHvw==}
     engines: {node: '>=18.0.0'}
 
-  '@smithy/node-http-handler@4.7.7':
-    resolution: {integrity: sha512-ZAFvHXrEk6K180EVhmZVg8GU5pUH5BSFqRs27JW3j1qEFx9YyYwWFx17x/MHcjALYimGAji7qEOlF1++be+G5A==}
-    engines: {node: '>=18.0.0'}
-
-  '@smithy/signature-v4@5.4.6':
-    resolution: {integrity: sha512-Ojg4B6oIDlIr1R86xCDJt1zJWnYa0VINmqdjfe9qxWjdRivHalZ3iSlQgVqYbW0MdpFOC5XfHEWsnbmdnpIILQ==}
+  '@smithy/node-http-handler@4.14.2':
+    resolution: {integrity: sha512-i1uORV1v3qBqP43ayRKzIdm1q5x14tf8N4Dd06/QUX1Szm6VxHMrTsu20X5E63UFsaNZCRjI4SXG0jDmqYa+3w==}
     engines: {node: '>=18.0.0'}
 
   '@smithy/signature-v4@5.6.12':
     resolution: {integrity: sha512-I6KLtq3H0qqSuV9vLglfi8puHqzygzWHOnI4z/Rdoo+q50vvo18vBRdPAvvEtcaKROz7Zn6qnPa14kRfPH6PcQ==}
     engines: {node: '>=18.0.0'}
 
-  '@smithy/types@4.14.3':
-    resolution: {integrity: sha512-YupL0ZWmFtJexUN2cHzkvvF/b9pKrtAIfT1o7/oY/Ppu8IYeZ+lDPM5vZdQJaSeA132dJCqojjGC9NhXeF71VQ==}
-    engines: {node: '>=18.0.0'}
-
-  '@smithy/types@4.16.1':
-    resolution: {integrity: sha512-0JFs3V2y2M9tKW5na/qxe69Zv+uxLMO7QBbhxF/FHu/Gp2NFZAAL9tWl9PU02xxo07pb3G9FTyjNc6D5uZrJIg==}
+  '@smithy/signature-v4@5.7.5':
+    resolution: {integrity: sha512-WPjdr5oWOk1LArpI4pavu+fSo+/evi0Re1olxGvqwuZopd4gYR1UGCi+Soyn/IjmafqbWs+ZC+3AKxJS3ZpwUg==}
     engines: {node: '>=18.0.0'}
 
   '@smithy/types@4.18.0':
     resolution: {integrity: sha512-CgB6HHWer/vrKps24ulRIbpcpb7K4xAU7SkZ7YHzBPlwHsvsrCJFEXK421s+cJzX+ZrqtA/TuU5w1HzI7k9N8A==}
+    engines: {node: '>=18.0.0'}
+
+  '@smithy/types@4.20.0':
+    resolution: {integrity: sha512-lCA6QG22dPk9ecHbv91jDQZsmtPUjdS1aE2Il6NNPqe7DrYc0dZQi6DhcESk2KYXH2sp5xbAcGdYMZDFnuzA2A==}
     engines: {node: '>=18.0.0'}
 
   '@smithy/util-buffer-from@2.2.0':
@@ -5778,6 +5858,10 @@ packages:
     resolution: {integrity: sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==}
     engines: {node: '>=6'}
 
+  cluster-key-slot@1.1.1:
+    resolution: {integrity: sha512-rwHwUfXL40Chm1r08yrhU3qpUvdVlgkKNeyeGPOxnW8/SyVDvgRaed/Uz54AqWNaTCAThlj6QAs3TZcKI0xDEw==}
+    engines: {node: '>=0.10.0'}
+
   co-body@6.2.0:
     resolution: {integrity: sha512-Kbpv2Yd1NdL1V/V4cwLVxraHDV6K8ayohr2rmH0J87Er8+zJjcTa6dAn9QMPC9CRgU8+aNajKbSf1TzDB1yKPA==}
     engines: {node: '>=8.0.0'}
@@ -6487,10 +6571,6 @@ packages:
   fast-xml-builder@1.2.0:
     resolution: {integrity: sha512-00aAWieqff+ZJhsXA4g1g7M8k+7AYoMUUHF+/zFb5U6Uv/P0Vl4QZo84/IcufzYalLuEj9928bXN9PbbFzMF0Q==}
 
-  fast-xml-parser@5.7.3:
-    resolution: {integrity: sha512-C0AaNuC+mscy6vrAQKAc/rMq+zAPHodfHGZu4sGVehvAQt/JLG1O5zEcYcXSY5zSqr4YVgxsB+pHXTq0i7eDlg==}
-    hasBin: true
-
   fast-xml-parser@5.8.0:
     resolution: {integrity: sha512-6bIM7fsJxeo3uXv7OncQYsBAMPJ7V16Slahl/6M98C/i2q+vB1+4a0MtrvYwDFEUrwDSbAmeLDRXsOBwrL7yAg==}
     hasBin: true
@@ -6892,6 +6972,10 @@ packages:
 
   interface-store@6.0.3:
     resolution: {integrity: sha512-+WvfEZnFUhRwFxgz+QCQi7UC6o9AM0EHM9bpIe2Nhqb100NHCsTvNAn4eJgvgV2/tmLo1MP9nGxQKEcZTAueLA==}
+
+  ioredis@5.11.1:
+    resolution: {integrity: sha512-ehuGcf94bQXhfagULNXrJdfnWO38v070jxSx/qE87Kjzmu2fU7ro5EFAb+OPituLqgfyuQaym5DlrNydW2sJ9A==}
+    engines: {node: '>=12.22.0'}
 
   ip-address@10.7.6:
     resolution: {integrity: sha512-00LYkM6byILa9eQIx6qoaXCM40xTLd56AZ4vyaPW3YTyb49VZYPo5xsiAq4tuQ54GH4R7gVdYScJ1B7B77PuTg==}
@@ -8653,6 +8737,14 @@ packages:
     resolution: {integrity: sha512-6tDA8g98We0zd0GvVeMT9arEOnTw9qM03L9cJXaCjrip1OO764RDBLBfrB4cwzNGDj5OA5ioymC9GkizgWJDUg==}
     engines: {node: '>=8'}
 
+  redis-errors@1.2.0:
+    resolution: {integrity: sha512-1qny3OExCf0UvUV/5wpYKf2YwPcOqXzkwKKSmKHiE6ZMQs5heeE/c8eXK+PNllPvmjgAbfnsbpkGZWy8cBpn9w==}
+    engines: {node: '>=4'}
+
+  redis-parser@3.0.0:
+    resolution: {integrity: sha512-DJnGAeenTdpMEH6uAJRK/uiyEIH9WVsUmoLwzudwGJUwZPp80PDBWPHXSAGNPwNvIXAbe7MSUB1zQFugFml66A==}
+    engines: {node: '>=4'}
+
   reduce-flatten@2.0.0:
     resolution: {integrity: sha512-EJ4UNY/U1t2P/2k6oqotuX2Cc3T6nxJwsM0N0asT7dhrtH1ltUxDn4NalSYmPE2rCkVpcf/X6R0wDwcFpzhd4w==}
     engines: {node: '>=6'}
@@ -8956,6 +9048,9 @@ packages:
 
   stackback@0.0.2:
     resolution: {integrity: sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==}
+
+  standard-as-callback@2.1.0:
+    resolution: {integrity: sha512-qoRRSyROncaz1z0mvYqIE4lCd9p2R90i6GxW3uZv5ucSu8tU7B5HXUP1gG8pVZsYNVaXjk8ClXHPttLyxAL48A==}
 
   statuses@1.5.0:
     resolution: {integrity: sha512-OpZ3zP+jT1PI7I8nemJX4AKmAX070ZkYPVWV/AaKTJl+tXCTGyVdC1a4SL8RUQYEwk/f34ZX8UTykN68FwrqAA==}
@@ -9991,7 +10086,7 @@ snapshots:
     dependencies:
       '@aws-crypto/supports-web-crypto': 5.2.0
       '@aws-crypto/util': 5.2.0
-      '@aws-sdk/types': 3.974.2
+      '@aws-sdk/types': 3.974.5
       '@aws-sdk/util-locate-window': 3.965.6
       '@smithy/util-utf8': 2.3.0
       tslib: 2.8.1
@@ -10001,7 +10096,7 @@ snapshots:
       '@aws-crypto/sha256-js': 5.2.0
       '@aws-crypto/supports-web-crypto': 5.2.0
       '@aws-crypto/util': 5.2.0
-      '@aws-sdk/types': 3.974.3
+      '@aws-sdk/types': 3.974.5
       '@aws-sdk/util-locate-window': 3.965.6
       '@smithy/util-utf8': 2.3.0
       tslib: 2.8.1
@@ -10009,7 +10104,7 @@ snapshots:
   '@aws-crypto/sha256-js@5.2.0':
     dependencies:
       '@aws-crypto/util': 5.2.0
-      '@aws-sdk/types': 3.974.3
+      '@aws-sdk/types': 3.974.5
       tslib: 2.8.1
 
   '@aws-crypto/supports-web-crypto@5.2.0':
@@ -10038,38 +10133,27 @@ snapshots:
       '@aws-crypto/sha1-browser': 5.2.0
       '@aws-crypto/sha256-browser': 5.2.0
       '@aws-crypto/sha256-js': 5.2.0
-      '@aws-sdk/core': 3.974.18
+      '@aws-sdk/core': 3.977.9
       '@aws-sdk/credential-provider-node': 3.972.52
       '@aws-sdk/middleware-flexible-checksums': 3.974.27
       '@aws-sdk/middleware-sdk-s3': 3.972.48
-      '@aws-sdk/signature-v4-multi-region': 3.996.32
-      '@aws-sdk/types': 3.973.11
-      '@smithy/core': 3.24.6
-      '@smithy/fetch-http-handler': 5.4.6
-      '@smithy/node-http-handler': 4.7.7
-      '@smithy/types': 4.14.3
+      '@aws-sdk/signature-v4-multi-region': 3.996.44
+      '@aws-sdk/types': 3.974.5
+      '@smithy/core': 3.33.3
+      '@smithy/fetch-http-handler': 5.8.0
+      '@smithy/node-http-handler': 4.12.1
+      '@smithy/types': 4.18.0
       tslib: 2.8.1
 
-  '@aws-sdk/core@3.974.18':
+  '@aws-sdk/client-secrets-manager@3.1170.0':
     dependencies:
-      '@aws-sdk/types': 3.974.2
-      '@aws-sdk/xml-builder': 3.972.28
-      '@aws/lambda-invoke-store': 0.2.4
-      '@smithy/core': 3.31.1
-      '@smithy/signature-v4': 5.4.6
-      '@smithy/types': 4.16.1
-      bowser: 2.14.1
-      tslib: 2.8.1
-
-  '@aws-sdk/core@3.977.6':
-    dependencies:
-      '@aws-sdk/types': 3.974.2
-      '@aws-sdk/xml-builder': 3.972.37
-      '@aws/lambda-invoke-store': 0.3.0
-      '@smithy/core': 3.31.1
-      '@smithy/signature-v4': 5.6.12
-      '@smithy/types': 4.16.1
-      bowser: 2.14.1
+      '@aws-sdk/core': 3.981.0
+      '@aws-sdk/credential-provider-node': 3.972.97
+      '@aws-sdk/types': 3.975.1
+      '@smithy/core': 3.41.0
+      '@smithy/fetch-http-handler': 5.8.1
+      '@smithy/node-http-handler': 4.14.2
+      '@smithy/types': 4.20.0
       tslib: 2.8.1
 
   '@aws-sdk/core@3.977.9':
@@ -10083,12 +10167,15 @@ snapshots:
       bowser: 2.14.1
       tslib: 2.8.1
 
-  '@aws-sdk/credential-provider-env@3.972.44':
+  '@aws-sdk/core@3.981.0':
     dependencies:
-      '@aws-sdk/core': 3.977.9
-      '@aws-sdk/types': 3.974.5
-      '@smithy/core': 3.33.3
-      '@smithy/types': 4.18.0
+      '@aws-sdk/types': 3.975.1
+      '@aws-sdk/xml-builder': 3.972.43
+      '@aws/lambda-invoke-store': 0.3.0
+      '@smithy/core': 3.41.0
+      '@smithy/signature-v4': 5.7.5
+      '@smithy/types': 4.20.0
+      bowser: 2.14.1
       tslib: 2.8.1
 
   '@aws-sdk/credential-provider-env@3.972.67':
@@ -10099,14 +10186,12 @@ snapshots:
       '@smithy/types': 4.18.0
       tslib: 2.8.1
 
-  '@aws-sdk/credential-provider-http@3.972.46':
+  '@aws-sdk/credential-provider-env@3.972.84':
     dependencies:
-      '@aws-sdk/core': 3.977.9
-      '@aws-sdk/types': 3.974.5
-      '@smithy/core': 3.33.3
-      '@smithy/fetch-http-handler': 5.8.0
-      '@smithy/node-http-handler': 4.12.1
-      '@smithy/types': 4.18.0
+      '@aws-sdk/core': 3.981.0
+      '@aws-sdk/types': 3.975.1
+      '@smithy/core': 3.41.0
+      '@smithy/types': 4.20.0
       tslib: 2.8.1
 
   '@aws-sdk/credential-provider-http@3.972.69':
@@ -10119,6 +10204,16 @@ snapshots:
       '@smithy/types': 4.18.0
       tslib: 2.8.1
 
+  '@aws-sdk/credential-provider-http@3.972.86':
+    dependencies:
+      '@aws-sdk/core': 3.981.0
+      '@aws-sdk/types': 3.975.1
+      '@smithy/core': 3.41.0
+      '@smithy/fetch-http-handler': 5.8.1
+      '@smithy/node-http-handler': 4.14.2
+      '@smithy/types': 4.20.0
+      tslib: 2.8.1
+
   '@aws-sdk/credential-provider-ini@3.972.50':
     dependencies:
       '@aws-sdk/core': 3.977.9
@@ -10127,43 +10222,74 @@ snapshots:
       '@aws-sdk/credential-provider-login': 3.972.49
       '@aws-sdk/credential-provider-process': 3.972.67
       '@aws-sdk/credential-provider-sso': 3.973.11
-      '@aws-sdk/credential-provider-web-identity': 3.972.73
-      '@aws-sdk/nested-clients': 3.997.17
+      '@aws-sdk/credential-provider-web-identity': 3.972.74
+      '@aws-sdk/nested-clients': 3.997.42
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/credential-provider-imds': 4.4.16
       '@smithy/types': 4.18.0
       tslib: 2.8.1
 
+  '@aws-sdk/credential-provider-ini@3.973.30':
+    dependencies:
+      '@aws-sdk/core': 3.981.0
+      '@aws-sdk/credential-provider-env': 3.972.84
+      '@aws-sdk/credential-provider-http': 3.972.86
+      '@aws-sdk/credential-provider-login': 3.972.92
+      '@aws-sdk/credential-provider-process': 3.972.84
+      '@aws-sdk/credential-provider-sso': 3.973.28
+      '@aws-sdk/credential-provider-web-identity': 3.972.90
+      '@aws-sdk/nested-clients': 3.998.3
+      '@aws-sdk/types': 3.975.1
+      '@smithy/core': 3.41.0
+      '@smithy/credential-provider-imds': 4.5.2
+      '@smithy/types': 4.20.0
+      tslib: 2.8.1
+
   '@aws-sdk/credential-provider-login@3.972.49':
     dependencies:
       '@aws-sdk/core': 3.977.9
-      '@aws-sdk/nested-clients': 3.997.41
+      '@aws-sdk/nested-clients': 3.997.42
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/types': 4.18.0
+      tslib: 2.8.1
+
+  '@aws-sdk/credential-provider-login@3.972.92':
+    dependencies:
+      '@aws-sdk/core': 3.981.0
+      '@aws-sdk/nested-clients': 3.998.3
+      '@aws-sdk/types': 3.975.1
+      '@smithy/core': 3.41.0
+      '@smithy/types': 4.20.0
       tslib: 2.8.1
 
   '@aws-sdk/credential-provider-node@3.972.52':
     dependencies:
-      '@aws-sdk/credential-provider-env': 3.972.44
-      '@aws-sdk/credential-provider-http': 3.972.46
+      '@aws-sdk/credential-provider-env': 3.972.67
+      '@aws-sdk/credential-provider-http': 3.972.69
       '@aws-sdk/credential-provider-ini': 3.972.50
-      '@aws-sdk/credential-provider-process': 3.972.44
-      '@aws-sdk/credential-provider-sso': 3.972.49
-      '@aws-sdk/credential-provider-web-identity': 3.972.49
-      '@aws-sdk/types': 3.974.2
-      '@smithy/core': 3.31.1
-      '@smithy/credential-provider-imds': 4.3.8
-      '@smithy/types': 4.16.1
-      tslib: 2.8.1
-
-  '@aws-sdk/credential-provider-process@3.972.44':
-    dependencies:
-      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/credential-provider-process': 3.972.67
+      '@aws-sdk/credential-provider-sso': 3.973.11
+      '@aws-sdk/credential-provider-web-identity': 3.972.74
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
+      '@smithy/credential-provider-imds': 4.4.16
       '@smithy/types': 4.18.0
+      tslib: 2.8.1
+
+  '@aws-sdk/credential-provider-node@3.972.97':
+    dependencies:
+      '@aws-sdk/credential-provider-env': 3.972.84
+      '@aws-sdk/credential-provider-http': 3.972.86
+      '@aws-sdk/credential-provider-ini': 3.973.30
+      '@aws-sdk/credential-provider-process': 3.972.84
+      '@aws-sdk/credential-provider-sso': 3.973.28
+      '@aws-sdk/credential-provider-web-identity': 3.972.90
+      '@aws-sdk/types': 3.975.1
+      '@smithy/core': 3.41.0
+      '@smithy/credential-provider-imds': 4.5.2
+      '@smithy/types': 4.20.0
       tslib: 2.8.1
 
   '@aws-sdk/credential-provider-process@3.972.67':
@@ -10174,42 +10300,32 @@ snapshots:
       '@smithy/types': 4.18.0
       tslib: 2.8.1
 
-  '@aws-sdk/credential-provider-sso@3.972.49':
+  '@aws-sdk/credential-provider-process@3.972.84':
     dependencies:
-      '@aws-sdk/core': 3.977.9
-      '@aws-sdk/nested-clients': 3.997.17
-      '@aws-sdk/token-providers': 3.1063.0
-      '@aws-sdk/types': 3.974.5
-      '@smithy/core': 3.33.3
-      '@smithy/types': 4.18.0
+      '@aws-sdk/core': 3.981.0
+      '@aws-sdk/types': 3.975.1
+      '@smithy/core': 3.41.0
+      '@smithy/types': 4.20.0
       tslib: 2.8.1
 
   '@aws-sdk/credential-provider-sso@3.973.11':
     dependencies:
       '@aws-sdk/core': 3.977.9
-      '@aws-sdk/nested-clients': 3.997.41
+      '@aws-sdk/nested-clients': 3.997.42
       '@aws-sdk/token-providers': 3.1103.0
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/types': 4.18.0
       tslib: 2.8.1
 
-  '@aws-sdk/credential-provider-web-identity@3.972.49':
+  '@aws-sdk/credential-provider-sso@3.973.28':
     dependencies:
-      '@aws-sdk/core': 3.977.9
-      '@aws-sdk/nested-clients': 3.997.17
-      '@aws-sdk/types': 3.974.5
-      '@smithy/core': 3.33.3
-      '@smithy/types': 4.18.0
-      tslib: 2.8.1
-
-  '@aws-sdk/credential-provider-web-identity@3.972.73':
-    dependencies:
-      '@aws-sdk/core': 3.977.9
-      '@aws-sdk/nested-clients': 3.997.41
-      '@aws-sdk/types': 3.974.5
-      '@smithy/core': 3.33.3
-      '@smithy/types': 4.18.0
+      '@aws-sdk/core': 3.981.0
+      '@aws-sdk/nested-clients': 3.998.3
+      '@aws-sdk/token-providers': 3.1166.0
+      '@aws-sdk/types': 3.975.1
+      '@smithy/core': 3.41.0
+      '@smithy/types': 4.20.0
       tslib: 2.8.1
 
   '@aws-sdk/credential-provider-web-identity@3.972.74':
@@ -10220,7 +10336,15 @@ snapshots:
       '@smithy/core': 3.33.3
       '@smithy/types': 4.18.0
       tslib: 2.8.1
-    optional: true
+
+  '@aws-sdk/credential-provider-web-identity@3.972.90':
+    dependencies:
+      '@aws-sdk/core': 3.981.0
+      '@aws-sdk/nested-clients': 3.998.3
+      '@aws-sdk/types': 3.975.1
+      '@smithy/core': 3.41.0
+      '@smithy/types': 4.20.0
+      tslib: 2.8.1
 
   '@aws-sdk/middleware-flexible-checksums@3.974.27':
     dependencies:
@@ -10229,34 +10353,10 @@ snapshots:
 
   '@aws-sdk/middleware-sdk-s3@3.972.48':
     dependencies:
-      '@aws-sdk/core': 3.977.6
-      '@aws-sdk/signature-v4-multi-region': 3.996.32
-      '@aws-sdk/types': 3.974.2
-      '@smithy/core': 3.31.1
-      '@smithy/types': 4.16.1
-      tslib: 2.8.1
-
-  '@aws-sdk/nested-clients@3.997.17':
-    dependencies:
-      '@aws-crypto/sha256-browser': 5.2.0
-      '@aws-crypto/sha256-js': 5.2.0
       '@aws-sdk/core': 3.977.9
-      '@aws-sdk/signature-v4-multi-region': 3.996.32
+      '@aws-sdk/signature-v4-multi-region': 3.996.44
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
-      '@smithy/fetch-http-handler': 5.8.0
-      '@smithy/node-http-handler': 4.12.1
-      '@smithy/types': 4.18.0
-      tslib: 2.8.1
-
-  '@aws-sdk/nested-clients@3.997.41':
-    dependencies:
-      '@aws-sdk/core': 3.977.9
-      '@aws-sdk/signature-v4-multi-region': 3.996.43
-      '@aws-sdk/types': 3.974.5
-      '@smithy/core': 3.33.3
-      '@smithy/fetch-http-handler': 5.8.0
-      '@smithy/node-http-handler': 4.12.1
       '@smithy/types': 4.18.0
       tslib: 2.8.1
 
@@ -10270,20 +10370,16 @@ snapshots:
       '@smithy/node-http-handler': 4.12.1
       '@smithy/types': 4.18.0
       tslib: 2.8.1
-    optional: true
 
-  '@aws-sdk/signature-v4-multi-region@3.996.32':
+  '@aws-sdk/nested-clients@3.998.3':
     dependencies:
-      '@aws-sdk/types': 3.974.2
-      '@smithy/signature-v4': 5.4.6
-      '@smithy/types': 4.16.1
-      tslib: 2.8.1
-
-  '@aws-sdk/signature-v4-multi-region@3.996.43':
-    dependencies:
-      '@aws-sdk/types': 3.974.5
-      '@smithy/signature-v4': 5.6.12
-      '@smithy/types': 4.18.0
+      '@aws-sdk/core': 3.981.0
+      '@aws-sdk/signature-v4-multi-region': 3.996.52
+      '@aws-sdk/types': 3.975.1
+      '@smithy/core': 3.41.0
+      '@smithy/fetch-http-handler': 5.8.1
+      '@smithy/node-http-handler': 4.14.2
+      '@smithy/types': 4.20.0
       tslib: 2.8.1
 
   '@aws-sdk/signature-v4-multi-region@3.996.44':
@@ -10292,39 +10388,30 @@ snapshots:
       '@smithy/signature-v4': 5.6.12
       '@smithy/types': 4.18.0
       tslib: 2.8.1
-    optional: true
 
-  '@aws-sdk/token-providers@3.1063.0':
+  '@aws-sdk/signature-v4-multi-region@3.996.52':
     dependencies:
-      '@aws-sdk/core': 3.977.9
-      '@aws-sdk/nested-clients': 3.997.41
-      '@aws-sdk/types': 3.974.5
-      '@smithy/core': 3.33.3
-      '@smithy/types': 4.18.0
+      '@aws-sdk/types': 3.975.1
+      '@smithy/signature-v4': 5.7.5
+      '@smithy/types': 4.20.0
       tslib: 2.8.1
 
   '@aws-sdk/token-providers@3.1103.0':
     dependencies:
       '@aws-sdk/core': 3.977.9
-      '@aws-sdk/nested-clients': 3.997.41
+      '@aws-sdk/nested-clients': 3.997.42
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/types': 4.18.0
       tslib: 2.8.1
 
-  '@aws-sdk/types@3.973.11':
+  '@aws-sdk/token-providers@3.1166.0':
     dependencies:
-      '@smithy/types': 4.16.1
-      tslib: 2.8.1
-
-  '@aws-sdk/types@3.974.2':
-    dependencies:
-      '@smithy/types': 4.16.1
-      tslib: 2.8.1
-
-  '@aws-sdk/types@3.974.3':
-    dependencies:
-      '@smithy/types': 4.16.1
+      '@aws-sdk/core': 3.981.0
+      '@aws-sdk/nested-clients': 3.998.3
+      '@aws-sdk/types': 3.975.1
+      '@smithy/core': 3.41.0
+      '@smithy/types': 4.20.0
       tslib: 2.8.1
 
   '@aws-sdk/types@3.974.5':
@@ -10332,19 +10419,13 @@ snapshots:
       '@smithy/types': 4.18.0
       tslib: 2.8.1
 
+  '@aws-sdk/types@3.975.1':
+    dependencies:
+      '@smithy/types': 4.20.0
+      tslib: 2.8.1
+
   '@aws-sdk/util-locate-window@3.965.6':
     dependencies:
-      tslib: 2.8.1
-
-  '@aws-sdk/xml-builder@3.972.28':
-    dependencies:
-      '@smithy/types': 4.18.0
-      fast-xml-parser: 5.7.3
-      tslib: 2.8.1
-
-  '@aws-sdk/xml-builder@3.972.37':
-    dependencies:
-      '@smithy/types': 4.18.0
       tslib: 2.8.1
 
   '@aws-sdk/xml-builder@3.972.40':
@@ -10352,7 +10433,10 @@ snapshots:
       '@smithy/types': 4.18.0
       tslib: 2.8.1
 
-  '@aws/lambda-invoke-store@0.2.4': {}
+  '@aws-sdk/xml-builder@3.972.43':
+    dependencies:
+      '@smithy/types': 4.20.0
+      tslib: 2.8.1
 
   '@aws/lambda-invoke-store@0.3.0': {}
 
@@ -12408,6 +12492,8 @@ snapshots:
 
   '@iarna/toml@2.2.5': {}
 
+  '@ioredis/commands@1.10.0': {}
+
   '@isaacs/cliui@8.0.2':
     dependencies:
       string-width: 5.1.2
@@ -13691,7 +13777,7 @@ snapshots:
 
   '@protobufjs/utf8@1.1.1': {}
 
-  '@rainbow-me/rainbowkit@2.2.11(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.7.3)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(wagmi@2.19.5(@tanstack/query-core@5.101.4)(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(zod@4.4.3))':
+  '@rainbow-me/rainbowkit@2.2.11(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.7.3)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(wagmi@2.19.5(@tanstack/query-core@5.101.4)(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(zod@4.4.3))':
     dependencies:
       '@tanstack/react-query': 5.101.4(react@19.2.0)
       '@vanilla-extract/css': 1.20.1
@@ -13704,7 +13790,7 @@ snapshots:
       react-remove-scroll: 2.7.2(@types/react@19.1.17)(react@19.2.0)
       ua-parser-js: 2.0.10
       viem: 2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
-      wagmi: 2.19.5(@tanstack/query-core@5.101.4)(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(zod@4.4.3)
+      wagmi: 2.19.5(@tanstack/query-core@5.101.4)(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(zod@4.4.3)
     transitivePeerDependencies:
       - '@types/react'
       - babel-plugin-macros
@@ -13728,11 +13814,11 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@reown/appkit-controllers@1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
+  '@reown/appkit-controllers@1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
     dependencies:
       '@reown/appkit-common': 1.8.19(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
       '@reown/appkit-wallet': 1.8.19(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
-      '@walletconnect/universal-provider': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@walletconnect/universal-provider': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
       valtio: 2.1.7(@types/react@19.1.17)(react@19.2.0)
       viem: 2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
     transitivePeerDependencies:
@@ -13763,12 +13849,12 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@reown/appkit-pay@1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(zod@4.4.3)':
+  '@reown/appkit-pay@1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(zod@4.4.3)':
     dependencies:
       '@reown/appkit-common': 1.8.19(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
-      '@reown/appkit-controllers': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
-      '@reown/appkit-ui': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
-      '@reown/appkit-utils': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@19.1.17)(react@19.2.0))(zod@4.4.3)
+      '@reown/appkit-controllers': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@reown/appkit-ui': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@reown/appkit-utils': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@19.1.17)(react@19.2.0))(zod@4.4.3)
       lit: 3.3.0
       valtio: 2.1.7(@types/react@19.1.17)(react@19.2.0)
     transitivePeerDependencies:
@@ -13811,13 +13897,13 @@ snapshots:
     dependencies:
       buffer: 6.0.3
 
-  '@reown/appkit-scaffold-ui@1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@19.1.17)(react@19.2.0))(zod@4.4.3)':
+  '@reown/appkit-scaffold-ui@1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@19.1.17)(react@19.2.0))(zod@4.4.3)':
     dependencies:
       '@reown/appkit-common': 1.8.19(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
-      '@reown/appkit-controllers': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
-      '@reown/appkit-pay': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(zod@4.4.3)
-      '@reown/appkit-ui': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
-      '@reown/appkit-utils': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@19.1.17)(react@19.2.0))(zod@4.4.3)
+      '@reown/appkit-controllers': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@reown/appkit-pay': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@reown/appkit-ui': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@reown/appkit-utils': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@19.1.17)(react@19.2.0))(zod@4.4.3)
       '@reown/appkit-wallet': 1.8.19(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
       lit: 3.3.0
     transitivePeerDependencies:
@@ -13857,11 +13943,11 @@ snapshots:
       - valtio
       - zod
 
-  '@reown/appkit-ui@1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
+  '@reown/appkit-ui@1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
     dependencies:
       '@phosphor-icons/webcomponents': 2.1.5
       '@reown/appkit-common': 1.8.19(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
-      '@reown/appkit-controllers': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@reown/appkit-controllers': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
       '@reown/appkit-wallet': 1.8.19(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
       lit: 3.3.0
       qrcode: 1.5.3
@@ -13893,15 +13979,15 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@reown/appkit-utils@1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@19.1.17)(react@19.2.0))(zod@4.4.3)':
+  '@reown/appkit-utils@1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@19.1.17)(react@19.2.0))(zod@4.4.3)':
     dependencies:
       '@reown/appkit-common': 1.8.19(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
-      '@reown/appkit-controllers': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@reown/appkit-controllers': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
       '@reown/appkit-polyfills': 1.8.19
       '@reown/appkit-wallet': 1.8.19(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
       '@wallet-standard/wallet': 1.1.0
       '@walletconnect/logger': 3.0.2
-      '@walletconnect/universal-provider': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@walletconnect/universal-provider': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
       valtio: 2.1.7(@types/react@19.1.17)(react@19.2.0)
       viem: 2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
     optionalDependencies:
@@ -13955,17 +14041,17 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@reown/appkit@1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(zod@4.4.3)':
+  '@reown/appkit@1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(zod@4.4.3)':
     dependencies:
       '@reown/appkit-common': 1.8.19(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
-      '@reown/appkit-controllers': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
-      '@reown/appkit-pay': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@reown/appkit-controllers': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@reown/appkit-pay': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(zod@4.4.3)
       '@reown/appkit-polyfills': 1.8.19
-      '@reown/appkit-scaffold-ui': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@19.1.17)(react@19.2.0))(zod@4.4.3)
-      '@reown/appkit-ui': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
-      '@reown/appkit-utils': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@19.1.17)(react@19.2.0))(zod@4.4.3)
+      '@reown/appkit-scaffold-ui': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@19.1.17)(react@19.2.0))(zod@4.4.3)
+      '@reown/appkit-ui': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@reown/appkit-utils': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@19.1.17)(react@19.2.0))(zod@4.4.3)
       '@reown/appkit-wallet': 1.8.19(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
-      '@walletconnect/universal-provider': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@walletconnect/universal-provider': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
       bs58: 6.0.0
       semver: 7.7.2
       valtio: 2.1.7(@types/react@19.1.17)(react@19.2.0)
@@ -14226,26 +14312,14 @@ snapshots:
     dependencies:
       '@sinonjs/commons': 3.0.1
 
-  '@smithy/core@3.24.6':
-    dependencies:
-      '@aws-crypto/crc32': 5.2.0
-      '@smithy/types': 4.16.1
-      tslib: 2.8.1
-
-  '@smithy/core@3.31.1':
-    dependencies:
-      '@smithy/types': 4.16.1
-      tslib: 2.8.1
-
   '@smithy/core@3.33.3':
     dependencies:
       '@smithy/types': 4.18.0
       tslib: 2.8.1
 
-  '@smithy/credential-provider-imds@4.3.8':
+  '@smithy/core@3.41.0':
     dependencies:
-      '@smithy/core': 3.33.3
-      '@smithy/types': 4.18.0
+      '@smithy/types': 4.20.0
       tslib: 2.8.1
 
   '@smithy/credential-provider-imds@4.4.16':
@@ -14254,16 +14328,22 @@ snapshots:
       '@smithy/types': 4.18.0
       tslib: 2.8.1
 
-  '@smithy/fetch-http-handler@5.4.6':
+  '@smithy/credential-provider-imds@4.5.2':
     dependencies:
-      '@smithy/core': 3.31.1
-      '@smithy/types': 4.16.1
+      '@smithy/core': 3.41.0
+      '@smithy/types': 4.20.0
       tslib: 2.8.1
 
   '@smithy/fetch-http-handler@5.8.0':
     dependencies:
       '@smithy/core': 3.33.3
       '@smithy/types': 4.18.0
+      tslib: 2.8.1
+
+  '@smithy/fetch-http-handler@5.8.1':
+    dependencies:
+      '@smithy/core': 3.41.0
+      '@smithy/types': 4.20.0
       tslib: 2.8.1
 
   '@smithy/is-array-buffer@2.2.0':
@@ -14276,16 +14356,10 @@ snapshots:
       '@smithy/types': 4.18.0
       tslib: 2.8.1
 
-  '@smithy/node-http-handler@4.7.7':
+  '@smithy/node-http-handler@4.14.2':
     dependencies:
-      '@smithy/core': 3.31.1
-      '@smithy/types': 4.16.1
-      tslib: 2.8.1
-
-  '@smithy/signature-v4@5.4.6':
-    dependencies:
-      '@smithy/core': 3.33.3
-      '@smithy/types': 4.18.0
+      '@smithy/core': 3.41.0
+      '@smithy/types': 4.20.0
       tslib: 2.8.1
 
   '@smithy/signature-v4@5.6.12':
@@ -14294,15 +14368,17 @@ snapshots:
       '@smithy/types': 4.18.0
       tslib: 2.8.1
 
-  '@smithy/types@4.14.3':
+  '@smithy/signature-v4@5.7.5':
     dependencies:
-      tslib: 2.8.1
-
-  '@smithy/types@4.16.1':
-    dependencies:
+      '@smithy/core': 3.41.0
+      '@smithy/types': 4.20.0
       tslib: 2.8.1
 
   '@smithy/types@4.18.0':
+    dependencies:
+      tslib: 2.8.1
+
+  '@smithy/types@4.20.0':
     dependencies:
       tslib: 2.8.1
 
@@ -15060,7 +15136,6 @@ snapshots:
       '@types/node': 22.19.20
       pg-protocol: 1.16.0
       pg-types: 2.2.0
-    optional: true
 
   '@types/react-dom@19.1.11(@types/react@19.1.17)':
     dependencies:
@@ -15310,11 +15385,11 @@ snapshots:
       execa: 5.1.1
     optional: true
 
-  '@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))':
+  '@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))':
     dependencies:
       '@vercel/oidc': 3.8.4
     optionalDependencies:
-      '@aws-sdk/credential-provider-web-identity': 3.972.74
+      '@aws-sdk/credential-provider-web-identity': 3.972.90
       ws: 8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)
     optional: true
 
@@ -15431,7 +15506,7 @@ snapshots:
       convert-source-map: 2.0.0
       tinyrainbow: 3.2.0
 
-  '@wagmi/connectors@6.2.0(yofsz5277s73a2vczskcpva7qi)':
+  '@wagmi/connectors@6.2.0(fmfueftqu4lrdmv7hyvkaq47vy)':
     dependencies:
       '@base-org/account': 2.4.0(@types/react@19.1.17)(bufferutil@4.1.0)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(zod@4.4.3)
       '@coinbase/wallet-sdk': 4.3.6(@types/react@19.1.17)(bufferutil@4.1.0)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(zod@4.4.3)
@@ -15440,9 +15515,9 @@ snapshots:
       '@safe-global/safe-apps-provider': 0.18.6(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
       '@safe-global/safe-apps-sdk': 9.1.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
       '@wagmi/core': 2.22.1(@tanstack/query-core@5.101.4)(@types/react@19.1.17)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))
-      '@walletconnect/ethereum-provider': 2.23.10(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@walletconnect/ethereum-provider': 2.23.10(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(zod@4.4.3)
       cbw-sdk: '@coinbase/wallet-sdk@3.9.3'
-      porto: 0.2.35(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@wagmi/core@2.22.1(@tanstack/query-core@5.101.4)(@types/react@19.1.17)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)))(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(wagmi@2.19.5(@tanstack/query-core@5.101.4)(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(zod@4.4.3))
+      porto: 0.2.35(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@wagmi/core@2.22.1(@tanstack/query-core@5.101.4)(@types/react@19.1.17)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)))(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(wagmi@2.19.5(@tanstack/query-core@5.101.4)(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(zod@4.4.3))
       viem: 2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
     optionalDependencies:
       typescript: 5.7.3
@@ -15509,21 +15584,21 @@ snapshots:
     dependencies:
       '@wallet-standard/base': 1.1.1
 
-  '@walletconnect/core@2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
+  '@walletconnect/core@2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(ioredis@5.11.1)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
     dependencies:
       '@walletconnect/heartbeat': 1.2.2
       '@walletconnect/jsonrpc-provider': 1.0.14
       '@walletconnect/jsonrpc-types': 1.0.4
       '@walletconnect/jsonrpc-utils': 1.0.8
       '@walletconnect/jsonrpc-ws-connection': 1.0.16(bufferutil@4.1.0)(utf-8-validate@5.0.10)
-      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
+      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
       '@walletconnect/logger': 3.0.2
       '@walletconnect/relay-api': 1.0.11
       '@walletconnect/relay-auth': 1.1.0
       '@walletconnect/safe-json': 1.0.2
       '@walletconnect/time': 1.0.2
-      '@walletconnect/types': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
-      '@walletconnect/utils': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(typescript@5.7.3)(zod@4.4.3)
+      '@walletconnect/types': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
+      '@walletconnect/utils': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)(typescript@5.7.3)(zod@4.4.3)
       '@walletconnect/window-getters': 1.0.1
       es-toolkit: 1.45.1
       events: 3.3.0
@@ -15553,21 +15628,21 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@walletconnect/core@2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
+  '@walletconnect/core@2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(ioredis@5.11.1)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
     dependencies:
       '@walletconnect/heartbeat': 1.2.2
       '@walletconnect/jsonrpc-provider': 1.0.14
       '@walletconnect/jsonrpc-types': 1.0.4
       '@walletconnect/jsonrpc-utils': 1.0.8
       '@walletconnect/jsonrpc-ws-connection': 1.0.16(bufferutil@4.1.0)(utf-8-validate@5.0.10)
-      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
+      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
       '@walletconnect/logger': 3.0.2
       '@walletconnect/relay-api': 1.0.11
       '@walletconnect/relay-auth': 1.1.0
       '@walletconnect/safe-json': 1.0.2
       '@walletconnect/time': 1.0.2
-      '@walletconnect/types': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
-      '@walletconnect/utils': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(typescript@5.7.3)(zod@4.4.3)
+      '@walletconnect/types': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
+      '@walletconnect/utils': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)(typescript@5.7.3)(zod@4.4.3)
       '@walletconnect/window-getters': 1.0.1
       es-toolkit: 1.44.0
       events: 3.3.0
@@ -15601,17 +15676,17 @@ snapshots:
     dependencies:
       tslib: 1.14.1
 
-  '@walletconnect/ethereum-provider@2.23.10(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(zod@4.4.3)':
+  '@walletconnect/ethereum-provider@2.23.10(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(zod@4.4.3)':
     dependencies:
-      '@reown/appkit': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@reown/appkit': 1.8.19(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(utf-8-validate@5.0.10)(zod@4.4.3)
       '@walletconnect/jsonrpc-provider': 1.0.14
       '@walletconnect/jsonrpc-types': 1.0.4
       '@walletconnect/jsonrpc-utils': 1.0.8
-      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
-      '@walletconnect/sign-client': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
-      '@walletconnect/types': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
-      '@walletconnect/universal-provider': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
-      '@walletconnect/utils': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(typescript@5.7.3)(zod@4.4.3)
+      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
+      '@walletconnect/sign-client': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(ioredis@5.11.1)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@walletconnect/types': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
+      '@walletconnect/universal-provider': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@walletconnect/utils': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)(typescript@5.7.3)(zod@4.4.3)
       events: 3.3.0
     transitivePeerDependencies:
       - '@azure/app-configuration'
@@ -15696,11 +15771,11 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@walletconnect/keyvaluestorage@1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))':
+  '@walletconnect/keyvaluestorage@1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)':
     dependencies:
       '@walletconnect/safe-json': 1.0.2
       idb-keyval: 6.2.5
-      unstorage: 1.17.5(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(idb-keyval@6.2.5)
+      unstorage: 1.17.5(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(idb-keyval@6.2.5)(ioredis@5.11.1)
     transitivePeerDependencies:
       - '@azure/app-configuration'
       - '@azure/cosmos'
@@ -15742,14 +15817,14 @@ snapshots:
     dependencies:
       tslib: 1.14.1
 
-  '@walletconnect/sign-client@2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
+  '@walletconnect/sign-client@2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(ioredis@5.11.1)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
     dependencies:
-      '@walletconnect/core': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@walletconnect/core': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(ioredis@5.11.1)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
       '@walletconnect/jsonrpc-utils': 1.0.8
       '@walletconnect/logger': 3.0.2
       '@walletconnect/time': 1.0.2
-      '@walletconnect/types': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
-      '@walletconnect/utils': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(typescript@5.7.3)(zod@4.4.3)
+      '@walletconnect/types': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
+      '@walletconnect/utils': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)(typescript@5.7.3)(zod@4.4.3)
       events: 3.3.0
     transitivePeerDependencies:
       - '@azure/app-configuration'
@@ -15776,16 +15851,16 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@walletconnect/sign-client@2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
+  '@walletconnect/sign-client@2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(ioredis@5.11.1)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
     dependencies:
-      '@walletconnect/core': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@walletconnect/core': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(ioredis@5.11.1)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
       '@walletconnect/events': 1.0.1
       '@walletconnect/heartbeat': 1.2.2
       '@walletconnect/jsonrpc-utils': 1.0.8
       '@walletconnect/logger': 3.0.2
       '@walletconnect/time': 1.0.2
-      '@walletconnect/types': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
-      '@walletconnect/utils': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(typescript@5.7.3)(zod@4.4.3)
+      '@walletconnect/types': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
+      '@walletconnect/utils': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)(typescript@5.7.3)(zod@4.4.3)
       events: 3.3.0
     transitivePeerDependencies:
       - '@azure/app-configuration'
@@ -15816,12 +15891,12 @@ snapshots:
     dependencies:
       tslib: 1.14.1
 
-  '@walletconnect/types@2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))':
+  '@walletconnect/types@2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)':
     dependencies:
       '@walletconnect/events': 1.0.1
       '@walletconnect/heartbeat': 1.2.2
       '@walletconnect/jsonrpc-types': 1.0.4
-      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
+      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
       '@walletconnect/logger': 3.0.2
       events: 3.3.0
     transitivePeerDependencies:
@@ -15845,12 +15920,12 @@ snapshots:
       - ioredis
       - uploadthing
 
-  '@walletconnect/types@2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))':
+  '@walletconnect/types@2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)':
     dependencies:
       '@walletconnect/events': 1.0.1
       '@walletconnect/heartbeat': 1.2.2
       '@walletconnect/jsonrpc-types': 1.0.4
-      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
+      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
       '@walletconnect/logger': 3.0.2
       events: 3.3.0
     transitivePeerDependencies:
@@ -15874,18 +15949,18 @@ snapshots:
       - ioredis
       - uploadthing
 
-  '@walletconnect/universal-provider@2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
+  '@walletconnect/universal-provider@2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
     dependencies:
       '@walletconnect/events': 1.0.1
       '@walletconnect/jsonrpc-http-connection': 1.0.8(encoding@0.1.14)
       '@walletconnect/jsonrpc-provider': 1.0.14
       '@walletconnect/jsonrpc-types': 1.0.4
       '@walletconnect/jsonrpc-utils': 1.0.8
-      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
+      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
       '@walletconnect/logger': 3.0.2
-      '@walletconnect/sign-client': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
-      '@walletconnect/types': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
-      '@walletconnect/utils': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(typescript@5.7.3)(zod@4.4.3)
+      '@walletconnect/sign-client': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(ioredis@5.11.1)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@walletconnect/types': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
+      '@walletconnect/utils': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)(typescript@5.7.3)(zod@4.4.3)
       es-toolkit: 1.45.1
       events: 3.3.0
     transitivePeerDependencies:
@@ -15914,18 +15989,18 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@walletconnect/universal-provider@2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
+  '@walletconnect/universal-provider@2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
     dependencies:
       '@walletconnect/events': 1.0.1
       '@walletconnect/jsonrpc-http-connection': 1.0.8(encoding@0.1.14)
       '@walletconnect/jsonrpc-provider': 1.0.14
       '@walletconnect/jsonrpc-types': 1.0.4
       '@walletconnect/jsonrpc-utils': 1.0.8
-      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
+      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
       '@walletconnect/logger': 3.0.2
-      '@walletconnect/sign-client': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
-      '@walletconnect/types': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
-      '@walletconnect/utils': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(typescript@5.7.3)(zod@4.4.3)
+      '@walletconnect/sign-client': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(ioredis@5.11.1)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@walletconnect/types': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
+      '@walletconnect/utils': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)(typescript@5.7.3)(zod@4.4.3)
       es-toolkit: 1.44.0
       events: 3.3.0
     transitivePeerDependencies:
@@ -15954,7 +16029,7 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@walletconnect/utils@2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(typescript@5.7.3)(zod@4.4.3)':
+  '@walletconnect/utils@2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)(typescript@5.7.3)(zod@4.4.3)':
     dependencies:
       '@msgpack/msgpack': 3.1.3
       '@noble/ciphers': 1.3.0
@@ -15962,13 +16037,13 @@ snapshots:
       '@noble/hashes': 1.8.0
       '@scure/base': 1.2.6
       '@walletconnect/jsonrpc-utils': 1.0.8
-      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
+      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
       '@walletconnect/logger': 3.0.2
       '@walletconnect/relay-api': 1.0.11
       '@walletconnect/relay-auth': 1.1.0
       '@walletconnect/safe-json': 1.0.2
       '@walletconnect/time': 1.0.2
-      '@walletconnect/types': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
+      '@walletconnect/types': 2.23.10(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
       '@walletconnect/window-getters': 1.0.1
       '@walletconnect/window-metadata': 1.0.1
       blakejs: 1.2.1
@@ -15998,7 +16073,7 @@ snapshots:
       - uploadthing
       - zod
 
-  '@walletconnect/utils@2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(typescript@5.7.3)(zod@4.4.3)':
+  '@walletconnect/utils@2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)(typescript@5.7.3)(zod@4.4.3)':
     dependencies:
       '@msgpack/msgpack': 3.1.3
       '@noble/ciphers': 1.3.0
@@ -16006,13 +16081,13 @@ snapshots:
       '@noble/hashes': 1.8.0
       '@scure/base': 1.2.6
       '@walletconnect/jsonrpc-utils': 1.0.8
-      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
+      '@walletconnect/keyvaluestorage': 1.1.1(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
       '@walletconnect/logger': 3.0.2
       '@walletconnect/relay-api': 1.0.11
       '@walletconnect/relay-auth': 1.1.0
       '@walletconnect/safe-json': 1.0.2
       '@walletconnect/time': 1.0.2
-      '@walletconnect/types': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
+      '@walletconnect/types': 2.23.7(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(ioredis@5.11.1)
       '@walletconnect/window-getters': 1.0.1
       '@walletconnect/window-metadata': 1.0.1
       blakejs: 1.2.1
@@ -16684,6 +16759,8 @@ snapshots:
   clsx@1.2.1: {}
 
   clsx@2.1.1: {}
+
+  cluster-key-slot@1.1.1: {}
 
   co-body@6.2.0:
     dependencies:
@@ -17488,13 +17565,6 @@ snapshots:
       path-expression-matcher: 1.5.0
       xml-naming: 0.1.0
 
-  fast-xml-parser@5.7.3:
-    dependencies:
-      '@nodable/entities': 2.1.1
-      fast-xml-builder: 1.2.0
-      path-expression-matcher: 1.5.0
-      strnum: 2.3.0
-
   fast-xml-parser@5.8.0:
     dependencies:
       '@nodable/entities': 2.1.1
@@ -17957,6 +18027,18 @@ snapshots:
   interface-store@5.1.8: {}
 
   interface-store@6.0.3: {}
+
+  ioredis@5.11.1:
+    dependencies:
+      '@ioredis/commands': 1.10.0
+      cluster-key-slot: 1.1.1
+      debug: 4.4.3
+      denque: 2.1.0
+      redis-errors: 1.2.0
+      redis-parser: 3.0.0
+      standard-as-callback: 2.1.0
+    transitivePeerDependencies:
+      - supports-color
 
   ip-address@10.7.6:
     optional: true
@@ -19804,7 +19886,7 @@ snapshots:
 
   pony-cause@2.1.11: {}
 
-  porto@0.2.35(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@wagmi/core@2.22.1(@tanstack/query-core@5.101.4)(@types/react@19.1.17)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)))(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(wagmi@2.19.5(@tanstack/query-core@5.101.4)(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(zod@4.4.3)):
+  porto@0.2.35(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@wagmi/core@2.22.1(@tanstack/query-core@5.101.4)(@types/react@19.1.17)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)))(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(wagmi@2.19.5(@tanstack/query-core@5.101.4)(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(zod@4.4.3)):
     dependencies:
       '@wagmi/core': 2.22.1(@tanstack/query-core@5.101.4)(@types/react@19.1.17)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))
       hono: 4.13.2
@@ -19818,7 +19900,7 @@ snapshots:
       '@tanstack/react-query': 5.101.4(react@19.2.0)
       react: 19.2.0
       typescript: 5.7.3
-      wagmi: 2.19.5(@tanstack/query-core@5.101.4)(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(zod@4.4.3)
+      wagmi: 2.19.5(@tanstack/query-core@5.101.4)(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(zod@4.4.3)
     transitivePeerDependencies:
       - '@types/react'
       - immer
@@ -20147,6 +20229,12 @@ snapshots:
     dependencies:
       indent-string: 4.0.0
       strip-indent: 3.0.0
+
+  redis-errors@1.2.0: {}
+
+  redis-parser@3.0.0:
+    dependencies:
+      redis-errors: 1.2.0
 
   reduce-flatten@2.0.0: {}
 
@@ -20530,6 +20618,8 @@ snapshots:
       escape-string-regexp: 2.0.0
 
   stackback@0.0.2: {}
+
+  standard-as-callback@2.1.0: {}
 
   statuses@1.5.0: {}
 
@@ -21045,7 +21135,7 @@ snapshots:
       '@unrs/resolver-binding-win32-ia32-msvc': 1.12.2
       '@unrs/resolver-binding-win32-x64-msvc': 1.12.2
 
-  unstorage@1.17.5(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(idb-keyval@6.2.5):
+  unstorage@1.17.5(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(idb-keyval@6.2.5)(ioredis@5.11.1):
     dependencies:
       anymatch: 3.1.3
       chokidar: 5.0.0
@@ -21057,8 +21147,9 @@ snapshots:
       ufo: 1.6.4
     optionalDependencies:
       '@vercel/blob': 2.4.0
-      '@vercel/functions': 3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))
+      '@vercel/functions': 3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))
       idb-keyval: 6.2.5
+      ioredis: 5.11.1
 
   update-browserslist-db@1.2.3(browserslist@4.28.2):
     dependencies:
@@ -21362,10 +21453,10 @@ snapshots:
     dependencies:
       xml-name-validator: 5.0.0
 
-  wagmi@2.19.5(@tanstack/query-core@5.101.4)(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.74)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(zod@4.4.3):
+  wagmi@2.19.5(@tanstack/query-core@5.101.4)(@tanstack/react-query@5.101.4(react@19.2.0))(@types/react@19.1.17)(@vercel/blob@2.4.0)(@vercel/functions@3.9.3(@aws-sdk/credential-provider-web-identity@3.972.90)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(bufferutil@4.1.0)(encoding@0.1.14)(ioredis@5.11.1)(react@19.2.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))(zod@4.4.3):
     dependencies:
       '@tanstack/react-query': 5.101.4(react@19.2.0)
-      '@wagmi/connectors': 6.2.0(yofsz5277s73a2vczskcpva7qi)
+      '@wagmi/connectors': 6.2.0(fmfueftqu4lrdmv7hyvkaq47vy)
       '@wagmi/core': 2.22.1(@tanstack/query-core@5.101.4)(@types/react@19.1.17)(react@19.2.0)(typescript@5.7.3)(use-sync-external-store@1.4.0(react@19.2.0))(viem@2.57.1(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))
       react: 19.2.0
       use-sync-external-store: 1.4.0(react@19.2.0)
