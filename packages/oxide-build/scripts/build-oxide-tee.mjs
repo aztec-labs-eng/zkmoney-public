@@ -26,6 +26,10 @@
 //      OxideToken artifacts that `pnpm build-contracts` compiles.
 //   8. tsc-build noir-contracts.js, telemetry, watcher-lib and oxide-relayer.
 //
+// With `--resolver`, it builds the Oxide resolver gateway on top of that subset:
+//   7. tsc-build telemetry, watcher-lib, resolver-proof and resolver-service, and copy the
+//      pinned resolver vk next to resolver-proof.
+//
 // Steps 1-5 are gated by sentinel files so subsequent runs short-circuit;
 // the script is idempotent and a full from-cold run is ~1 min.
 
@@ -109,6 +113,10 @@ const BUILD_RELAYER = process.argv.includes("--relayer")
 // Topological order, on top of PACKAGES: the relayer imports all three.
 const RELAYER_PACKAGES = ["noir-contracts.js", "telemetry", "watcher-lib", "oxide-relayer"]
 
+const BUILD_RESOLVER = process.argv.includes("--resolver")
+// Topological order, on top of PACKAGES.
+const RESOLVER_PACKAGES = ["telemetry", "watcher-lib", "resolver-proof", "resolver-service"]
+
 function newestMtime(dir) {
   let newest = 0
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -171,7 +179,7 @@ if (
   // survives as an orphan importing symbols the regenerated modules no longer export — and the
   // mtime check below sees a dest/ newer than src/ and skips the package entirely. Neither the
   // failure nor the skip is visible here: it surfaces later as a SyntaxError from a consumer.
-  for (const pkg of [...PACKAGES, ...RELAYER_PACKAGES]) {
+  for (const pkg of new Set([...PACKAGES, ...RELAYER_PACKAGES, ...RESOLVER_PACKAGES])) {
     rmSync(resolve(YARN_PROJECT, pkg, "dest"), { recursive: true, force: true })
   }
   for (const circuit of REFUND_CIRCUITS) {
@@ -362,4 +370,18 @@ function generateNoirBindings() {
 if (BUILD_RELAYER) {
   generateNoirBindings()
   for (const pkg of RELAYER_PACKAGES) buildPackage(pkg)
+}
+
+// --- Resolver (--resolver) ----------------------------------------------------
+
+// resolver-proof reads the pinned vk from dest/resolver_circuit/vk.bin. Its yarn build script
+// copies it there; this does the same.
+const RESOLVER_VK = resolve(NOIR_PROJECTS, "resolver_circuit/pinned/vk")
+const RESOLVER_VK_DEST = resolve(YARN_PROJECT, "resolver-proof/dest/resolver_circuit/vk.bin")
+
+if (BUILD_RESOLVER) {
+  for (const pkg of RESOLVER_PACKAGES) {
+    buildPackage(pkg)
+    if (pkg === "resolver-proof") copyFileSync(RESOLVER_VK, RESOLVER_VK_DEST)
+  }
 }

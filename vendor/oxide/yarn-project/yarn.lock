@@ -3318,57 +3318,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@aztec/bb.js@npm:5.0.0":
-  version: 5.0.0
-  resolution: "@aztec/bb.js@npm:5.0.0"
-  dependencies:
-    comlink: "npm:^4.4.1"
-    commander: "npm:^12.1.0"
-    idb-keyval: "npm:^6.2.1"
-    msgpackr: "npm:^1.11.2"
-    pako: "npm:^2.1.0"
-    tslib: "npm:^2.4.0"
-  bin:
-    bb: dest/node/bin/index.js
-  checksum: 10c0/faeea7f5b41a54ffeb74155d48fe5235061224af6b6968f668877ea2f8e9176aa0c76056384fc043a524675084a346d3b500d287552d69a703a3172f010a57ea
-  languageName: node
-  linkType: hard
-
-"@aztec/noir-acvm_js@npm:5.0.0":
-  version: 5.0.0
-  resolution: "@aztec/noir-acvm_js@npm:5.0.0"
-  checksum: 10c0/c39d67bbf6c1b3e65d59b048d80bfe2aaa0160d78fc5002f5c458fc0b8ad0bfaf1070ec73ef4f67be972efa65b4287fdf0ef517edbfb96c6ef40ce0e1db5d9e2
-  languageName: node
-  linkType: hard
-
-"@aztec/noir-noir_js@npm:5.0.0":
-  version: 5.0.0
-  resolution: "@aztec/noir-noir_js@npm:5.0.0"
-  dependencies:
-    "@aztec/noir-acvm_js": "npm:5.0.0"
-    "@aztec/noir-noirc_abi": "npm:5.0.0"
-    "@aztec/noir-types": "npm:5.0.0"
-    pako: "npm:^2.1.0"
-  checksum: 10c0/4b34963a439e68ad6d45508ba05e61be2cd7cb63f3cd2cd876882716dca4980032778d849a1dfac29f9e15dfcd5994a3c86c1e2bfba0cb77a31e4581006ff98b
-  languageName: node
-  linkType: hard
-
-"@aztec/noir-noirc_abi@npm:5.0.0":
-  version: 5.0.0
-  resolution: "@aztec/noir-noirc_abi@npm:5.0.0"
-  dependencies:
-    "@aztec/noir-types": "npm:5.0.0"
-  checksum: 10c0/16124c454d43178778ab553a25350a2e26fa9cc3c031c0e18887472b6ff000a0607069ec40c2791a94e5362b9a7efd847ab0d7f4c9d2ce00af62a7a264616c64
-  languageName: node
-  linkType: hard
-
-"@aztec/noir-types@npm:5.0.0":
-  version: 5.0.0
-  resolution: "@aztec/noir-types@npm:5.0.0"
-  checksum: 10c0/fb2b1ef89905f9a86a1584b6dba29285b2cc34cb53bb7b2fb014771569f32619771a50df62e376ef7ee07e3e77ee72aff91bc3d9d0f3a539f750bfdf1c7c7000
-  languageName: node
-  linkType: hard
-
 "@babel/code-frame@npm:^7.0.0, @babel/code-frame@npm:^7.27.1, @babel/code-frame@npm:^7.28.6, @babel/code-frame@npm:^7.29.0":
   version: 7.29.0
   resolution: "@babel/code-frame@npm:7.29.0"
@@ -6109,27 +6058,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@oxide/account-service@workspace:account-service":
-  version: 0.0.0-use.local
-  resolution: "@oxide/account-service@workspace:account-service"
-  dependencies:
-    "@aztec-labs/foundation": "npm:6.0.0"
-    "@jest/globals": "npm:^30.0.0"
-    "@oxide/l1-contracts": "workspace:^"
-    "@oxide/oxide-lib": "workspace:^"
-    "@swc/core": "npm:^1.10.12"
-    "@swc/jest": "npm:^0.2.36"
-    "@types/express": "npm:^4.17.21"
-    "@types/jest": "npm:^30.0.0"
-    "@types/node": "npm:^22.15.17"
-    express: "npm:^4.21.2"
-    jest: "npm:^30.0.0"
-    typescript: "npm:^5.3.3"
-    viem: "npm:2.57.1"
-    zod: "npm:^4.0.0"
-  languageName: unknown
-  linkType: soft
-
 "@oxide/deploy-lib@workspace:^, @oxide/deploy-lib@workspace:deploy-lib":
   version: 0.0.0-use.local
   resolution: "@oxide/deploy-lib@workspace:deploy-lib"
@@ -6435,10 +6363,10 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@oxide/resolver-proof@workspace:resolver-proof"
   dependencies:
+    "@aztec-foundation/bb.js": "npm:6.0.0"
+    "@aztec-foundation/noir-noir_js": "npm:6.0.0"
     "@aztec-labs/foundation": "npm:6.0.0"
     "@aztec-labs/stdlib": "npm:6.0.0"
-    "@aztec/bb.js": "npm:5.0.0"
-    "@aztec/noir-noir_js": "npm:5.0.0"
     "@jest/globals": "npm:^30.0.0"
     "@oxide/resolver-lib": "workspace:^"
     "@swc/core": "npm:^1.10.12"
@@ -6455,19 +6383,11 @@ __metadata:
   resolution: "@oxide/resolver-service@workspace:resolver-service"
   dependencies:
     "@aws-sdk/client-secrets-manager": "npm:^3.1045.0"
-    "@aws-sdk/client-ssm": "npm:^3.1045.0"
-    "@aztec-labs/accounts": "npm:6.0.0"
-    "@aztec-labs/aztec.js": "npm:6.0.0"
-    "@aztec-labs/constants": "npm:6.0.0"
     "@aztec-labs/foundation": "npm:6.0.0"
     "@aztec-labs/kv-store": "npm:6.0.0"
-    "@aztec-labs/noir-contracts.js": "npm:6.0.0"
     "@aztec-labs/stdlib": "npm:6.0.0"
-    "@aztec-labs/wallets": "npm:6.0.0"
     "@jest/globals": "npm:^30.0.0"
     "@oxide/l1-contracts": "workspace:^"
-    "@oxide/noir-contracts.js": "workspace:^"
-    "@oxide/oxide-client": "workspace:^"
     "@oxide/oxide-lib": "workspace:^"
     "@oxide/resolver-lib": "workspace:^"
     "@oxide/resolver-proof": "workspace:^"
@@ -6478,11 +6398,9 @@ __metadata:
     "@types/jest": "npm:^30.0.0"
     "@types/node": "npm:^22.15.17"
     "@types/pg": "npm:^8.15.0"
-    "@types/secp256k1": "npm:^4.0.6"
     ioredis: "npm:^5.6.1"
     jest: "npm:^30.0.0"
     pg: "npm:^8.16.0"
-    secp256k1: "npm:^5.0.1"
     typescript: "npm:^5.3.3"
     viem: "npm:2.57.1"
   languageName: unknown
@@ -8057,18 +7975,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/express-serve-static-core@npm:^4.17.33":
-  version: 4.19.8
-  resolution: "@types/express-serve-static-core@npm:4.19.8"
-  dependencies:
-    "@types/node": "npm:*"
-    "@types/qs": "npm:*"
-    "@types/range-parser": "npm:*"
-    "@types/send": "npm:*"
-  checksum: 10c0/6fb58a85b209e0e421b29c52e0a51dbf7c039b711c604cf45d46470937a5c7c16b30aa5ce9bf7da0bd8a2e9361c95b5055599c0500a96bf4414d26c81f02d7fe
-  languageName: node
-  linkType: hard
-
 "@types/express-serve-static-core@npm:^5.0.0":
   version: 5.1.1
   resolution: "@types/express-serve-static-core@npm:5.1.1"
@@ -8089,18 +7995,6 @@ __metadata:
     "@types/express-serve-static-core": "npm:^5.0.0"
     "@types/serve-static": "npm:^2"
   checksum: 10c0/f1071e3389a955d4f9a38aae38634121c7cd9b3171ba4201ec9b56bd534aba07866839d278adc0dda05b942b05a901a02fd174201c3b1f70ce22b10b6c68f24b
-  languageName: node
-  linkType: hard
-
-"@types/express@npm:^4.17.21":
-  version: 4.17.25
-  resolution: "@types/express@npm:4.17.25"
-  dependencies:
-    "@types/body-parser": "npm:*"
-    "@types/express-serve-static-core": "npm:^4.17.33"
-    "@types/qs": "npm:*"
-    "@types/serve-static": "npm:^1"
-  checksum: 10c0/f42b616d2c9dbc50352c820db7de182f64ebbfa8dba6fb6c98e5f8f0e2ef3edde0131719d9dc6874803d25ad9ca2d53471d0fec2fbc60a6003a43d015bab72c4
   languageName: node
   linkType: hard
 
@@ -8262,13 +8156,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/mime@npm:^1":
-  version: 1.3.5
-  resolution: "@types/mime@npm:1.3.5"
-  checksum: 10c0/c2ee31cd9b993804df33a694d5aa3fa536511a49f2e06eeab0b484fef59b4483777dbb9e42a4198a0809ffbf698081fdbca1e5c2218b82b91603dfab10a10fbc
-  languageName: node
-  linkType: hard
-
 "@types/murmurhash3js-revisited@npm:^3.0.3":
   version: 3.0.3
   resolution: "@types/murmurhash3js-revisited@npm:3.0.3"
@@ -8364,27 +8251,6 @@ __metadata:
   dependencies:
     "@types/node": "npm:*"
   checksum: 10c0/7673747f8c2d8e67f3b1b3b57e9d4d681801a4f7b526ecf09987bb9a84a61cf94aa411c736183884dc762c1c402a61681eb1ef200d8d45d7e5ec0ab67ea5f6c1
-  languageName: node
-  linkType: hard
-
-"@types/send@npm:<1":
-  version: 0.17.6
-  resolution: "@types/send@npm:0.17.6"
-  dependencies:
-    "@types/mime": "npm:^1"
-    "@types/node": "npm:*"
-  checksum: 10c0/a9d76797f0637738062f1b974e0fcf3d396a28c5dc18c3f95ecec5dabda82e223afbc2d56a0bca46b6326fd7bb229979916cea40de2270a98128fd94441b87c2
-  languageName: node
-  linkType: hard
-
-"@types/serve-static@npm:^1":
-  version: 1.15.10
-  resolution: "@types/serve-static@npm:1.15.10"
-  dependencies:
-    "@types/http-errors": "npm:*"
-    "@types/node": "npm:*"
-    "@types/send": "npm:<1"
-  checksum: 10c0/842fca14c9e80468f89b6cea361773f2dcd685d4616a9f59013b55e1e83f536e4c93d6d8e3ba5072d40c4e7e64085210edd6646b15d538ded94512940a23021f
   languageName: node
   linkType: hard
 

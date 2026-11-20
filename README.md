@@ -11,7 +11,7 @@ Source of the zk.money web wallet and the zk.money Desktop app. This tree builds
 | `packages/core`, `contracts`, `sdk`, `front-core` | The wallet stack: shared types, Noir contracts, contract calls, and app logic. |
 | `packages/config-client`, `passkey-web`, `design-system`, `metrics-policy` | Libraries that the wallet imports. |
 | `packages/oxide-build` | Builds the vendored Oxide packages. |
-| `vendor/oxide` | The subset of Oxide that the wallet needs, the relayer source, and the refund and resolver circuits, at commit `dab3d38be`. |
+| `vendor/oxide` | The subset of Oxide that the wallet needs, the relayer and resolver source, and the refund and resolver circuits, at commit `dab3d38be`. |
 
 ## Prerequisites
 
@@ -92,7 +92,7 @@ To make the wallet use your own host, set the enclave URL in the endpoint editor
 
 ### Reproduce the enclave image
 
-`scripts/build-enclave.sh` builds the EIF from `vendor/oxide` (copied from Oxide commit `3b5e1f7c8`) and prints its measurements. Compare them with the release build values below.
+`scripts/build-enclave.sh` builds the EIF from `vendor/oxide` and prints its measurements. Compare them with the release build values below. The release was built from Oxide commit `3b5e1f7c8`. The enclave inputs in `vendor/oxide` are from Oxide commit `dab3d38be`, whose enclave code is the same, so they give the same measurements.
 
 Requirements: Linux x86_64, Docker with buildx, `jq`, `nitro-cli` 1.5.0, and the [v1.5.0 `blobs/x86_64`](https://github.com/aws/aws-nitro-enclaves-cli/tree/v1.5.0/blobs/x86_64) files in `/usr/share/nitro_enclaves/blobs`. The Amazon Linux package ships different blobs, which change PCR0.
 
@@ -123,6 +123,21 @@ node vendor/oxide/yarn-project/oxide-relayer/dest/bin/oxide-relayer.js run --hel
 ```
 
 For the relayer configuration, see [vendor/oxide/yarn-project/oxide-relayer/README.md](vendor/oxide/yarn-project/oxide-relayer/README.md).
+
+## Resolver
+
+`vendor/oxide/yarn-project/resolver-service` is the SIPA resolver gateway. It answers the EIP-3668 (CCIP-Read) requests of the Resolver module: for an ENS name it returns a fresh SIPA (Segregated Incoming Payment Address) with a proof of the resolver circuit. The resolver does not watch or broadcast SIPAs. The wallet finds its own SIPAs. `vendor/oxide/yarn-project/resolver-proof` generates the proofs from the pinned circuit in `vendor/oxide/noir-projects/resolver_circuit/pinned`.
+
+These packages are copies from Oxide commit `dab3d38be`, with the change that removes the SIPA watcher from `resolver-service` (Oxide commit `3feb1b4ea`). The resolver `Dockerfile` and internal ticket references are left out.
+
+To build the resolver, clone the repository and run `pnpm install --frozen-lockfile` as in [Build](#build). Then run:
+
+```shell
+pnpm build:resolver
+node vendor/oxide/yarn-project/resolver-service/dest/main.js
+```
+
+The Resolver module accepts only proofs signed with a resolver key that is registered on L1. The public key of `OXIDE_RESOLVER_PRIVATE_KEY` must be the key of a resolver entry in the `NameRegistry`. For the configuration and the run modes, see [vendor/oxide/yarn-project/resolver-service/README.md](vendor/oxide/yarn-project/resolver-service/README.md).
 
 ## Circuits
 
